@@ -63,11 +63,11 @@ describe('MobileBottomNav', () => {
       expect(positionsLink).toHaveClass('text-primary')
     })
 
-    it('highlights Strategy when on strategy sub-routes', () => {
-      renderWithRouter('/strategy/new')
+    it('highlights Research when on copilot route', () => {
+      renderWithRouter('/copilot')
 
-      const strategyLink = screen.getByRole('link', { name: /strategy/i })
-      expect(strategyLink).toHaveClass('text-primary')
+      const researchLink = screen.getByRole('link', { name: /research/i })
+      expect(researchLink).toHaveClass('text-primary')
     })
 
     it('non-active items have muted color', () => {

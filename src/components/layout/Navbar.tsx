@@ -1,5 +1,5 @@
-import { BarChart3, BookOpen, LogOut, Menu, Moon, Sun, Zap } from 'lucide-react'
-import { useState } from 'react'
+import { BarChart3, Bell, BookOpen, LogOut, Menu, Moon, Sun, Zap } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { authApi } from '@/api/auth'
@@ -13,8 +13,15 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
-import { isActiveRoute, mobileSheetItems, navItems, profileMenuItems } from '@/config/navigation'
+import {
+  filterNavItems,
+  filterSidebarGroups,
+  isActiveRoute,
+  profileMenuItems,
+  sidebarGroups,
+} from '@/config/navigation'
 import { cn } from '@/lib/utils'
+import { useAlertStore } from '@/stores/alertStore'
 import { useAuthStore } from '@/stores/authStore'
 import { useThemeStore } from '@/stores/themeStore'
 
@@ -24,6 +31,13 @@ export function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const { mode, appMode, toggleMode, toggleAppMode, isTogglingMode } = useThemeStore()
   const { user, logout } = useAuthStore()
+  const { unacknowledgedCount, fetchUnacknowledgedCount } = useAlertStore()
+
+  useEffect(() => {
+    fetchUnacknowledgedCount()
+    const interval = setInterval(fetchUnacknowledgedCount, 30000)
+    return () => clearInterval(interval)
+  }, [fetchUnacknowledgedCount])
 
   const handleLogout = async () => {
     try {
@@ -46,7 +60,7 @@ export function Navbar() {
       // Show warning toast when enabling analyzer mode (like old UI)
       if (newMode === 'analyzer') {
         setTimeout(() => {
-          toast.warning('⚠️ Analyzer (Sandbox) mode is for testing purposes only', {
+          toast.warning('Analyzer (Sandbox) mode is for testing purposes only', {
             duration: 10000,
           })
         }, 2000)
@@ -56,12 +70,14 @@ export function Navbar() {
     }
   }
 
-  const isActive = (href: string) => isActiveRoute(location.pathname, href)
+  const brokerId = user?.brokerId
+  const filteredProfileItems = filterNavItems(profileMenuItems, brokerId)
+  const filteredGroups = filterSidebarGroups(sidebarGroups, brokerId)
 
   return (
-    <nav className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-      <div className="container mx-auto px-4 flex h-14 items-center">
-        {/* Mobile Menu */}
+    <nav className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 flex-shrink-0">
+      <div className="px-4 flex h-14 items-center">
+        {/* Mobile Menu (hamburger triggers sidebar sheet) */}
         <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
           <SheetTrigger asChild className="md:hidden">
             <Button variant="ghost" size="icon" className="mr-2 min-h-[44px] min-w-[44px]">
@@ -69,33 +85,48 @@ export function Navbar() {
               <span className="sr-only">Toggle menu</span>
             </Button>
           </SheetTrigger>
-          <SheetContent side="left" className="w-72">
-            <div className="flex flex-col gap-4 py-4">
-              <Link
-                to="/dashboard"
-                className="flex items-center gap-2 px-2"
-                onClick={() => setMobileOpen(false)}
-              >
+          <SheetContent side="left" className="w-72 p-0">
+            <div className="flex flex-col h-full">
+              {/* Mobile sidebar header */}
+              <div className="flex items-center gap-2 px-4 h-14 border-b flex-shrink-0">
                 <img src="/logo.png" alt="OpenAlgo" className="h-8 w-8" />
                 <span className="font-semibold">OpenAlgo</span>
-              </Link>
-              <nav className="flex flex-col gap-1">
-                {/* Show secondary items not in bottom nav */}
-                {mobileSheetItems.map((item) => (
-                  <Link
-                    key={item.href}
-                    to={item.href}
-                    onClick={() => setMobileOpen(false)}
-                    className={cn(
-                      'flex items-center gap-3 rounded-lg px-3 py-3 text-sm transition-colors min-h-[44px] touch-manipulation',
-                      isActive(item.href)
-                        ? 'bg-primary text-primary-foreground'
-                        : 'hover:bg-muted active:bg-muted'
-                    )}
-                  >
-                    <item.icon className="h-4 w-4" />
-                    {item.label}
-                  </Link>
+              </div>
+
+              {/* Mobile sidebar nav groups */}
+              <nav className="flex-1 overflow-y-auto py-3 px-2">
+                {filteredGroups.map((group, groupIdx) => (
+                  <div key={group.label} className={cn(groupIdx > 0 && 'mt-4')}>
+                    <div className="px-2 mb-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
+                        {group.label}
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-0.5">
+                      {group.items.map((item) => {
+                        const active = isActiveRoute(location.pathname, item.href)
+                        return (
+                          <Link
+                            key={item.href}
+                            to={item.href}
+                            onClick={() => setMobileOpen(false)}
+                            className={cn(
+                              'flex items-center gap-3 rounded-lg px-3 h-10 text-sm font-medium transition-colors relative min-h-[44px] touch-manipulation',
+                              active
+                                ? 'bg-primary/10 text-primary'
+                                : 'text-muted-foreground hover:bg-muted hover:text-foreground active:bg-muted'
+                            )}
+                          >
+                            {active && (
+                              <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-primary" />
+                            )}
+                            <item.icon className="h-4 w-4 flex-shrink-0" />
+                            <span className="truncate">{item.label}</span>
+                          </Link>
+                        )
+                      })}
+                    </div>
+                  </div>
                 ))}
               </nav>
             </div>
@@ -103,28 +134,10 @@ export function Navbar() {
         </Sheet>
 
         {/* Logo */}
-        <Link to="/dashboard" className="flex items-center gap-2 mr-6">
+        <Link to="/dashboard" className="flex items-center gap-2 mr-4">
           <img src="/logo.png" alt="OpenAlgo" className="h-8 w-8" />
           <span className="hidden font-semibold sm:inline-block">OpenAlgo</span>
         </Link>
-
-        {/* Desktop Navigation */}
-        <nav className="hidden md:flex items-center gap-1">
-          {navItems.map((item) => (
-            <Link
-              key={item.href}
-              to={item.href}
-              className={cn(
-                'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                isActive(item.href)
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              {item.label}
-            </Link>
-          ))}
-        </nav>
 
         {/* Right Side */}
         <div className="ml-auto flex items-center gap-1 sm:gap-2">
@@ -181,6 +194,23 @@ export function Navbar() {
             {mode === 'light' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </Button>
 
+          {/* Alert Bell */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 relative"
+            onClick={() => navigate('/alerts')}
+            title="Alert Center"
+            aria-label="Alert Center"
+          >
+            <Bell className="h-4 w-4" />
+            {unacknowledgedCount > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-bold text-white">
+                {unacknowledgedCount > 99 ? '99+' : unacknowledgedCount}
+              </span>
+            )}
+          </Button>
+
           {/* Profile Dropdown */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -196,7 +226,7 @@ export function Navbar() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
-              {profileMenuItems.map((item) => (
+              {filteredProfileItems.map((item) => (
                 <DropdownMenuItem
                   key={item.href}
                   onSelect={() => navigate(item.href)}

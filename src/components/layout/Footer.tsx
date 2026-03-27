@@ -1,3 +1,4 @@
+import { getVersion } from '@tauri-apps/api/app'
 import { Github } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
@@ -12,19 +13,9 @@ export function Footer({ className }: FooterProps) {
   const [version, setVersion] = useState<string>('')
 
   useEffect(() => {
-    const fetchVersion = async () => {
-      try {
-        const response = await fetch('/auth/app-info')
-        const data = await response.json()
-        if (data.status === 'success') {
-          setVersion(data.version)
-        }
-      } catch (error) {
-        console.error('Failed to fetch version:', error)
-      }
-    }
-
-    fetchVersion()
+    getVersion()
+      .then((v) => setVersion(v))
+      .catch(() => {})
   }, [])
 
   return (

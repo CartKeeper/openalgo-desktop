@@ -4,6 +4,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { Footer } from './Footer'
 import { MobileBottomNav } from './MobileBottomNav'
 import { Navbar } from './Navbar'
+import { Sidebar } from './Sidebar'
 
 export function Layout() {
   const { isAuthenticated, user } = useAuthStore()
@@ -21,12 +22,17 @@ export function Layout() {
 
   return (
     <SocketProvider>
-      <div className="min-h-screen bg-background flex flex-col">
+      <div className="h-screen bg-background flex flex-col overflow-hidden">
         <Navbar />
-        <main className="container mx-auto px-4 py-6 pb-24 md:pb-6 flex-1">
-          <Outlet />
-        </main>
-        <Footer className="hidden md:block" />
+        <div className="flex flex-1 overflow-hidden">
+          <Sidebar />
+          <main className="flex-1 overflow-y-auto">
+            <div className="container mx-auto px-6 py-6 pb-24 md:pb-6">
+              <Outlet />
+            </div>
+            <Footer className="hidden md:block" />
+          </main>
+        </div>
         <MobileBottomNav />
       </div>
     </SocketProvider>
