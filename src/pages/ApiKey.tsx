@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import {
   AlertCircle,
+  ArrowLeft,
   ArrowRight,
   Check,
   Copy,
@@ -132,7 +133,17 @@ export default function ApiKey() {
   }
 
   return (
-    <div className="py-6">
+    <div className="py-6 space-y-6">
+      {/* Header */}
+      <div className="flex items-center gap-2">
+        <Link to="/dashboard" className="text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="h-4 w-4" />
+        </Link>
+        <h1 className="text-2xl font-bold flex items-center gap-2">
+          <Key className="h-6 w-6" />
+          API Key
+        </h1>
+      </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* API Key Management Card */}
         <Card>

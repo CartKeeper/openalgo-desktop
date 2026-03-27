@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useAlertListener } from '@/hooks/useAlertListener'
 import { useAutoLogout } from '@/hooks/useAutoLogout'
 import { useAuthStore } from '@/stores/authStore'
 import { useThemeStore } from '@/stores/themeStore'
@@ -20,6 +21,9 @@ export function AuthSync({ children }: AuthSyncProps) {
 
   // Initialize auto-logout listener (3:00 AM IST compliance)
   useAutoLogout(isAuthenticated)
+
+  // Initialize alert listener (price alerts, rising stars, etc.)
+  useAlertListener()
 
   useEffect(() => {
     const syncSession = async () => {

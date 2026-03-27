@@ -1,5 +1,6 @@
 import {
   Activity,
+  ArrowLeft,
   ArrowRight,
   Calendar,
   Clock,
@@ -109,10 +110,15 @@ export default function AdminIndex() {
     <div className="py-6 space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold flex items-center gap-2">
-          <Settings className="h-6 w-6" />
-          Admin Dashboard
-        </h1>
+        <div className="flex items-center gap-2 mb-1">
+          <Link to="/dashboard" className="text-muted-foreground hover:text-foreground">
+            <ArrowLeft className="h-4 w-4" />
+          </Link>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <Settings className="h-6 w-6" />
+            Admin Dashboard
+          </h1>
+        </div>
         <p className="text-muted-foreground mt-1">
           Manage system settings, market data, and configurations
         </p>

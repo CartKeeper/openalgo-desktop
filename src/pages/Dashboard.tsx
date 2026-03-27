@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { BarChart3, BookOpen, FileText, MessageCircle, Search, Zap } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { WatchlistCard } from '@/components/dashboard/WatchlistCard'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
@@ -446,6 +447,9 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Watchlist */}
+      <WatchlistCard />
 
       {/* Error Alert */}
       {error && (

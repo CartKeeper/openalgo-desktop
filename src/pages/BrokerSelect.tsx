@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-shell'
-import { BookOpen, Edit2, ExternalLink, Key, Loader2, Settings, Trash2 } from 'lucide-react'
+import { BookOpen, Edit2, ExternalLink, Globe, Key, Loader2, Settings, Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -335,6 +335,38 @@ export default function BrokerSelect() {
     }
   }
 
+  const handleGenericMode = async () => {
+    setIsSubmitting(true)
+    setError(null)
+    try {
+      await invoke('set_generic_mode', { enabled: true })
+      useAuthStore.setState({
+        user: user ? {
+          ...user,
+          broker: 'Generic',
+          brokerId: 'generic',
+        } : {
+          username: 'user',
+          broker: 'Generic',
+          brokerId: 'generic',
+          isLoggedIn: true,
+          loginTime: new Date().toISOString(),
+        },
+        isAuthenticated: true,
+        brokerConnected: false,
+        genericMode: true,
+      })
+      toast.success('Research Only mode activated')
+      navigate('/dashboard')
+    } catch (err) {
+      console.error('Generic mode error:', err)
+      const errorMessage = err instanceof Error ? err.message : String(err)
+      setError(`Failed to activate generic mode: ${errorMessage}`)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
@@ -355,6 +387,64 @@ export default function BrokerSelect() {
     setError(null)
 
     try {
+      // For API key brokers (US), authenticate directly with stored credentials
+      if (broker.auth_type === 'api_key') {
+        const creds = await invoke<{
+          broker_id: string
+          api_key: string
+          api_secret: string | null
+          client_id: string | null
+        } | null>('get_broker_credentials_for_edit', { brokerId: selectedBroker })
+
+        if (!creds) {
+          setError('Broker credentials not found. Please configure credentials first.')
+          setIsSubmitting(false)
+          return
+        }
+
+        const response = await invoke<BrokerLoginResponse>('broker_login', {
+          request: {
+            broker_id: selectedBroker,
+            credentials: {
+              api_key: creds.api_key,
+              api_secret: creds.api_secret,
+              client_id: creds.client_id,
+            },
+          },
+        })
+
+        if (response.success) {
+          const brokerDisplayName = broker.name
+
+          useAuthStore.setState({
+            user: user ? {
+              ...user,
+              broker: brokerDisplayName,
+              brokerId: response.broker_id,
+            } : {
+              username: 'user',
+              broker: brokerDisplayName,
+              brokerId: response.broker_id,
+              isLoggedIn: true,
+              loginTime: new Date().toISOString(),
+            },
+            isAuthenticated: true,
+            brokerConnected: true,
+          })
+
+          toast.success(`Connected to ${brokerDisplayName} (${response.user_name || response.user_id}). Loading symbols...`)
+          navigate('/dashboard')
+
+          invoke<number>('refresh_symbol_master')
+            .then((count) => console.log(`Master contracts loaded: ${count} symbols`))
+            .catch((err) => console.error('Failed to download master contracts:', err))
+        } else {
+          toast.error('Failed to connect to broker')
+        }
+        setIsSubmitting(false)
+        return
+      }
+
       // For TOTP brokers, navigate to TOTP form
       if (broker.auth_type === 'totp') {
         navigate(`/broker/${selectedBroker}/totp`)
@@ -420,12 +510,14 @@ export default function BrokerSelect() {
 
         if (selectedBroker === 'fyers') {
           // Fyers OAuth URL format
-          // API key format: APP_ID-100 (e.g., XYZ123-100)
           const appId = creds.api_key
           authUrl = `https://api-t1.fyers.in/api/v3/generate-authcode?client_id=${encodeURIComponent(appId)}&redirect_uri=${encodeURIComponent(redirectUrl)}&response_type=code&state=${state}`
         } else if (selectedBroker === 'zerodha') {
           // Zerodha OAuth URL format
           authUrl = `https://kite.zerodha.com/connect/login?v=3&api_key=${encodeURIComponent(creds.api_key)}&redirect_uri=${encodeURIComponent(redirectUrl)}&state=${state}`
+        } else if (selectedBroker === 'schwab') {
+          // Charles Schwab OAuth URL
+          authUrl = `https://api.schwabapi.com/v1/oauth/authorize?client_id=${encodeURIComponent(creds.api_key)}&redirect_uri=${encodeURIComponent(redirectUrl)}&response_type=code&state=${state}`
         } else {
           toast.error(`OAuth not supported for ${broker.name}`)
           setIsSubmitting(false)
@@ -562,6 +654,29 @@ export default function BrokerSelect() {
                     </>
                   )}
                 </Button>
+
+                <div className="relative my-4">
+                  <div className="absolute inset-0 flex items-center">
+                    <span className="w-full border-t" />
+                  </div>
+                  <div className="relative flex justify-center text-xs uppercase">
+                    <span className="bg-card px-2 text-muted-foreground">or</span>
+                  </div>
+                </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  onClick={handleGenericMode}
+                  disabled={isSubmitting}
+                >
+                  <Globe className="mr-2 h-4 w-4" />
+                  Research Only Mode
+                </Button>
+                <p className="text-xs text-muted-foreground text-center mt-2">
+                  Use without a broker — global market research, manual portfolio, and analysis tools.
+                </p>
               </form>
             </CardContent>
           </Card>
@@ -617,12 +732,24 @@ export default function BrokerSelect() {
             {/* API Key - required for all brokers */}
             <div className="space-y-2">
               <Label htmlFor="apiKey">
-                {selectedBroker === 'fyers' ? 'App ID *' : 'API Key *'}
+                {selectedBroker === 'fyers' ? 'App ID *'
+                  : selectedBroker === 'alpaca' ? 'API Key ID *'
+                  : selectedBroker === 'tradier' ? 'Access Token *'
+                  : selectedBroker === 'schwab' ? 'App Key *'
+                  : selectedBroker === 'ibkr' ? 'Gateway URL'
+                  : 'API Key *'}
               </Label>
               <Input
                 id="apiKey"
-                type="password"
-                placeholder={selectedBroker === 'fyers' ? 'Enter your Fyers App ID (e.g., ABC123-100)' : 'Enter your API key'}
+                type={selectedBroker === 'ibkr' ? 'text' : 'password'}
+                placeholder={
+                  selectedBroker === 'fyers' ? 'Enter your Fyers App ID (e.g., ABC123-100)'
+                  : selectedBroker === 'alpaca' ? 'Enter your Alpaca API Key ID (e.g., PK...)'
+                  : selectedBroker === 'tradier' ? 'Enter your Tradier access token'
+                  : selectedBroker === 'schwab' ? 'Enter your Schwab App Key'
+                  : selectedBroker === 'ibkr' ? 'https://localhost:5000 (default)'
+                  : 'Enter your API key'
+                }
                 value={credentialsForm.apiKey}
                 onChange={(e) => setCredentialsForm({ ...credentialsForm, apiKey: e.target.value })}
               />
@@ -631,18 +758,41 @@ export default function BrokerSelect() {
                   Your Fyers App ID from the API dashboard (format: XXXXX-100)
                 </p>
               )}
+              {selectedBroker === 'alpaca' && (
+                <p className="text-xs text-muted-foreground">
+                  Paper trading keys start with "PK", live keys start with "AK"
+                </p>
+              )}
+              {selectedBroker === 'tradier' && (
+                <p className="text-xs text-muted-foreground">
+                  Prefix with "sandbox:" for sandbox mode (e.g., sandbox:your_token)
+                </p>
+              )}
+              {selectedBroker === 'ibkr' && (
+                <p className="text-xs text-muted-foreground">
+                  Leave blank for default. IB Gateway must be running and authenticated first.
+                </p>
+              )}
             </div>
 
-            {/* API Secret - required for Fyers and Zerodha */}
-            {(selectedBroker === 'fyers' || selectedBroker === 'zerodha') && (
+            {/* API Secret - required for Fyers, Zerodha, Alpaca, Schwab */}
+            {(selectedBroker === 'fyers' || selectedBroker === 'zerodha' || selectedBroker === 'alpaca' || selectedBroker === 'schwab') && (
               <div className="space-y-2">
                 <Label htmlFor="apiSecret">
-                  {selectedBroker === 'fyers' ? 'Secret Key *' : 'API Secret *'}
+                  {selectedBroker === 'fyers' ? 'Secret Key *'
+                    : selectedBroker === 'alpaca' ? 'Secret Key *'
+                    : selectedBroker === 'schwab' ? 'App Secret *'
+                    : 'API Secret *'}
                 </Label>
                 <Input
                   id="apiSecret"
                   type="password"
-                  placeholder={selectedBroker === 'fyers' ? 'Enter your Fyers Secret Key' : 'Enter your API secret'}
+                  placeholder={
+                    selectedBroker === 'fyers' ? 'Enter your Fyers Secret Key'
+                    : selectedBroker === 'alpaca' ? 'Enter your Alpaca Secret Key'
+                    : selectedBroker === 'schwab' ? 'Enter your Schwab App Secret'
+                    : 'Enter your API secret'
+                  }
                   value={credentialsForm.apiSecret}
                   onChange={(e) =>
                     setCredentialsForm({ ...credentialsForm, apiSecret: e.target.value })
@@ -668,7 +818,7 @@ export default function BrokerSelect() {
             )}
 
             {/* Redirect URL info for OAuth brokers */}
-            {(selectedBroker === 'fyers' || selectedBroker === 'zerodha') && (
+            {(selectedBroker === 'fyers' || selectedBroker === 'zerodha' || selectedBroker === 'schwab') && (
               <div className="space-y-2 p-3 bg-muted rounded-md">
                 <Label className="text-sm font-medium">Redirect URL (set this in your broker API dashboard)</Label>
                 <code className="block text-xs bg-background p-2 rounded border break-all">
@@ -677,11 +827,15 @@ export default function BrokerSelect() {
                     : `http://${webhookConfig?.host || '127.0.0.1'}:${webhookConfig?.port || 5000}/${selectedBroker}/callback`}
                 </code>
                 <p className="text-xs text-muted-foreground">
-                  Copy this URL to your {selectedBroker === 'fyers' ? 'Fyers' : 'Zerodha'} API app's redirect URL setting
+                  Copy this URL to your {
+                    selectedBroker === 'fyers' ? 'Fyers'
+                    : selectedBroker === 'schwab' ? 'Schwab Developer'
+                    : 'Zerodha'
+                  } API app's redirect URL setting
                 </p>
                 {!webhookConfig?.enabled && (
                   <p className="text-xs text-destructive font-medium mt-2">
-                    ⚠️ Warning: Webhook server is disabled. Enable it in Settings {'>'} Server Settings before using OAuth login.
+                    Warning: Webhook server is disabled. Enable it in Settings {'>'} Server Settings before using OAuth login.
                   </p>
                 )}
               </div>

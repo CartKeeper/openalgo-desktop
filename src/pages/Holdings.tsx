@@ -1,5 +1,6 @@
-import { Download, Loader2, Radio, RefreshCw, TrendingDown, TrendingUp } from 'lucide-react'
+import { ArrowLeft, Download, Loader2, Radio, RefreshCw, TrendingDown, TrendingUp } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { tradingApi } from '@/api/trading'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -21,9 +22,9 @@ import { onModeChange } from '@/stores/themeStore'
 import type { Holding, HoldingsStats } from '@/types/trading'
 
 function formatCurrency(value: number): string {
-  return new Intl.NumberFormat('en-IN', {
+  return new Intl.NumberFormat('en-US', {
     style: 'currency',
-    currency: 'INR',
+    currency: 'USD',
     minimumFractionDigits: 2,
   }).format(value)
 }
@@ -66,15 +67,10 @@ export default function Holdings() {
 
   const fetchHoldings = useCallback(
     async (showRefresh = false) => {
-      if (!apiKey) {
-        setIsLoading(false)
-        return
-      }
-
       if (showRefresh) setIsRefreshing(true)
 
       try {
-        const response = await tradingApi.getHoldings(apiKey)
+        const response = await tradingApi.getHoldings(apiKey ?? '')
         if (response.status === 'success' && response.data) {
           setHoldings(response.data.holdings || [])
           setStats(response.data.statistics)
@@ -154,6 +150,9 @@ export default function Holdings() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
+            <Link to="/dashboard" className="text-muted-foreground hover:text-foreground">
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
             <h1 className="text-3xl font-bold tracking-tight">Investor Summary</h1>
             {isLive && (
               <Badge

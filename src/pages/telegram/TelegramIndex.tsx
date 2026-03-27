@@ -1,4 +1,5 @@
 import {
+  ArrowLeft,
   ArrowRight,
   BarChart3,
   Bell,
@@ -201,10 +202,15 @@ export default function TelegramIndex() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <MessageSquare className="h-6 w-6" />
-            Telegram Bot
-          </h1>
+          <div className="flex items-center gap-2 mb-1">
+            <Link to="/dashboard" className="text-muted-foreground hover:text-foreground">
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <h1 className="text-2xl font-bold flex items-center gap-2">
+              <MessageSquare className="h-6 w-6" />
+              Telegram Bot
+            </h1>
+          </div>
           <p className="text-muted-foreground mt-1">
             Manage your Telegram bot for trade notifications
           </p>

@@ -715,6 +715,230 @@ export const websocketCommands = {
 }
 
 // ============================================================================
+// Provider Commands (Generic / Research Mode)
+// ============================================================================
+
+export interface GenericQuote {
+  symbol: string
+  name: string | null
+  exchange: string | null
+  currency: string | null
+  price: number
+  change: number | null
+  change_percent: number | null
+  open: number | null
+  high: number | null
+  low: number | null
+  previous_close: number | null
+  volume: number | null
+  market_cap: number | null
+  pe_ratio: number | null
+  fifty_two_week_high: number | null
+  fifty_two_week_low: number | null
+  timestamp: string | null
+}
+
+export interface GlobalSymbolSearchResult {
+  symbol: string
+  name: string
+  exchange: string | null
+  asset_type: string | null
+  exchange_display: string | null
+}
+
+export interface PortfolioPosition {
+  id: number | null
+  symbol: string
+  exchange: string
+  quantity: number
+  avg_price: number
+  current_price: number | null
+  pnl: number | null
+  pnl_percent: number | null
+  position_type: string
+  asset_class: string | null
+  notes: string | null
+  added_at: string | null
+  updated_at: string | null
+}
+
+export interface CompanyProfile {
+  symbol: string
+  company_name: string
+  exchange: string
+  industry: string | null
+  sector: string | null
+  country: string | null
+  market_cap: number | null
+  description: string | null
+  website: string | null
+  ceo: string | null
+  employees: number | null
+  ipo_date: string | null
+  currency: string | null
+  price: number | null
+  beta: number | null
+  volume_avg: number | null
+  last_dividend: number | null
+  image: string | null
+}
+
+export interface CongressionalTrade {
+  date_received: string | null
+  transaction_date: string | null
+  owner: string | null
+  asset_description: string | null
+  asset_type: string | null
+  amount: string | null
+  transaction_type: string | null
+  comment: string | null
+  link: string | null
+  first_name: string | null
+  last_name: string | null
+  office: string | null
+  district: string | null
+  ticker: string | null
+  cap_gains_over_200: boolean | null
+}
+
+export interface ScreenerFilters {
+  market_cap_min?: number
+  market_cap_max?: number
+  price_min?: number
+  price_max?: number
+  pe_min?: number
+  pe_max?: number
+  beta_min?: number
+  beta_max?: number
+  volume_min?: number
+  dividend_yield_min?: number
+  sector?: string
+  industry?: string
+  country?: string
+  exchange?: string
+  is_etf?: boolean
+  limit?: number
+}
+
+export const providerCommands = {
+  // API key management
+  saveProviderApiKey: (provider: string, apiKey: string) =>
+    tauriInvoke<void>('save_provider_api_key', { provider, api_key: apiKey }),
+
+  deleteProviderApiKey: (provider: string) =>
+    tauriInvoke<boolean>('delete_provider_api_key', { provider }),
+
+  getConfiguredProviders: () =>
+    tauriInvoke<string[]>('get_configured_providers'),
+
+  getProviderKeyStatus: (provider: string) =>
+    tauriInvoke<boolean>('get_provider_key_status', { provider }),
+
+  // Generic mode
+  getGenericMode: () => tauriInvoke<boolean>('get_generic_mode'),
+  setGenericMode: (enabled: boolean) => tauriInvoke<void>('set_generic_mode', { enabled }),
+
+  // Yahoo Finance (no API key needed)
+  getGenericQuote: (symbols: string[]) =>
+    tauriInvoke<GenericQuote[]>('get_generic_quote', { symbols }),
+
+  searchGlobalSymbols: (query: string, limit?: number) =>
+    tauriInvoke<GlobalSymbolSearchResult[]>('search_global_symbols', { query, limit }),
+
+  getYahooHistorical: (symbol: string, interval: string, range: string) =>
+    tauriInvoke<[string, number, number, number, number, number][]>('get_yahoo_historical', { symbol, interval, range }),
+
+  // FMP (requires API key)
+  getCompanyProfile: (symbol: string) =>
+    tauriInvoke<CompanyProfile | null>('get_company_profile', { symbol }),
+
+  getIncomeStatement: (symbol: string, period: string, limit?: number) =>
+    tauriInvoke<unknown[]>('get_income_statement', { symbol, period, limit }),
+
+  getBalanceSheet: (symbol: string, period: string, limit?: number) =>
+    tauriInvoke<unknown[]>('get_balance_sheet', { symbol, period, limit }),
+
+  getCashFlow: (symbol: string, period: string, limit?: number) =>
+    tauriInvoke<unknown[]>('get_cash_flow', { symbol, period, limit }),
+
+  getKeyMetrics: (symbol: string, period: string, limit?: number) =>
+    tauriInvoke<unknown[]>('get_key_metrics', { symbol, period, limit }),
+
+  getStockNews: (symbols?: string, limit?: number) =>
+    tauriInvoke<unknown[]>('get_stock_news', { symbols, limit }),
+
+  getAnalystEstimates: (symbol: string, limit?: number) =>
+    tauriInvoke<unknown[]>('get_analyst_estimates', { symbol, limit }),
+
+  getPriceTargets: (symbol: string) =>
+    tauriInvoke<unknown[]>('get_price_targets', { symbol }),
+
+  getEconomicCalendar: (fromDate: string, toDate: string) =>
+    tauriInvoke<unknown[]>('get_economic_calendar', { from_date: fromDate, to_date: toDate }),
+
+  screenStocks: (filters: ScreenerFilters) =>
+    tauriInvoke<unknown[]>('screen_stocks', { filters }),
+
+  // Congressional Trading (FMP)
+  getSenateTrades: (page?: number, limit?: number) =>
+    tauriInvoke<CongressionalTrade[]>('get_senate_trades', { page, limit }),
+
+  getSenateTradesByName: (name: string) =>
+    tauriInvoke<CongressionalTrade[]>('get_senate_trades_by_name', { name }),
+
+  getHouseTrades: (page?: number, limit?: number) =>
+    tauriInvoke<CongressionalTrade[]>('get_house_trades', { page, limit }),
+
+  getHouseTradesByName: (name: string) =>
+    tauriInvoke<CongressionalTrade[]>('get_house_trades_by_name', { name }),
+
+  // FRED (requires API key)
+  getFredSeries: (seriesId: string, observationStart?: string, observationEnd?: string) =>
+    tauriInvoke<unknown[]>('get_fred_series', { series_id: seriesId, observation_start: observationStart, observation_end: observationEnd }),
+
+  searchFredSeries: (query: string, limit?: number) =>
+    tauriInvoke<unknown[]>('search_fred_series', { query, limit }),
+
+  getFredReleases: () =>
+    tauriInvoke<[string, string, string][]>('get_fred_releases'),
+}
+
+// ============================================================================
+// Portfolio Commands (Generic / Research Mode)
+// ============================================================================
+
+export const portfolioCommands = {
+  addPosition: (params: {
+    symbol: string
+    exchange: string
+    quantity: number
+    avg_price: number
+    position_type?: string
+    asset_class?: string
+    notes?: string
+  }) => tauriInvoke<PortfolioPosition>('add_portfolio_position', params),
+
+  updatePosition: (params: {
+    id: number
+    quantity?: number
+    avg_price?: number
+    notes?: string
+  }) => tauriInvoke<PortfolioPosition>('update_portfolio_position', params),
+
+  deletePosition: (id: number) =>
+    tauriInvoke<boolean>('delete_portfolio_position', { id }),
+
+  getPositions: () =>
+    tauriInvoke<PortfolioPosition[]>('get_portfolio_positions'),
+
+  importCsv: (csvContent: string) =>
+    tauriInvoke<number>('import_portfolio_csv', { csv_content: csvContent }),
+
+  exportCsv: () =>
+    tauriInvoke<string>('export_portfolio_csv'),
+}
+
+// ============================================================================
 // Convenience exports
 // ============================================================================
 
@@ -732,6 +956,8 @@ export const tauri = {
   sandbox: sandboxCommands,
   historify: historifyCommands,
   websocket: websocketCommands,
+  providers: providerCommands,
+  portfolio: portfolioCommands,
 }
 
 export default tauri

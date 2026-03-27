@@ -72,9 +72,9 @@ interface Preferences {
 }
 
 function formatCurrency(value: number): string {
-  return new Intl.NumberFormat('en-IN', {
+  return new Intl.NumberFormat('en-US', {
     style: 'currency',
-    currency: 'INR',
+    currency: 'USD',
     minimumFractionDigits: 2,
   }).format(value)
 }
@@ -183,15 +183,10 @@ export default function Positions() {
 
   const fetchPositions = useCallback(
     async (showRefresh = false) => {
-      if (!apiKey) {
-        setIsLoading(false)
-        return
-      }
-
       if (showRefresh) setIsRefreshing(true)
 
       try {
-        const response = await tradingApi.getPositions(apiKey)
+        const response = await tradingApi.getPositions(apiKey ?? '')
         if (response.status === 'success' && response.data) {
           setPositions(response.data)
           setError(null)

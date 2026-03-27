@@ -85,7 +85,7 @@ interface LogEntry {
 const EXCHANGES = ['NSE', 'NFO', 'BSE', 'BFO', 'CDS', 'MCX']
 
 function formatPrice(price: number): string {
-  return new Intl.NumberFormat('en-IN', {
+  return new Intl.NumberFormat('en-US', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(price)
@@ -1016,7 +1016,7 @@ export default function WebSocketTest() {
                           LTP
                         </div>
                         <div className="text-3xl font-bold font-mono tracking-tight">
-                          {hasLtp ? `₹${formatPrice(symbolData.data.ltp!)}` : '---'}
+                          {hasLtp ? `$${formatPrice(symbolData.data.ltp!)}` : '---'}
                         </div>
                       </div>
                       {hasLtp && (

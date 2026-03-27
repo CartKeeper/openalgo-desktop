@@ -240,16 +240,27 @@ export const tradingApi = {
     _apiKey: string
   ): Promise<ApiResponse<{ orders: Order[]; statistics: OrderStats }>> => {
     try {
-      const orders = await orderCommands.getOrderBook()
+      const rawOrders = await orderCommands.getOrderBook()
+
+      // Map Rust field names to frontend-expected field names
+      const orders: Order[] = rawOrders.map((o) => ({
+        ...o,
+        action: (o.action || o.side || 'BUY') as 'BUY' | 'SELL',
+        orderid: o.orderid || o.order_id,
+        order_status: (o.order_status || o.status || 'open') as Order['order_status'],
+        pricetype: (o.pricetype || o.order_type || 'MARKET') as Order['pricetype'],
+        timestamp: o.timestamp || o.order_timestamp || '',
+      }))
 
       // Calculate statistics
       const stats: OrderStats = {
-        total_buy_orders: orders.filter((o) => o.side === 'BUY' || o.action === 'BUY').length,
-        total_sell_orders: orders.filter((o) => o.side === 'SELL' || o.action === 'SELL').length,
-        total_completed_orders: orders.filter((o) => o.status === 'complete').length,
-        total_open_orders: orders.filter((o) => o.status === 'pending' || o.status === 'open')
-          .length,
-        total_rejected_orders: orders.filter((o) => o.status === 'rejected').length,
+        total_buy_orders: orders.filter((o) => o.action === 'BUY').length,
+        total_sell_orders: orders.filter((o) => o.action === 'SELL').length,
+        total_completed_orders: orders.filter((o) => o.order_status === 'complete').length,
+        total_open_orders: orders.filter(
+          (o) => o.order_status === 'pending' || o.order_status === 'open'
+        ).length,
+        total_rejected_orders: orders.filter((o) => o.order_status === 'rejected').length,
       }
 
       return {

@@ -1,4 +1,5 @@
 import {
+  ArrowLeft,
   BarChart3,
   BookOpen,
   CheckCircle,
@@ -1116,6 +1117,9 @@ export default function Historify() {
       <div className="border-b border-border bg-card/50">
         <div className="px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3">
           <div className="flex items-center gap-3">
+            <Link to="/dashboard" className="text-muted-foreground hover:text-foreground">
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
             <Database className="h-6 w-6 text-primary" />
             <div>
               <h1 className="text-lg font-semibold">Historify</h1>

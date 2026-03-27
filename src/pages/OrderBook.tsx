@@ -9,6 +9,7 @@ import {
   X,
   XCircle,
 } from 'lucide-react'
+import { PlaceOrderDialog } from '@/components/trading/PlaceOrderDialog'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { type QuotesData, tradingApi } from '@/api/trading'
@@ -47,12 +48,13 @@ import {
 } from '@/components/ui/table'
 import { cn, sanitizeCSV } from '@/lib/utils'
 // Note: AlertDialog still used for Cancel All Orders
+import { useOrderEventRefresh } from '@/hooks/useOrderEventRefresh'
 import { useAuthStore } from '@/stores/authStore'
 import { onModeChange } from '@/stores/themeStore'
 import type { Order, OrderStats } from '@/types/trading'
 
 function formatCurrency(value: number): string {
-  return new Intl.NumberFormat('en-IN', {
+  return new Intl.NumberFormat('en-US', {
     minimumFractionDigits: 2,
   }).format(value)
 }
@@ -124,15 +126,10 @@ export default function OrderBook() {
 
   const fetchOrders = useCallback(
     async (showRefresh = false) => {
-      if (!apiKey) {
-        setIsLoading(false)
-        return
-      }
-
       if (showRefresh) setIsRefreshing(true)
 
       try {
-        const response = await tradingApi.getOrders(apiKey)
+        const response = await tradingApi.getOrders(apiKey ?? '')
         if (response.status === 'success' && response.data) {
           setOrders(response.data.orders || [])
           setStats(response.data.statistics)
@@ -163,6 +160,12 @@ export default function OrderBook() {
     })
     return () => unsubscribe()
   }, [fetchOrders])
+
+  // Refresh when orders are placed from other pages (Fundamentals, Copilot, Watchlist)
+  useOrderEventRefresh(() => fetchOrders(true), {
+    events: ['order_event'],
+    delay: 500,
+  })
 
   const handleCancelOrder = async (orderid: string) => {
     try {
@@ -317,6 +320,7 @@ export default function OrderBook() {
           <p className="text-muted-foreground">View and manage your orders</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          <PlaceOrderDialog onOrderPlaced={() => fetchOrders(true)} />
           {/* Settings Button */}
           <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
             <DialogTrigger asChild>

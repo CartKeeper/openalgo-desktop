@@ -34,7 +34,7 @@ interface FilterState {
 }
 
 function formatCurrency(value: number): string {
-  return new Intl.NumberFormat('en-IN', {
+  return new Intl.NumberFormat('en-US', {
     minimumFractionDigits: 2,
   }).format(value)
 }
@@ -96,15 +96,10 @@ export default function TradeBook() {
 
   const fetchTrades = useCallback(
     async (showRefresh = false) => {
-      if (!apiKey) {
-        setIsLoading(false)
-        return
-      }
-
       if (showRefresh) setIsRefreshing(true)
 
       try {
-        const response = await tradingApi.getTrades(apiKey)
+        const response = await tradingApi.getTrades(apiKey ?? '')
         if (response.status === 'success' && response.data) {
           setTrades(response.data)
           setError(null)

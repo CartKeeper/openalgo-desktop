@@ -1,6 +1,6 @@
-import { Info, Search } from 'lucide-react'
+import { ArrowLeft, Info, Search } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -239,10 +239,18 @@ export default function Token() {
   return (
     <div className="max-w-4xl mx-auto py-8 px-4">
       {/* Header */}
-      <div className="text-center mb-8">
-        <h1 className="text-4xl lg:text-5xl font-bold mb-4">Symbol Search</h1>
-        <p className="text-lg text-muted-foreground">
-          Search for symbols across different exchanges to get detailed information
+      <div className="mb-8">
+        <div className="flex items-center gap-2 mb-4">
+          <Link to="/dashboard" className="text-muted-foreground hover:text-foreground">
+            <ArrowLeft className="h-4 w-4" />
+          </Link>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <Search className="h-6 w-6" />
+            Symbol Search
+          </h1>
+        </div>
+        <p className="text-muted-foreground">
+          Search for symbols across different exchanges
         </p>
       </div>
 

@@ -20,6 +20,7 @@ const NotFound = lazy(() => import('@/pages/NotFound'))
 // Broker auth
 const BrokerSelect = lazy(() => import('@/pages/BrokerSelect'))
 const BrokerTOTP = lazy(() => import('@/pages/BrokerTOTP'))
+const GenericSetup = lazy(() => import('@/pages/GenericSetup'))
 
 // Main pages
 const Dashboard = lazy(() => import('@/pages/Dashboard'))
@@ -81,6 +82,32 @@ const TelegramConfig = lazy(() => import('@/pages/telegram/TelegramConfig'))
 const TelegramUsers = lazy(() => import('@/pages/telegram/TelegramUsers'))
 const TelegramAnalytics = lazy(() => import('@/pages/telegram/TelegramAnalytics'))
 
+// Portfolio pages (Generic mode)
+const PortfolioManager = lazy(() => import('@/pages/portfolio/PortfolioManager'))
+
+// Client management pages
+const ClientsIndex = lazy(() => import('@/pages/clients/ClientsIndex'))
+const ClientDetail = lazy(() => import('@/pages/clients/ClientDetail'))
+
+// Research & Analysis pages
+const BriefingPage = lazy(() => import('@/pages/briefing/BriefingPage'))
+const CopilotPage = lazy(() => import('@/pages/copilot/CopilotPage'))
+const FundamentalsPage = lazy(() => import('@/pages/fundamentals/FundamentalsPage'))
+const NewsPage = lazy(() => import('@/pages/news/NewsPage'))
+const CalendarPage = lazy(() => import('@/pages/calendar/CalendarPage'))
+const ScreenerPage = lazy(() => import('@/pages/screener/ScreenerPage'))
+const AnalystPage = lazy(() => import('@/pages/analyst/AnalystPage'))
+const OptionsPage = lazy(() => import('@/pages/options/OptionsPage'))
+const QuantPage = lazy(() => import('@/pages/quant/QuantPage'))
+const CongressPage = lazy(() => import('@/pages/congress/CongressPage'))
+
+// Alert pages
+const AlertCenter = lazy(() => import('@/pages/alerts/AlertCenter'))
+
+// Reports pages
+const ReportsLibrary = lazy(() => import('@/pages/reports/ReportsLibrary'))
+const ViewReport = lazy(() => import('@/pages/reports/ViewReport'))
+
 // Logs & Monitoring pages
 const LogsIndex = lazy(() => import('@/pages/LogsIndex'))
 const LiveLogs = lazy(() => import('@/pages/Logs'))
@@ -109,6 +136,8 @@ function App() {
               <Route path="/broker/:broker/totp" element={<BrokerTOTP />} />
               {/* Dynamic broker TOTP routes for all supported brokers */}
               <Route path="/:broker/auth" element={<BrokerTOTP />} />
+              {/* Generic mode setup */}
+              <Route path="/generic-setup" element={<GenericSetup />} />
 
               {/* Protected routes - requires broker auth */}
               <Route element={<Layout />}>
@@ -170,6 +199,30 @@ function App() {
                 <Route path="/logs/security" element={<SecurityDashboard />} />
                 <Route path="/logs/traffic" element={<TrafficDashboard />} />
                 <Route path="/logs/latency" element={<LatencyDashboard />} />
+                {/* Portfolio Manager (Generic mode) */}
+                <Route path="/portfolio" element={<PortfolioManager />} />
+                {/* Client Management */}
+                <Route path="/clients" element={<ClientsIndex />} />
+                <Route path="/clients/:id" element={<ClientDetail />} />
+                {/* Data Provider API Keys (accessible when logged into any broker) */}
+                <Route path="/providers" element={<GenericSetup />} />
+                {/* Research & Analysis */}
+                <Route path="/briefing" element={<BriefingPage />} />
+                <Route path="/copilot" element={<CopilotPage />} />
+                <Route path="/fundamentals" element={<FundamentalsPage />} />
+                <Route path="/fundamentals/:symbol" element={<FundamentalsPage />} />
+                <Route path="/news" element={<NewsPage />} />
+                <Route path="/calendar" element={<CalendarPage />} />
+                <Route path="/screener" element={<ScreenerPage />} />
+                <Route path="/analyst" element={<AnalystPage />} />
+                <Route path="/analyst/:symbol" element={<AnalystPage />} />
+                <Route path="/options" element={<OptionsPage />} />
+                <Route path="/quant" element={<QuantPage />} />
+                <Route path="/congress" element={<CongressPage />} />
+                <Route path="/reports" element={<ReportsLibrary />} />
+                <Route path="/reports/:id" element={<ViewReport />} />
+                {/* Alerts */}
+                <Route path="/alerts" element={<AlertCenter />} />
                 {/* Phase 7: Settings & Action Center */}
                 <Route path="/profile" element={<Profile />} />
                 <Route path="/action-center" element={<ActionCenter />} />

@@ -23,12 +23,14 @@ interface AuthStore {
   apiKey: string | null // Kept for compatibility with pages
   isAuthenticated: boolean
   brokerConnected: boolean
+  genericMode: boolean
   isLoading: boolean
   error: string | null
 
   // Actions
   setUser: (user: User) => void
   setApiKey: (apiKey: string | null) => void
+  setGenericMode: (enabled: boolean) => void
   login: (username: string, password: string) => Promise<boolean>
   logout: () => Promise<void>
   brokerLogin: (brokerId: string, credentials: BrokerCredentials) => Promise<boolean>
@@ -45,6 +47,7 @@ export const useAuthStore = create<AuthStore>()(
       apiKey: null,
       isAuthenticated: false,
       brokerConnected: false,
+      genericMode: false,
       isLoading: false,
       error: null,
 
@@ -56,6 +59,8 @@ export const useAuthStore = create<AuthStore>()(
         }),
 
       setApiKey: (apiKey) => set({ apiKey }),
+
+      setGenericMode: (enabled) => set({ genericMode: enabled }),
 
       login: async (username, password) => {
         set({ isLoading: true, error: null })
@@ -104,6 +109,7 @@ export const useAuthStore = create<AuthStore>()(
             apiKey: null,
             isAuthenticated: false,
             brokerConnected: false,
+            genericMode: false,
             isLoading: false,
             error: null,
           })
@@ -221,6 +227,7 @@ export const useAuthStore = create<AuthStore>()(
         user: state.user,
         isAuthenticated: state.isAuthenticated,
         brokerConnected: state.brokerConnected,
+        genericMode: state.genericMode,
       }),
     }
   )

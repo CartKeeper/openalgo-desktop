@@ -1,4 +1,4 @@
-import { BarChart3, RotateCcw, Save, Settings } from 'lucide-react'
+import { ArrowLeft, BarChart3, RotateCcw, Save, Settings } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -349,10 +349,15 @@ export default function Sandbox() {
       {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
         <div>
-          <h1 className="text-3xl font-bold flex items-center gap-2">
-            <Settings className="h-8 w-8" />
-            Sandbox Configuration
-          </h1>
+          <div className="flex items-center gap-2 mb-1">
+            <Link to="/dashboard" className="text-muted-foreground hover:text-foreground">
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <h1 className="text-3xl font-bold flex items-center gap-2">
+              <Settings className="h-8 w-8" />
+              Sandbox Configuration
+            </h1>
+          </div>
           <p className="text-muted-foreground mt-1">Configure paper trading environment settings</p>
         </div>
         <div className="flex gap-3">

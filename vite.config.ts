@@ -19,7 +19,7 @@ export default defineConfig({
   // prevent vite from obscuring rust errors
   clearScreen: false,
   server: {
-    port: 5173,
+    port: 4379,
     strictPort: true,
     watch: {
       // Ignore rust files to prevent unnecessary reloads

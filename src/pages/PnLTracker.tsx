@@ -1,5 +1,6 @@
-import { AlertTriangle, Camera, RefreshCw, TrendingDown, TrendingUp } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Camera, RefreshCw, TrendingDown, TrendingUp } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -41,9 +42,9 @@ interface PnLData {
 }
 
 function formatCurrency(value: number): string {
-  return new Intl.NumberFormat('en-IN', {
+  return new Intl.NumberFormat('en-US', {
     style: 'currency',
-    currency: 'INR',
+    currency: 'USD',
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(value)
@@ -347,7 +348,12 @@ export default function PnLTracker() {
       {/* Header */}
       <div className="flex justify-between items-center mb-6">
         <div>
-          <h1 className="text-3xl font-bold">PnL Tracker</h1>
+          <div className="flex items-center gap-2 mb-1">
+            <Link to="/dashboard" className="text-muted-foreground hover:text-foreground">
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <h1 className="text-3xl font-bold">PnL Tracker</h1>
+          </div>
           <p className="text-muted-foreground">Monitor your intraday profit and loss</p>
         </div>
         <div className="flex gap-2">

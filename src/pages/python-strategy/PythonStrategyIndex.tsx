@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  ArrowLeft,
   Calendar,
   Clock,
   Download,
@@ -275,7 +276,12 @@ export default function PythonStrategyIndex() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Python Strategies</h1>
+          <div className="flex items-center gap-2 mb-1">
+            <Link to="/dashboard" className="text-muted-foreground hover:text-foreground">
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <h1 className="text-2xl font-bold tracking-tight">Python Strategies</h1>
+          </div>
           <p className="text-muted-foreground">Manage and run your Python trading scripts</p>
         </div>
         <div className="flex gap-2">
