@@ -228,6 +228,12 @@ pub struct BrokerCredentialsResponse {
 /// All supported brokers (hardcoded list)
 fn get_all_brokers() -> Vec<(&'static str, &'static str, &'static str)> {
     vec![
+        // US Brokers
+        ("alpaca", "Alpaca Markets", "api_key"),
+        ("schwab", "Charles Schwab", "oauth"),
+        ("ibkr", "Interactive Brokers", "api_key"),
+        ("tradier", "Tradier", "api_key"),
+        // Indian Brokers
         ("angel", "Angel One", "totp"),
         ("zerodha", "Zerodha", "oauth"),
         ("fyers", "Fyers", "oauth"),

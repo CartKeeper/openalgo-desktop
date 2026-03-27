@@ -52,6 +52,13 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "034_broker_credentials", CREATE_BROKER_CREDENTIALS_TABLE)?;
     run_migration(conn, "035_rate_limit_settings", ADD_RATE_LIMIT_SETTINGS)?;
     run_migration(conn, "036_enable_webhook_default", ENABLE_WEBHOOK_BY_DEFAULT)?;
+    run_migration(conn, "037_provider_api_keys", CREATE_PROVIDER_API_KEYS_TABLE)?;
+    run_migration(conn, "038_manual_portfolio", CREATE_MANUAL_PORTFOLIO_TABLES)?;
+    run_migration(conn, "039_research_reports", CREATE_RESEARCH_REPORTS_TABLES)?;
+    run_migration(conn, "040_user_watchlist", CREATE_USER_WATCHLIST_TABLE)?;
+    run_migration(conn, "041_alert_system", CREATE_ALERT_SYSTEM_TABLES)?;
+    run_migration(conn, "042_clients", CREATE_CLIENTS_TABLE)?;
+    run_migration(conn, "043_client_trades", CREATE_CLIENT_TRADES_TABLES)?;
 
     tracing::info!("Database migrations completed");
     Ok(())
@@ -590,4 +597,169 @@ const ENABLE_WEBHOOK_BY_DEFAULT: &str = r#"
 -- Enable webhook server by default so OAuth callbacks work
 -- This is required for Fyers, Zerodha, and other OAuth-based brokers
 UPDATE settings SET webhook_enabled = 1 WHERE id = 1;
+"#;
+
+/// Migration to create provider_api_keys table for encrypted FMP/FRED API key storage
+const CREATE_PROVIDER_API_KEYS_TABLE: &str = r#"
+CREATE TABLE provider_api_keys (
+    provider TEXT PRIMARY KEY,
+    api_key_encrypted TEXT NOT NULL,
+    api_key_nonce TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"#;
+
+/// Migration to create manual portfolio tables for Generic mode
+const CREATE_MANUAL_PORTFOLIO_TABLES: &str = r#"
+CREATE TABLE portfolio_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    exchange TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    avg_price REAL NOT NULL,
+    position_type TEXT NOT NULL DEFAULT 'long',
+    asset_class TEXT,
+    notes TEXT,
+    added_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(exchange, symbol, position_type)
+);
+CREATE INDEX IF NOT EXISTS idx_portfolio_symbol ON portfolio_positions(symbol);
+CREATE INDEX IF NOT EXISTS idx_portfolio_exchange ON portfolio_positions(exchange);
+
+-- Add generic_mode flag to settings
+ALTER TABLE settings ADD COLUMN generic_mode INTEGER NOT NULL DEFAULT 0;
+"#;
+
+const CREATE_RESEARCH_REPORTS_TABLES: &str = r#"
+CREATE TABLE research_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    summary TEXT,
+    tags TEXT,
+    messages_json TEXT NOT NULL,
+    tool_calls_json TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_reports_created ON research_reports(created_at);
+
+CREATE TABLE research_report_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id INTEGER NOT NULL REFERENCES research_reports(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_report_notes_report ON research_report_notes(report_id);
+"#;
+
+/// Migration to create alert system tables
+const CREATE_ALERT_SYSTEM_TABLES: &str = r#"
+-- Alert configurations (user-created rules)
+CREATE TABLE alert_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_type TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    threshold_value REAL,
+    threshold_period_minutes INTEGER,
+    cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+    last_triggered_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_alert_configs_symbol ON alert_configs(symbol);
+CREATE INDEX IF NOT EXISTS idx_alert_configs_type ON alert_configs(alert_type);
+CREATE INDEX IF NOT EXISTS idx_alert_configs_enabled ON alert_configs(enabled);
+
+-- Alert history (log of all triggered alerts)
+CREATE TABLE alert_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_config_id INTEGER REFERENCES alert_configs(id) ON DELETE SET NULL,
+    alert_type TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    metadata_json TEXT,
+    acknowledged INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_alert_history_created ON alert_history(created_at);
+CREATE INDEX IF NOT EXISTS idx_alert_history_ack ON alert_history(acknowledged);
+
+-- Global alert settings (singleton row)
+CREATE TABLE alert_global_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    alerts_enabled INTEGER NOT NULL DEFAULT 1,
+    sound_enabled INTEGER NOT NULL DEFAULT 1,
+    native_notifications_enabled INTEGER NOT NULL DEFAULT 1,
+    movement_default_threshold REAL NOT NULL DEFAULT 3.0,
+    movement_check_interval_seconds INTEGER NOT NULL DEFAULT 120,
+    news_check_interval_seconds INTEGER NOT NULL DEFAULT 300,
+    rising_star_enabled INTEGER NOT NULL DEFAULT 1,
+    rising_star_interval_seconds INTEGER NOT NULL DEFAULT 3600,
+    rising_star_min_change_pct REAL NOT NULL DEFAULT 5.0,
+    rising_star_min_volume_ratio REAL NOT NULL DEFAULT 2.0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT OR IGNORE INTO alert_global_settings (id) VALUES (1);
+"#;
+
+/// Migration to create user watchlist table
+const CREATE_USER_WATCHLIST_TABLE: &str = r#"
+CREATE TABLE user_watchlist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL UNIQUE,
+    added_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_watchlist_symbol ON user_watchlist(symbol);
+"#;
+
+/// Migration to create clients table
+const CREATE_CLIENTS_TABLE: &str = r#"
+CREATE TABLE clients (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    email TEXT,
+    phone TEXT,
+    broker TEXT,
+    account_id TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_clients_name ON clients(name);
+"#;
+
+/// Migration to create client trades and import batches tables
+const CREATE_CLIENT_TRADES_TABLES: &str = r#"
+CREATE TABLE import_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL,
+    row_count INTEGER NOT NULL DEFAULT 0,
+    imported_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_import_batches_client ON import_batches(client_id);
+
+CREATE TABLE client_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    import_batch_id INTEGER REFERENCES import_batches(id) ON DELETE SET NULL,
+    symbol TEXT NOT NULL,
+    exchange TEXT NOT NULL DEFAULT 'GENERIC',
+    trade_date TEXT NOT NULL,
+    trade_type TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    price REAL NOT NULL,
+    fees REAL NOT NULL DEFAULT 0.0,
+    order_id TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_client_trades_client ON client_trades(client_id);
+CREATE INDEX IF NOT EXISTS idx_client_trades_symbol ON client_trades(symbol);
+CREATE INDEX IF NOT EXISTS idx_client_trades_date ON client_trades(trade_date);
 "#;

@@ -15,6 +15,16 @@ mod market;
 mod analyzer_logs;
 mod latency_logs;
 mod traffic_logs;
+mod provider_keys;
+mod portfolio;
+mod reports;
+mod watchlist;
+pub mod alerts;
+mod clients;
+
+pub use reports::{ResearchReport, ResearchReportSummary, ReportNote};
+pub use watchlist::WatchlistItem;
+pub use alerts::{AlertConfig, AlertHistoryEntry, AlertGlobalSettings};
 
 use crate::error::Result;
 use crate::security::SecurityManager;
@@ -825,6 +835,110 @@ impl SqliteDb {
         Ok(traffic_logs::get_suspicious_api_users(&conn, min_attempts)?)
     }
 
+    // ========== Provider API Key Methods ==========
+
+    /// Save an encrypted provider API key
+    pub fn save_provider_key(
+        &self,
+        provider: &str,
+        api_key: &str,
+        security: &SecurityManager,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        provider_keys::save_provider_key(&conn, provider, api_key, security)
+    }
+
+    /// Get a decrypted provider API key
+    pub fn get_provider_key(
+        &self,
+        provider: &str,
+        security: &SecurityManager,
+    ) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        provider_keys::get_provider_key(&conn, provider, security)
+    }
+
+    /// Delete a provider API key
+    pub fn delete_provider_key(&self, provider: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        provider_keys::delete_provider_key(&conn, provider)
+    }
+
+    /// Get list of configured provider names
+    pub fn get_configured_provider_names(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock();
+        provider_keys::get_configured_providers(&conn)
+    }
+
+    // ========== Manual Portfolio Methods ==========
+
+    /// Add a portfolio position
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_portfolio_position(
+        &self,
+        symbol: &str,
+        exchange: &str,
+        quantity: f64,
+        avg_price: f64,
+        position_type: &str,
+        asset_class: Option<&str>,
+        notes: Option<&str>,
+    ) -> Result<crate::providers::types::PortfolioPosition> {
+        let conn = self.conn.lock();
+        portfolio::add_position(&conn, symbol, exchange, quantity, avg_price, position_type, asset_class, notes)
+    }
+
+    /// Update a portfolio position
+    pub fn update_portfolio_position(
+        &self,
+        id: i64,
+        quantity: Option<f64>,
+        avg_price: Option<f64>,
+        notes: Option<&str>,
+    ) -> Result<crate::providers::types::PortfolioPosition> {
+        let conn = self.conn.lock();
+        portfolio::update_position(&conn, id, quantity, avg_price, notes)
+    }
+
+    /// Delete a portfolio position
+    pub fn delete_portfolio_position(&self, id: i64) -> Result<bool> {
+        let conn = self.conn.lock();
+        portfolio::delete_position(&conn, id)
+    }
+
+    /// Get all portfolio positions
+    pub fn get_portfolio_positions(&self) -> Result<Vec<crate::providers::types::PortfolioPosition>> {
+        let conn = self.conn.lock();
+        portfolio::get_positions(&conn)
+    }
+
+    /// Import portfolio positions from CSV data
+    pub fn import_portfolio_positions(
+        &self,
+        positions: &[crate::providers::types::PortfolioPosition],
+    ) -> Result<usize> {
+        let conn = self.conn.lock();
+        portfolio::import_positions(&conn, positions)
+    }
+
+    /// Export portfolio positions
+    pub fn export_portfolio_positions(&self) -> Result<Vec<crate::providers::types::PortfolioPosition>> {
+        let conn = self.conn.lock();
+        portfolio::export_positions(&conn)
+    }
+
+    /// Get generic mode flag
+    pub fn get_generic_mode(&self) -> Result<bool> {
+        let conn = self.conn.lock();
+        portfolio::get_generic_mode(&conn)
+    }
+
+    /// Set generic mode flag
+    pub fn set_generic_mode(&self, enabled: bool) -> Result<()> {
+        let conn = self.conn.lock();
+        portfolio::set_generic_mode(&conn, enabled)
+    }
+
     // ========== Configured Brokers Methods (Keychain Optimization) ==========
 
     /// Mark a broker as configured (called when credentials are saved)
@@ -933,5 +1047,271 @@ impl SqliteDb {
             [broker_id],
         )?;
         Ok(())
+    }
+
+    // ========== Research Reports Methods ==========
+
+    pub fn save_research_report(
+        &self,
+        title: &str,
+        summary: Option<&str>,
+        tags: Option<&str>,
+        messages_json: &str,
+        tool_calls_json: Option<&str>,
+    ) -> Result<ResearchReport> {
+        let conn = self.conn.lock();
+        reports::save_report(&conn, title, summary, tags, messages_json, tool_calls_json)
+    }
+
+    pub fn get_research_reports(&self) -> Result<Vec<ResearchReportSummary>> {
+        let conn = self.conn.lock();
+        reports::get_reports(&conn)
+    }
+
+    pub fn get_research_report(&self, id: i64) -> Result<ResearchReport> {
+        let conn = self.conn.lock();
+        reports::get_report(&conn, id)
+    }
+
+    pub fn delete_research_report(&self, id: i64) -> Result<bool> {
+        let conn = self.conn.lock();
+        reports::delete_report(&conn, id)
+    }
+
+    pub fn update_research_report_title(&self, id: i64, title: &str) -> Result<ResearchReport> {
+        let conn = self.conn.lock();
+        reports::update_report_title(&conn, id, title)
+    }
+
+    pub fn add_report_note(&self, report_id: i64, content: &str) -> Result<ReportNote> {
+        let conn = self.conn.lock();
+        reports::add_note(&conn, report_id, content)
+    }
+
+    pub fn get_report_notes(&self, report_id: i64) -> Result<Vec<ReportNote>> {
+        let conn = self.conn.lock();
+        reports::get_notes(&conn, report_id)
+    }
+
+    pub fn update_report_note(&self, note_id: i64, content: &str) -> Result<ReportNote> {
+        let conn = self.conn.lock();
+        reports::update_note(&conn, note_id, content)
+    }
+
+    pub fn delete_report_note(&self, note_id: i64) -> Result<bool> {
+        let conn = self.conn.lock();
+        reports::delete_note(&conn, note_id)
+    }
+
+    // ========== Watchlist Methods ==========
+
+    pub fn add_watchlist_symbol(&self, symbol: &str) -> Result<WatchlistItem> {
+        let conn = self.conn.lock();
+        watchlist::add_symbol(&conn, symbol)
+    }
+
+    pub fn remove_watchlist_symbol(&self, symbol: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        watchlist::remove_symbol(&conn, symbol)
+    }
+
+    pub fn get_watchlist_symbols(&self) -> Result<Vec<WatchlistItem>> {
+        let conn = self.conn.lock();
+        watchlist::get_symbols(&conn)
+    }
+
+    // ========== Alert Methods ==========
+
+    pub fn create_alert(&self, alert: &AlertConfig) -> Result<AlertConfig> {
+        let conn = self.conn.lock();
+        alerts::create_alert(&conn, alert)
+    }
+
+    pub fn get_alerts(&self) -> Result<Vec<AlertConfig>> {
+        let conn = self.conn.lock();
+        alerts::get_alerts(&conn)
+    }
+
+    pub fn get_enabled_alerts(&self) -> Result<Vec<AlertConfig>> {
+        let conn = self.conn.lock();
+        alerts::get_enabled_alerts(&conn)
+    }
+
+    pub fn update_alert(&self, id: i64, alert: &AlertConfig) -> Result<AlertConfig> {
+        let conn = self.conn.lock();
+        alerts::update_alert(&conn, id, alert)
+    }
+
+    pub fn delete_alert(&self, id: i64) -> Result<bool> {
+        let conn = self.conn.lock();
+        alerts::delete_alert(&conn, id)
+    }
+
+    pub fn toggle_alert(&self, id: i64, enabled: bool) -> Result<()> {
+        let conn = self.conn.lock();
+        alerts::toggle_alert(&conn, id, enabled)
+    }
+
+    pub fn log_alert(
+        &self,
+        config_id: Option<i64>,
+        alert_type: &str,
+        symbol: &str,
+        title: &str,
+        message: &str,
+        metadata_json: Option<&str>,
+    ) -> Result<i64> {
+        let conn = self.conn.lock();
+        alerts::log_alert(&conn, config_id, alert_type, symbol, title, message, metadata_json)
+    }
+
+    pub fn get_alert_history(&self, limit: i64, offset: i64) -> Result<Vec<AlertHistoryEntry>> {
+        let conn = self.conn.lock();
+        alerts::get_alert_history(&conn, limit, offset)
+    }
+
+    pub fn acknowledge_alert(&self, id: i64) -> Result<bool> {
+        let conn = self.conn.lock();
+        alerts::acknowledge_alert(&conn, id)
+    }
+
+    pub fn acknowledge_all_alerts(&self) -> Result<i64> {
+        let conn = self.conn.lock();
+        alerts::acknowledge_all_alerts(&conn)
+    }
+
+    pub fn get_unacknowledged_count(&self) -> Result<i64> {
+        let conn = self.conn.lock();
+        alerts::get_unacknowledged_count(&conn)
+    }
+
+    pub fn get_alert_settings(&self) -> Result<AlertGlobalSettings> {
+        let conn = self.conn.lock();
+        alerts::get_global_settings(&conn)
+    }
+
+    pub fn update_alert_settings(&self, settings: &AlertGlobalSettings) -> Result<AlertGlobalSettings> {
+        let conn = self.conn.lock();
+        alerts::update_global_settings(&conn, settings)
+    }
+
+    pub fn update_alert_last_triggered(&self, alert_id: i64) -> Result<()> {
+        let conn = self.conn.lock();
+        alerts::update_last_triggered(&conn, alert_id)
+    }
+
+    // ========== Client Management Methods ==========
+
+    /// Add a new client
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_client(
+        &self,
+        name: &str,
+        email: Option<&str>,
+        phone: Option<&str>,
+        broker: Option<&str>,
+        account_id: Option<&str>,
+        notes: Option<&str>,
+    ) -> Result<crate::providers::types::Client> {
+        let conn = self.conn.lock();
+        clients::add_client(&conn, name, email, phone, broker, account_id, notes)
+    }
+
+    /// Get all clients
+    pub fn get_clients(&self) -> Result<Vec<crate::providers::types::Client>> {
+        let conn = self.conn.lock();
+        clients::get_clients(&conn)
+    }
+
+    /// Get a single client by ID
+    pub fn get_client_by_id(&self, id: i64) -> Result<crate::providers::types::Client> {
+        let conn = self.conn.lock();
+        clients::get_client_by_id(&conn, id)
+    }
+
+    /// Update a client
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_client(
+        &self,
+        id: i64,
+        name: Option<&str>,
+        email: Option<&str>,
+        phone: Option<&str>,
+        broker: Option<&str>,
+        account_id: Option<&str>,
+        notes: Option<&str>,
+    ) -> Result<crate::providers::types::Client> {
+        let conn = self.conn.lock();
+        clients::update_client(&conn, id, name, email, phone, broker, account_id, notes)
+    }
+
+    /// Delete a client
+    pub fn delete_client(&self, id: i64) -> Result<bool> {
+        let conn = self.conn.lock();
+        clients::delete_client(&conn, id)
+    }
+
+    /// Add a trade for a client
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_client_trade(
+        &self,
+        client_id: i64,
+        symbol: &str,
+        exchange: &str,
+        trade_date: &str,
+        trade_type: &str,
+        quantity: f64,
+        price: f64,
+        fees: f64,
+        order_id: Option<&str>,
+        notes: Option<&str>,
+        import_batch_id: Option<i64>,
+    ) -> Result<crate::providers::types::ClientTrade> {
+        let conn = self.conn.lock();
+        clients::add_trade(
+            &conn, client_id, symbol, exchange, trade_date, trade_type, quantity, price, fees,
+            order_id, notes, import_batch_id,
+        )
+    }
+
+    /// Get all trades for a client
+    pub fn get_client_trades(&self, client_id: i64) -> Result<Vec<crate::providers::types::ClientTrade>> {
+        let conn = self.conn.lock();
+        clients::get_trades(&conn, client_id)
+    }
+
+    /// Delete a single trade
+    pub fn delete_client_trade(&self, id: i64) -> Result<bool> {
+        let conn = self.conn.lock();
+        clients::delete_trade(&conn, id)
+    }
+
+    /// Create an import batch
+    pub fn add_import_batch(
+        &self,
+        client_id: i64,
+        filename: &str,
+        row_count: i64,
+    ) -> Result<crate::providers::types::ImportBatch> {
+        let conn = self.conn.lock();
+        clients::add_import_batch(&conn, client_id, filename, row_count)
+    }
+
+    /// Get import batches for a client
+    pub fn get_import_batches(&self, client_id: i64) -> Result<Vec<crate::providers::types::ImportBatch>> {
+        let conn = self.conn.lock();
+        clients::get_import_batches(&conn, client_id)
+    }
+
+    /// Delete an import batch and its trades
+    pub fn delete_import_batch(&self, batch_id: i64) -> Result<usize> {
+        let conn = self.conn.lock();
+        clients::delete_import_batch(&conn, batch_id)
+    }
+
+    /// Get computed positions for a client
+    pub fn get_client_positions(&self, client_id: i64) -> Result<Vec<crate::providers::types::ClientPosition>> {
+        let conn = self.conn.lock();
+        clients::get_client_positions(&conn, client_id)
     }
 }

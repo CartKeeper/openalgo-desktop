@@ -6,6 +6,7 @@
 pub mod commands;
 pub mod db;
 pub mod brokers;
+pub mod providers;
 pub mod security;
 pub mod websocket;
 pub mod webhook;
@@ -14,7 +15,7 @@ pub mod error;
 pub mod state;
 pub mod services;
 
-use scheduler::AutoLogoutScheduler;
+use scheduler::{AutoLogoutScheduler, AlertMonitor};
 use state::AppState;
 use webhook::WebhookServer;
 use tauri::Manager;
@@ -69,8 +70,13 @@ pub fn run() {
                 }
             }
 
+            // Start alert monitor background task
+            let alert_monitor = AlertMonitor::new(app.handle().clone());
+            alert_monitor.start();
+
             tracing::info!("Application state initialized");
             tracing::info!("Auto-logout scheduler started");
+            tracing::info!("Alert monitor started");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -182,6 +188,124 @@ pub fn run() {
             commands::websocket::websocket_subscribe,
             commands::websocket::websocket_unsubscribe,
             commands::websocket::websocket_register_symbol,
+            // Provider commands
+            commands::providers::save_provider_api_key,
+            commands::providers::delete_provider_api_key,
+            commands::providers::get_configured_providers,
+            commands::providers::get_provider_key_status,
+            commands::providers::get_generic_mode,
+            commands::providers::set_generic_mode,
+            commands::providers::get_generic_quote,
+            commands::providers::search_global_symbols,
+            commands::providers::get_yahoo_historical,
+            commands::providers::get_company_profile,
+            commands::providers::get_income_statement,
+            commands::providers::get_balance_sheet,
+            commands::providers::get_cash_flow,
+            commands::providers::get_key_metrics,
+            commands::providers::get_stock_news,
+            commands::providers::get_analyst_estimates,
+            commands::providers::get_price_targets,
+            commands::providers::get_economic_calendar,
+            commands::providers::screen_stocks,
+            commands::providers::get_senate_trades,
+            commands::providers::get_senate_trades_by_name,
+            commands::providers::get_house_trades,
+            commands::providers::get_house_trades_by_name,
+            commands::providers::get_fred_series,
+            commands::providers::search_fred_series,
+            commands::providers::get_fred_releases,
+            // New FMP API commands
+            commands::providers::get_earnings_call_transcript,
+            commands::providers::get_insider_trading,
+            commands::providers::get_insider_trading_latest,
+            commands::providers::get_institutional_holders,
+            commands::providers::get_earnings_calendar,
+            commands::providers::get_ipo_calendar,
+            commands::providers::get_dividend_calendar,
+            commands::providers::get_stock_split_calendar,
+            commands::providers::get_esg_scores,
+            commands::providers::get_esg_ratings,
+            commands::providers::get_etf_info,
+            commands::providers::get_etf_holdings,
+            commands::providers::get_mutual_fund_holders,
+            commands::providers::get_dcf,
+            commands::providers::get_historical_dcf,
+            commands::providers::get_sector_performance,
+            commands::providers::get_market_gainers,
+            commands::providers::get_market_losers,
+            commands::providers::get_market_most_active,
+            commands::providers::get_commodity_quotes,
+            commands::providers::get_forex_quotes,
+            commands::providers::get_crypto_quotes,
+            commands::providers::get_sp500_constituents,
+            commands::providers::get_nasdaq_constituents,
+            commands::providers::get_dowjones_constituents,
+            commands::providers::search_fmp_symbols,
+            commands::providers::get_stock_list,
+            commands::providers::get_batch_quote,
+            commands::providers::get_fmp_quote,
+            // Portfolio commands
+            commands::portfolio::add_portfolio_position,
+            commands::portfolio::update_portfolio_position,
+            commands::portfolio::delete_portfolio_position,
+            commands::portfolio::get_portfolio_positions,
+            commands::portfolio::import_portfolio_csv,
+            commands::portfolio::export_portfolio_csv,
+            // Quant commands
+            commands::quant::get_symbol_metrics,
+            commands::quant::get_correlation_matrix,
+            commands::quant::get_drawdown_chart,
+            // Copilot commands
+            commands::copilot::copilot_send_message,
+            commands::copilot::copilot_check_configured,
+            commands::copilot::generate_briefing,
+            // Greeks commands
+            commands::greeks::compute_greeks,
+            commands::greeks::compute_greeks_batch,
+            commands::greeks::compute_iv_surface,
+            // Indicators commands
+            commands::indicators::compute_indicators,
+            // Research Reports commands
+            commands::reports::save_research_report,
+            commands::reports::get_research_reports,
+            commands::reports::get_research_report,
+            commands::reports::delete_research_report,
+            commands::reports::update_research_report_title,
+            commands::reports::add_report_note,
+            commands::reports::get_report_notes,
+            commands::reports::update_report_note,
+            commands::reports::delete_report_note,
+            // Watchlist commands
+            commands::watchlist::add_watchlist_symbol,
+            commands::watchlist::remove_watchlist_symbol,
+            commands::watchlist::get_watchlist_symbols,
+            // Alert commands
+            commands::alerts::create_alert,
+            commands::alerts::get_alerts,
+            commands::alerts::update_alert,
+            commands::alerts::delete_alert,
+            commands::alerts::toggle_alert,
+            commands::alerts::get_alert_history,
+            commands::alerts::acknowledge_alert,
+            commands::alerts::acknowledge_all_alerts,
+            commands::alerts::get_unacknowledged_count,
+            commands::alerts::get_alert_settings,
+            commands::alerts::update_alert_settings,
+            // Client management commands
+            commands::clients::create_client,
+            commands::clients::get_clients,
+            commands::clients::get_client,
+            commands::clients::update_client,
+            commands::clients::delete_client,
+            commands::clients::get_client_trades,
+            commands::clients::add_client_trade,
+            commands::clients::delete_client_trade,
+            commands::clients::import_client_trades_csv,
+            commands::clients::get_import_batches,
+            commands::clients::delete_import_batch,
+            commands::clients::get_client_positions,
+            commands::clients::export_client_trades_csv,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

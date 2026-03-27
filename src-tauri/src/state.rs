@@ -8,6 +8,7 @@ use crate::security::SecurityManager;
 use crate::websocket::WebSocketManager;
 use dashmap::DashMap;
 use parking_lot::RwLock;
+use reqwest::Client;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
@@ -75,6 +76,9 @@ pub struct AppState {
     /// Reverse symbol cache (symbol -> token)
     pub symbol_reverse_cache: DashMap<String, String>,
 
+    /// Shared HTTP client for provider API calls
+    pub http_client: Arc<Client>,
+
     /// Application data directory
     pub data_dir: PathBuf,
 }
@@ -110,6 +114,9 @@ impl AppState {
         // Initialize WebSocket manager
         let websocket = Arc::new(WebSocketManager::new(app_handle.clone()));
 
+        // Initialize shared HTTP client for provider API calls
+        let http_client = Arc::new(Client::new());
+
         Ok(Self {
             sqlite,
             duckdb,
@@ -120,6 +127,7 @@ impl AppState {
             broker_session: RwLock::new(None),
             symbol_cache: DashMap::new(),
             symbol_reverse_cache: DashMap::new(),
+            http_client,
             data_dir,
         })
     }

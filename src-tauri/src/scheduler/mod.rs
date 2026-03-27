@@ -5,6 +5,8 @@
 //! - Future: Strategy scheduling, market timings
 
 mod auto_logout;
+mod alert_monitor;
 
 pub use auto_logout::AutoLogoutScheduler;
 pub use auto_logout::{AutoLogoutEvent, WarningEvent};
+pub use alert_monitor::{AlertMonitor, AlertTriggeredPayload};

@@ -45,6 +45,9 @@ pub enum AppError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("Provider error: {0}")]
+    Provider(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -72,6 +75,7 @@ impl From<AppError> for ErrorResponse {
             AppError::NotFound(_) => ("NOT_FOUND", err.to_string()),
             AppError::Config(_) => ("CONFIG_ERROR", err.to_string()),
             AppError::Io(_) => ("IO_ERROR", err.to_string()),
+            AppError::Provider(_) => ("PROVIDER_ERROR", err.to_string()),
             AppError::Internal(_) => ("INTERNAL_ERROR", err.to_string()),
         };
 

@@ -37,6 +37,12 @@ pub mod symbol_service;
 pub mod analyzer_service;
 pub mod options_service;
 pub mod history_service;
+pub mod portfolio_service;
+pub mod quant_service;
+pub mod copilot_service;
+pub mod greeks;
+pub mod indicators_service;
+pub mod alert_service;
 
 // Re-export commonly used types and services
 pub use order_service::{OrderService, PlaceOrderResult, ModifyOrderResult, CancelOrderResult};
