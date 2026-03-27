@@ -5,6 +5,12 @@ pub mod angel;
 pub mod zerodha;
 pub mod fyers;
 
+// US brokers
+pub mod alpaca;
+pub mod tradier;
+pub mod schwab;
+pub mod ibkr;
+
 use crate::error::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -113,10 +119,16 @@ impl BrokerRegistry {
     pub fn new() -> Self {
         let mut brokers: HashMap<String, Arc<dyn Broker>> = HashMap::new();
 
-        // Register brokers
+        // Register Indian brokers
         brokers.insert("angel".to_string(), Arc::new(angel::AngelBroker::new()));
         brokers.insert("zerodha".to_string(), Arc::new(zerodha::ZerodhaBroker::new()));
         brokers.insert("fyers".to_string(), Arc::new(fyers::FyersBroker::new()));
+
+        // Register US brokers
+        brokers.insert("alpaca".to_string(), Arc::new(alpaca::AlpacaBroker::new()));
+        brokers.insert("tradier".to_string(), Arc::new(tradier::TradierBroker::new()));
+        brokers.insert("schwab".to_string(), Arc::new(schwab::SchwabBroker::new()));
+        brokers.insert("ibkr".to_string(), Arc::new(ibkr::IbkrBroker::new()));
 
         Self { brokers }
     }
