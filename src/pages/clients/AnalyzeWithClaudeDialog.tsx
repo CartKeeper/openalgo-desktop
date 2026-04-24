@@ -92,6 +92,11 @@ export default function AnalyzeWithClaudeDialog({
       setMessages([])
       setConversationHistory([])
       setInputValue('')
+      // Flush any in-flight review so the items don't bleed into other
+      // ActionReviewModal hosts (briefing, copilot, reports) on next navigation.
+      if (useActionQueueStore.getState().isReviewOpen) {
+        useActionQueueStore.getState().close()
+      }
     }
   }, [open])
 
@@ -350,6 +355,8 @@ export default function AnalyzeWithClaudeDialog({
         )}
       </DialogContent>
     </Dialog>
+    {/* Mounted per-dialog-instance (like BriefingPage/CopilotPage/ViewReport)
+        so scenario-mode props are local to this flow. */}
     <ActionReviewModal
       onApply={handleApplyToScenario}
       cloneNameRequired={isBaseline}
