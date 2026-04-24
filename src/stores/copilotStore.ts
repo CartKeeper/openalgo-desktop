@@ -28,12 +28,15 @@ interface ConversationEntry {
 
 interface CopilotStore {
   messages: CopilotMessage[]
+  pinnedMessageIds: string[]
   isLoading: boolean
   isConfigured: boolean | null
   error: string | null
 
   checkConfiguration: () => Promise<void>
   sendMessage: (text: string) => Promise<void>
+  togglePin: (messageId: string) => void
+  clearPins: () => void
   clearMessages: () => void
   clearError: () => void
 }
@@ -55,6 +58,7 @@ function buildConversationHistory(messages: CopilotMessage[]): ConversationEntry
 
 export const useCopilotStore = create<CopilotStore>()((set, get) => ({
   messages: [],
+  pinnedMessageIds: [],
   isLoading: false,
   isConfigured: null,
   error: null,
@@ -122,7 +126,19 @@ export const useCopilotStore = create<CopilotStore>()((set, get) => ({
     }
   },
 
-  clearMessages: () => set({ messages: [], error: null }),
+  togglePin: (messageId: string) =>
+    set((state) => {
+      const exists = state.pinnedMessageIds.includes(messageId)
+      return {
+        pinnedMessageIds: exists
+          ? state.pinnedMessageIds.filter((id) => id !== messageId)
+          : [...state.pinnedMessageIds, messageId],
+      }
+    }),
+
+  clearPins: () => set({ pinnedMessageIds: [] }),
+
+  clearMessages: () => set({ messages: [], pinnedMessageIds: [], error: null }),
 
   clearError: () => set({ error: null }),
 }))

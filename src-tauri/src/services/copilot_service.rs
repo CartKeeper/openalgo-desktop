@@ -63,13 +63,22 @@ You have access to these data retrieval tools:
 11. **get_etf_data** - ETF fund info (expense ratio, assets, company) and holdings (what stocks the ETF holds). Use when users ask about an ETF's composition or details.
 12. **get_market_overview** - Sector performance, today's gainers, losers, and most active stocks. Use when users ask about market conditions, what's up/down today, or sector trends.
 13. **get_index_constituents** - Companies in the S&P 500, Nasdaq 100, or Dow Jones 30. Use when users ask about what's in an index or want a list of companies in a specific index.
-14. **get_client_portfolio** - Look up a client's portfolio from the local client management system. Returns positions (symbols, quantities, avg price, P&L) and recent trades. Use when the user asks about a specific client's portfolio, holdings, or trades. Search by name (partial match works).
+14. **get_broker_account** - Get the currently connected broker account info (broker name, account ID, user ID, live/paper mode). Use ONLY when the user asks about their broker account, connection status, or account details.
+15. **list_clients** - List all clients in the client management system with their names, IDs, and account info. Use ONLY when the user asks about clients or needs to find a specific client.
+16. **get_client_portfolio** - Look up a client's portfolio from the local client management system. Returns positions (symbols, quantities, avg price, P&L) and recent trades. Use when the user asks about a specific client's portfolio, holdings, or trades. Search by name (partial match works).
+17. **get_client_scenario** - Retrieve a sandbox what-if scenario with positions and live market prices. Use when the user asks you to analyze a scenario portfolio.
+18. **apply_scenario_trades** - Apply a batch of simulated trades to a sandbox scenario. Use when you have specific trade recommendations and the user wants them applied. Each trade adjusts position quantity and recalculates weighted-average cost basis.
 
 ## CRITICAL RULES
 - NEVER say "I don't have access to" any tool listed above. You DO have these tools. USE THEM.
 - NEVER give a text-only response when you could call a tool instead. If the user asks about a topic and ANY of your tools could provide relevant data, call the tool FIRST.
 - When a user asks about Congress, politicians, or government and markets — immediately call get_congressional_trades. Do NOT just describe what you could do — DO IT.
 - When a user asks about any stock, sector, or market — immediately call relevant tools (quotes, screener, news, etc.). Do NOT offer to look things up — just look them up.
+
+## Account Type Restrictions
+- When analyzing a client scenario, check the `account_type` and `short_selling_restricted` fields in the response from get_client_scenario.
+- If `short_selling_restricted` is true (e.g., 401(k), IRA, 529, custodial accounts), NEVER recommend short selling or SELL trades that would create a short position. Only recommend selling to reduce or close existing long positions.
+- Always mention the account type restriction in your analysis if it limits available strategies.
 
 ## Response Strategy
 - Plan your tool calls efficiently. Batch related lookups (e.g., screen first, then profile the top 3-5 results). Avoid making more than 5 tool calls per question.
@@ -83,7 +92,40 @@ You have access to these data retrieval tools:
 - For financial analysis, consider multiple data points: valuation ratios, growth trends, profitability, and debt levels.
 - Be direct and analytical. Avoid unnecessary hedging, but do note significant risks or caveats.
 - When presenting screener results, summarize the key findings rather than just listing raw data.
-- For economic data, provide context about what the indicator means and its recent trend."#.to_string()
+- For economic data, provide context about what the indicator means and its recent trend.
+
+## Actionable Recommendations
+When your analysis leads to specific trade recommendations (buy, sell, set stop loss, take profit), you MUST include a structured action block at the END of your response. This is in addition to your prose analysis.
+
+Format (place at the very end of your response):
+<!-- ACTIONS_JSON
+[
+  { "symbol": "AAPL", "exchange": "NASDAQ", "side": "BUY", "quantity": 10, "orderType": "LIMIT", "product": "CNC", "price": 185.50, "rationale": "Near support at $184, strong fundamentals" },
+  { "symbol": "TSLA", "exchange": "NASDAQ", "side": "SELL", "quantity": 5, "orderType": "TRAILING_STOP", "product": "CNC", "price": 0, "trailPercent": 5, "rationale": "Extended above resistance, lock in gains with trailing stop" }
+]
+-->
+
+Rules for ACTIONS_JSON:
+- Only include when you have concrete, actionable recommendations (not vague suggestions like "consider watching")
+- "side" must be "BUY" or "SELL"
+- "orderType" must be one of: "MARKET", "LIMIT", "SL", "SL-M", "TRAILING_STOP"
+- "product" should be "CNC" for delivery/investment positions
+- "price" should be 0 for MARKET orders, otherwise the target limit price
+- "triggerPrice" is optional, for SL/SL-M stop loss orders
+- "trailPrice" or "trailPercent" is for TRAILING_STOP orders (dollar amount or percentage)
+- "exchange" should be the stock's primary exchange (e.g., "NASDAQ", "NYSE")
+- "rationale" is a brief 1-sentence reason for the trade
+- Include ALL recommended trades in a single ACTIONS_JSON block
+- This block is invisible to the user — it is parsed programmatically by the app
+- ALWAYS write your full prose analysis FIRST, then add the ACTIONS_JSON block at the very end
+- If you have NO concrete trade recommendations, do NOT include an ACTIONS_JSON block
+
+CRITICAL — Position-aware constraints:
+- NEVER recommend SELL for a symbol the user does not currently hold in their portfolio
+- NEVER recommend selling more shares than the user actually holds — match or stay under the portfolio quantity
+- For stop loss (SL, SL-M) and trailing stop orders on existing positions, the quantity MUST equal the position's current quantity, not an arbitrary number
+- For BUY recommendations (new positions or adding to existing), use reasonable quantities appropriate to the stock price (e.g., 5-10 shares for $100+ stocks, 10-25 for $20-$100 stocks)
+- If the user's portfolio data is provided in the conversation, treat it as the source of truth for what they own"#.to_string()
     }
 
     /// Execute a tool call by routing to the appropriate provider
@@ -106,7 +148,11 @@ You have access to these data retrieval tools:
             "get_etf_data" => Self::tool_get_etf_data(tool_input, state).await,
             "get_market_overview" => Self::tool_get_market_overview(tool_input, state).await,
             "get_index_constituents" => Self::tool_get_index_constituents(tool_input, state).await,
+            "get_broker_account" => Self::tool_get_broker_account(tool_input, state).await,
+            "list_clients" => Self::tool_list_clients(tool_input, state).await,
             "get_client_portfolio" => Self::tool_get_client_portfolio(tool_input, state).await,
+            "get_client_scenario" => Self::tool_get_client_scenario(tool_input, state).await,
+            "apply_scenario_trades" => Self::tool_apply_scenario_trades(tool_input, state).await,
             _ => Err(AppError::Provider(format!("Unknown tool: {}", tool_name))),
         };
 
@@ -629,6 +675,81 @@ You have access to these data retrieval tools:
         Ok(serde_json::to_value(&data).map_err(|e| AppError::Serialization(e))?)
     }
 
+    // ========== Broker Account & Clients ==========
+
+    async fn tool_get_broker_account(
+        _input: &serde_json::Value,
+        state: &AppState,
+    ) -> Result<serde_json::Value> {
+        match state.get_broker_session() {
+            Some(session) => {
+                // Determine live vs paper for Alpaca (paper keys start with "PK")
+                let mode = if session.broker_id == "alpaca" {
+                    // The auth_token is "api_key:api_secret"
+                    if session.auth_token.starts_with("PK") {
+                        "paper"
+                    } else {
+                        "live"
+                    }
+                } else {
+                    "live"
+                };
+
+                // Get the broker display name from the registry
+                let broker_name = state.brokers.get(&session.broker_id)
+                    .map(|b| b.name().to_string())
+                    .unwrap_or_else(|| session.broker_id.clone());
+
+                Ok(serde_json::json!({
+                    "connected": true,
+                    "broker_id": session.broker_id,
+                    "broker_name": broker_name,
+                    "user_id": session.user_id,
+                    "user_name": session.user_name,
+                    "mode": mode,
+                    "authenticated_at": session.authenticated_at.to_rfc3339(),
+                }))
+            }
+            None => {
+                Ok(serde_json::json!({
+                    "connected": false,
+                    "message": "No broker is currently connected. The user can connect a broker from the Broker login page."
+                }))
+            }
+        }
+    }
+
+    async fn tool_list_clients(
+        _input: &serde_json::Value,
+        state: &AppState,
+    ) -> Result<serde_json::Value> {
+        let clients = state.sqlite.get_clients()?;
+
+        if clients.is_empty() {
+            return Ok(serde_json::json!({
+                "clients": [],
+                "count": 0,
+                "message": "No clients in the system yet."
+            }));
+        }
+
+        let client_list: Vec<serde_json::Value> = clients.iter().map(|c| {
+            serde_json::json!({
+                "id": c.id,
+                "name": c.name,
+                "broker": c.broker,
+                "account_id": c.account_id,
+                "account_type": c.account_type,
+                "email": c.email,
+            })
+        }).collect();
+
+        Ok(serde_json::json!({
+            "clients": client_list,
+            "count": clients.len(),
+        }))
+    }
+
     // ========== Client Portfolio ==========
 
     async fn tool_get_client_portfolio(
@@ -698,6 +819,193 @@ You have access to these data retrieval tools:
             "position_count": positions.len(),
             "recent_trades": recent_trades,
             "total_trades": trades.len(),
+        }))
+    }
+
+    async fn tool_get_client_scenario(
+        input: &serde_json::Value,
+        state: &AppState,
+    ) -> Result<serde_json::Value> {
+        let scenario_id = input["scenario_id"]
+            .as_i64()
+            .ok_or_else(|| AppError::Validation("scenario_id is required".to_string()))?;
+
+        let scenario = state.sqlite.get_client_scenario_by_id(scenario_id)?;
+        let positions = state.sqlite.get_scenario_positions(scenario_id)?;
+
+        // Fetch live pricing from Yahoo
+        let symbols: Vec<String> = positions
+            .iter()
+            .map(|p| p.symbol.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        let mut price_map: std::collections::HashMap<String, serde_json::Value> =
+            std::collections::HashMap::new();
+
+        if !symbols.is_empty() {
+            let yahoo = YahooClient::new((*state.http_client).clone());
+            let symbol_refs: Vec<&str> = symbols.iter().map(|s| s.as_str()).collect();
+            if let Ok(quotes) = yahoo.get_quotes(&symbol_refs).await {
+                for q in quotes {
+                    price_map.insert(
+                        q.symbol.to_uppercase(),
+                        serde_json::json!({
+                            "price": q.price,
+                            "change": q.change,
+                            "change_percent": q.change_percent,
+                            "name": q.name,
+                        }),
+                    );
+                }
+            }
+        }
+
+        // Build enriched position data
+        let mut total_value = 0.0f64;
+        let mut total_cost = 0.0f64;
+        let position_data: Vec<serde_json::Value> = positions
+            .iter()
+            .map(|p| {
+                let cost = p.quantity * p.avg_price;
+                total_cost += cost;
+                let pricing = price_map.get(&p.symbol.to_uppercase());
+                let current_price = pricing
+                    .and_then(|pv| pv["price"].as_f64());
+                let market_value = current_price.map(|cp| p.quantity * cp);
+                if let Some(mv) = market_value {
+                    total_value += mv;
+                }
+                let pnl = market_value.map(|mv| mv - cost);
+                let pnl_pct = if cost > 0.0 { pnl.map(|pl| pl / cost * 100.0) } else { None };
+
+                serde_json::json!({
+                    "symbol": p.symbol,
+                    "exchange": p.exchange,
+                    "quantity": p.quantity,
+                    "avg_price": p.avg_price,
+                    "side": p.side,
+                    "current_price": current_price,
+                    "market_value": market_value,
+                    "cost_basis": cost,
+                    "unrealized_pnl": pnl,
+                    "pnl_pct": pnl_pct,
+                    "day_change_pct": pricing.and_then(|pv| pv["change_percent"].as_f64()),
+                    "company_name": pricing.and_then(|pv| pv["name"].as_str()),
+                    "notes": p.notes,
+                })
+            })
+            .collect();
+
+        // Get client name for context
+        let client = state.sqlite.get_client_by_id(scenario.client_id).ok();
+
+        // Prefer scenario-level account_type (set on per-account baselines), fall back to client-level
+        let account_type = scenario.account_type.as_deref()
+            .or_else(|| client.as_ref().and_then(|c| c.account_type.as_deref()));
+        let short_selling_restricted = matches!(
+            account_type,
+            Some("401k") | Some("roth_401k") | Some("traditional_ira") | Some("roth_ira")
+                | Some("sep_ira") | Some("simple_ira") | Some("529") | Some("custodial")
+        );
+
+        Ok(serde_json::json!({
+            "scenario": {
+                "id": scenario.id,
+                "name": scenario.name,
+                "description": scenario.description,
+                "is_baseline": scenario.is_baseline,
+                "client_name": client.as_ref().map(|c| c.name.as_str()),
+                "account_type": account_type,
+                "short_selling_restricted": short_selling_restricted,
+            },
+            "positions": position_data,
+            "position_count": positions.len(),
+            "summary": {
+                "total_market_value": total_value,
+                "total_cost_basis": total_cost,
+                "total_unrealized_pnl": total_value - total_cost,
+                "return_pct": if total_cost > 0.0 { (total_value - total_cost) / total_cost * 100.0 } else { 0.0 },
+            }
+        }))
+    }
+
+    async fn tool_apply_scenario_trades(
+        input: &serde_json::Value,
+        state: &AppState,
+    ) -> Result<serde_json::Value> {
+        let scenario_id = input["scenario_id"]
+            .as_i64()
+            .ok_or_else(|| AppError::Validation("scenario_id is required".to_string()))?;
+
+        let trades = input["trades"]
+            .as_array()
+            .ok_or_else(|| AppError::Validation("trades must be an array".to_string()))?;
+
+        if trades.is_empty() {
+            return Err(AppError::Validation("No trades provided".to_string()));
+        }
+
+        let mut applied: Vec<serde_json::Value> = Vec::new();
+
+        for trade in trades {
+            let symbol = trade["symbol"]
+                .as_str()
+                .ok_or_else(|| AppError::Validation("Each trade requires a symbol".to_string()))?;
+            let exchange = trade["exchange"].as_str().unwrap_or("GENERIC");
+            let side = trade["side"]
+                .as_str()
+                .ok_or_else(|| AppError::Validation("Each trade requires a side (buy/sell)".to_string()))?;
+            let quantity = trade["quantity"]
+                .as_f64()
+                .ok_or_else(|| AppError::Validation("Each trade requires a quantity".to_string()))?;
+            let price = trade["price"]
+                .as_f64()
+                .ok_or_else(|| AppError::Validation("Each trade requires a price".to_string()))?;
+
+            let result = state.sqlite.apply_scenario_trade(
+                scenario_id,
+                symbol,
+                exchange,
+                side,
+                quantity,
+                price,
+            )?;
+
+            applied.push(serde_json::json!({
+                "symbol": symbol,
+                "side": side,
+                "quantity": quantity,
+                "price": price,
+                "resulting_position": {
+                    "quantity": result.quantity,
+                    "avg_price": result.avg_price,
+                    "side": result.side,
+                }
+            }));
+        }
+
+        // Return the full updated positions list
+        let updated_positions = state.sqlite.get_scenario_positions(scenario_id)?;
+        let pos_data: Vec<serde_json::Value> = updated_positions
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "symbol": p.symbol,
+                    "exchange": p.exchange,
+                    "quantity": p.quantity,
+                    "avg_price": p.avg_price,
+                    "side": p.side,
+                })
+            })
+            .collect();
+
+        Ok(serde_json::json!({
+            "trades_applied": applied.len(),
+            "trade_details": applied,
+            "updated_positions": pos_data,
+            "updated_position_count": updated_positions.len(),
         }))
     }
 
@@ -901,6 +1209,39 @@ You have access to these data retrieval tools:
                 } else {
                     "Retrieved index constituents".to_string()
                 }
+            }
+            "get_broker_account" => {
+                if let Some(true) = result.get("connected").and_then(|v| v.as_bool()) {
+                    let broker = result.get("broker_name").and_then(|v| v.as_str()).unwrap_or("Unknown");
+                    let mode = result.get("mode").and_then(|v| v.as_str()).unwrap_or("live");
+                    format!("Retrieved {} account info ({})", broker, mode)
+                } else {
+                    "No broker connected".to_string()
+                }
+            }
+            "list_clients" => {
+                let count = result.get("count").and_then(|v| v.as_i64()).unwrap_or(0);
+                format!("Retrieved {} client(s)", count)
+            }
+            "get_client_portfolio" => {
+                if let Some(name) = result.get("client").and_then(|c| c["name"].as_str()) {
+                    let count = result.get("position_count").and_then(|v| v.as_i64()).unwrap_or(0);
+                    format!("Retrieved {}'s portfolio ({} positions)", name, count)
+                } else {
+                    "Retrieved client portfolio".to_string()
+                }
+            }
+            "get_client_scenario" => {
+                if let Some(name) = result.get("scenario").and_then(|s| s["name"].as_str()) {
+                    let count = result.get("position_count").and_then(|v| v.as_i64()).unwrap_or(0);
+                    format!("Retrieved scenario \"{}\" ({} positions)", name, count)
+                } else {
+                    "Retrieved scenario".to_string()
+                }
+            }
+            "apply_scenario_trades" => {
+                let count = result.get("trades_applied").and_then(|v| v.as_i64()).unwrap_or(0);
+                format!("Applied {} trade(s) to scenario", count)
             }
             _ => "Tool executed".to_string(),
         }

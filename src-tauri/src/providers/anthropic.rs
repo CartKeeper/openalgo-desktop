@@ -484,6 +484,24 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "get_broker_account".to_string(),
+            description: "Get the currently connected broker account information. Returns broker name, account ID, user ID, whether it's a live or paper account, and connection status. Use when the user asks about their account, broker connection, or account details.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        },
+        ToolDefinition {
+            name: "list_clients".to_string(),
+            description: "List all clients in the client management system. Returns each client's name, ID, broker, account ID, and account type. Use when the user asks about their clients, wants to see who is in the system, or needs to find a specific client.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        },
+        ToolDefinition {
             name: "get_client_portfolio".to_string(),
             description: "Look up a client's portfolio from the client management system. Returns the client's profile info, computed positions (symbol, quantity, avg price, realized P&L), and recent trades. Search by client name (partial match supported).".to_string(),
             input_schema: serde_json::json!({
@@ -495,6 +513,65 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
                     }
                 },
                 "required": ["client_name"]
+            }),
+        },
+        ToolDefinition {
+            name: "get_client_scenario".to_string(),
+            description: "Retrieve a client's sandbox scenario with its positions and current market prices. Returns scenario info, each position (symbol, quantity, avg price, side), and live pricing from Yahoo Finance (current price, day change). Use when the user asks to analyze or review a specific scenario.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "scenario_id": {
+                        "type": "integer",
+                        "description": "The numeric ID of the scenario to retrieve."
+                    }
+                },
+                "required": ["scenario_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "apply_scenario_trades".to_string(),
+            description: "Apply a batch of simulated trades to a client's sandbox scenario. Each trade updates or creates a position using weighted-average cost basis. Use this when you have concrete trade recommendations and the user wants to apply them to a scenario. Returns updated positions after all trades are applied.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "scenario_id": {
+                        "type": "integer",
+                        "description": "The numeric ID of the scenario to apply trades to."
+                    },
+                    "trades": {
+                        "type": "array",
+                        "description": "List of trades to apply.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "symbol": {
+                                    "type": "string",
+                                    "description": "Ticker symbol (e.g., \"AAPL\")"
+                                },
+                                "exchange": {
+                                    "type": "string",
+                                    "description": "Exchange identifier. Defaults to GENERIC."
+                                },
+                                "side": {
+                                    "type": "string",
+                                    "enum": ["buy", "sell"],
+                                    "description": "Trade side: buy adds to long, sell reduces or shorts."
+                                },
+                                "quantity": {
+                                    "type": "number",
+                                    "description": "Number of shares."
+                                },
+                                "price": {
+                                    "type": "number",
+                                    "description": "Price per share."
+                                }
+                            },
+                            "required": ["symbol", "side", "quantity", "price"]
+                        }
+                    }
+                },
+                "required": ["scenario_id", "trades"]
             }),
         },
     ]

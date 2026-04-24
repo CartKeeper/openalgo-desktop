@@ -4,9 +4,11 @@ import {
   ArrowLeft,
   Bot,
   Eye,
+  FileDown,
   FileText,
   Key,
   Loader2,
+  Pin,
   Search,
   Send,
   ShoppingCart,
@@ -17,11 +19,16 @@ import {
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
+import { ActionReviewModal } from '@/components/trading/ActionReviewModal'
 import { PlaceOrderDialog } from '@/components/trading/PlaceOrderDialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { ReportBuilderDialog } from '@/components/reports/ReportBuilderDialog'
+import { parseActionsFromMarkdown } from '@/lib/parseActions'
+import { renderMarkdown, formatToolName, extractTickers } from '@/lib/markdown'
+import { useActionQueueStore } from '@/stores/actionQueueStore'
 import { useCopilotStore } from '@/stores/copilotStore'
 import { useReportsStore } from '@/stores/reportsStore'
 import type { CopilotMessage } from '@/stores/copilotStore'
@@ -36,253 +43,6 @@ const SUGGESTED_PROMPTS = [
   'Explain the current economic outlook',
   'Screen for high-dividend stocks',
 ]
-
-// ---------- Simple markdown renderer ----------
-
-function renderMarkdown(text: string): React.ReactNode[] {
-  const lines = text.split('\n')
-  const elements: React.ReactNode[] = []
-  let codeBlock: string[] | null = null
-  let codeBlockLang = ''
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-
-    // Code block toggle
-    if (line.startsWith('```')) {
-      if (codeBlock === null) {
-        codeBlock = []
-        codeBlockLang = line.slice(3).trim()
-      } else {
-        elements.push(
-          <div key={`code-${i}`} className="my-2 rounded-[8px] border bg-muted/50 overflow-hidden">
-            {codeBlockLang && (
-              <div className="px-3 py-1 border-b text-[10px] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
-                {codeBlockLang}
-              </div>
-            )}
-            <pre className="p-3 overflow-x-auto text-[13px] leading-relaxed font-mono">
-              <code>{codeBlock.join('\n')}</code>
-            </pre>
-          </div>
-        )
-        codeBlock = null
-        codeBlockLang = ''
-      }
-      continue
-    }
-
-    if (codeBlock !== null) {
-      codeBlock.push(line)
-      continue
-    }
-
-    // Blank line
-    if (line.trim() === '') {
-      elements.push(<div key={`blank-${i}`} className="h-2" />)
-      continue
-    }
-
-    // Headers
-    if (line.startsWith('### ')) {
-      elements.push(
-        <p key={`h3-${i}`} className="text-[14px] font-semibold mt-3 mb-1">
-          {inlineFormat(line.slice(4))}
-        </p>
-      )
-      continue
-    }
-    if (line.startsWith('## ')) {
-      elements.push(
-        <p key={`h2-${i}`} className="text-[14px] font-semibold mt-3 mb-1">
-          {inlineFormat(line.slice(3))}
-        </p>
-      )
-      continue
-    }
-    if (line.startsWith('# ')) {
-      elements.push(
-        <p key={`h1-${i}`} className="text-[16px] font-semibold mt-3 mb-1">
-          {inlineFormat(line.slice(2))}
-        </p>
-      )
-      continue
-    }
-
-    // Bullet lists
-    if (line.match(/^(\s*)[*-]\s/)) {
-      const indent = line.match(/^(\s*)/)?.[1]?.length || 0
-      const content = line.replace(/^(\s*)[*-]\s/, '')
-      elements.push(
-        <div
-          key={`li-${i}`}
-          className="flex gap-2 text-[14px] leading-[1.5]"
-          style={{ paddingLeft: `${Math.max(indent * 4, 0) + 8}px` }}
-        >
-          <span className="text-muted-foreground mt-[2px] shrink-0">&#8226;</span>
-          <span>{inlineFormat(content)}</span>
-        </div>
-      )
-      continue
-    }
-
-    // Numbered lists
-    if (line.match(/^\d+\.\s/)) {
-      const match = line.match(/^(\d+)\.\s(.*)/)
-      if (match) {
-        elements.push(
-          <div key={`ol-${i}`} className="flex gap-2 text-[14px] leading-[1.5] pl-2">
-            <span className="text-muted-foreground shrink-0 tabular-nums">{match[1]}.</span>
-            <span>{inlineFormat(match[2])}</span>
-          </div>
-        )
-        continue
-      }
-    }
-
-    // Normal paragraph
-    elements.push(
-      <p key={`p-${i}`} className="text-[14px] leading-[1.5]">
-        {inlineFormat(line)}
-      </p>
-    )
-  }
-
-  // Handle unclosed code blocks
-  if (codeBlock !== null) {
-    elements.push(
-      <pre key="code-unclosed" className="my-2 p-3 rounded-[8px] border bg-muted/50 overflow-x-auto text-[13px] font-mono">
-        <code>{codeBlock.join('\n')}</code>
-      </pre>
-    )
-  }
-
-  return elements
-}
-
-function inlineFormat(text: string): React.ReactNode {
-  // Process inline code, bold, italic
-  const parts: React.ReactNode[] = []
-  let remaining = text
-  let key = 0
-
-  while (remaining.length > 0) {
-    // Inline code
-    const codeMatch = remaining.match(/^(.*?)`([^`]+)`(.*)$/)
-    if (codeMatch) {
-      if (codeMatch[1]) {
-        parts.push(...inlineBoldItalic(codeMatch[1], key))
-        key += 10
-      }
-      parts.push(
-        <code
-          key={`ic-${key++}`}
-          className="px-1.5 py-0.5 rounded-[4px] bg-muted text-[13px] font-mono"
-        >
-          {codeMatch[2]}
-        </code>
-      )
-      remaining = codeMatch[3]
-      continue
-    }
-
-    // No more inline code, process bold/italic on the rest
-    parts.push(...inlineBoldItalic(remaining, key))
-    break
-  }
-
-  return parts.length === 1 ? parts[0] : <>{parts}</>
-}
-
-function inlineBoldItalic(text: string, startKey: number): React.ReactNode[] {
-  const parts: React.ReactNode[] = []
-  let remaining = text
-  let key = startKey
-
-  while (remaining.length > 0) {
-    // Bold
-    const boldMatch = remaining.match(/^(.*?)\*\*(.+?)\*\*(.*)$/)
-    if (boldMatch) {
-      if (boldMatch[1]) parts.push(<span key={`t-${key++}`}>{boldMatch[1]}</span>)
-      parts.push(
-        <span key={`b-${key++}`} className="font-semibold">
-          {boldMatch[2]}
-        </span>
-      )
-      remaining = boldMatch[3]
-      continue
-    }
-
-    // Italic
-    const italicMatch = remaining.match(/^(.*?)\*(.+?)\*(.*)$/)
-    if (italicMatch) {
-      if (italicMatch[1]) parts.push(<span key={`t-${key++}`}>{italicMatch[1]}</span>)
-      parts.push(
-        <em key={`i-${key++}`}>{italicMatch[2]}</em>
-      )
-      remaining = italicMatch[3]
-      continue
-    }
-
-    // Plain text
-    parts.push(<span key={`t-${key++}`}>{remaining}</span>)
-    break
-  }
-
-  return parts
-}
-
-// ---------- Tool call name formatter ----------
-
-function formatToolName(name: string): string {
-  return name
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase())
-}
-
-// ---------- Ticker extraction ----------
-
-// Common words that look like tickers but aren't
-const TICKER_BLOCKLIST = new Set([
-  'A', 'I', 'AM', 'AN', 'AS', 'AT', 'BE', 'BY', 'DO', 'GO', 'IF', 'IN', 'IS', 'IT',
-  'MY', 'NO', 'OF', 'ON', 'OR', 'SO', 'TO', 'UP', 'US', 'WE', 'AI', 'CEO', 'CFO',
-  'CTO', 'COO', 'IPO', 'ETF', 'GDP', 'SEC', 'FED', 'USA', 'USD', 'EUR', 'GBP',
-  'THE', 'FOR', 'AND', 'NOT', 'BUT', 'ALL', 'CAN', 'HER', 'WAS', 'ONE', 'OUR',
-  'OUT', 'ARE', 'HAS', 'HIS', 'HOW', 'MAN', 'NEW', 'NOW', 'OLD', 'SEE', 'WAY',
-  'WHO', 'BOY', 'DID', 'GET', 'HIM', 'LET', 'SAY', 'SHE', 'TOO', 'USE',
-  'PE', 'EPS', 'ROE', 'ROA', 'YOY', 'QOQ', 'TTM', 'FCF', 'DCF', 'YTD',
-  'HIGH', 'LOW', 'OPEN', 'SELL', 'BUY', 'HOLD', 'LONG', 'SHORT', 'CALL', 'PUT',
-  'CASH', 'DEBT', 'RISK', 'RATE', 'FUND', 'BOND', 'GAIN', 'LOSS', 'BEAR', 'BULL',
-  'EBITDA', 'GAAP', 'NYSE', 'NASDAQ',
-])
-
-function extractTickers(text: string): string[] {
-  const tickers = new Set<string>()
-
-  // Match $TICKER patterns (most reliable)
-  const dollarMatches = text.matchAll(/\$([A-Z]{1,5})\b/g)
-  for (const m of dollarMatches) {
-    tickers.add(m[1])
-  }
-
-  // Match **TICKER** bold patterns (common in AI financial analysis)
-  const boldMatches = text.matchAll(/\*\*([A-Z]{1,5})\*\*/g)
-  for (const m of boldMatches) {
-    if (!TICKER_BLOCKLIST.has(m[1])) {
-      tickers.add(m[1])
-    }
-  }
-
-  // Match (TICKER) parenthesized patterns like "Apple (AAPL)"
-  const parenMatches = text.matchAll(/\(([A-Z]{1,5})\)/g)
-  for (const m of parenMatches) {
-    if (!TICKER_BLOCKLIST.has(m[1])) {
-      tickers.add(m[1])
-    }
-  }
-
-  return [...tickers]
-}
 
 // ---------- Stock action bar ----------
 
@@ -350,17 +110,29 @@ function StockActionBar({ tickers }: { tickers: string[] }) {
 
 // ---------- Message bubble ----------
 
-function MessageBubble({ message }: { message: CopilotMessage }) {
+function MessageBubble({
+  message,
+  isPinned,
+  onTogglePin,
+}: {
+  message: CopilotMessage
+  isPinned?: boolean
+  onTogglePin?: (id: string) => void
+}) {
   const isUser = message.role === 'user'
   const tickers = !isUser ? extractTickers(message.content) : []
+  const actions = !isUser ? parseActionsFromMarkdown(message.content, 'copilot') : []
+  const setItemsAndOpen = useActionQueueStore((s) => s.setItemsAndOpen)
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`}>
       <div
-        className={`max-w-[70%] rounded-[12px] px-4 py-3 ${
+        className={`max-w-[70%] rounded-[12px] px-4 py-3 group ${
           isUser
             ? 'bg-primary text-primary-foreground'
-            : 'bg-muted/60 border'
+            : isPinned
+              ? 'bg-muted/60 border border-l-[3px] border-l-primary'
+              : 'bg-muted/60 border'
         }`}
       >
         {isUser ? (
@@ -372,8 +144,58 @@ function MessageBubble({ message }: { message: CopilotMessage }) {
         {/* Stock action bar */}
         {tickers.length > 0 && <StockActionBar tickers={tickers} />}
 
-        {/* Tool call badges */}
-        {message.toolCalls && message.toolCalls.length > 0 && (
+        {/* Action recommendations */}
+        {actions.length > 0 && (
+          <div className="mt-3 pt-3 border-t border-border/40">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 text-[12px]"
+              onClick={() => setItemsAndOpen(actions)}
+            >
+              <ShoppingCart className="h-3.5 w-3.5" />
+              Review {actions.length} trade{actions.length !== 1 ? 's' : ''}
+            </Button>
+          </div>
+        )}
+
+        {/* Tool call badges + Pin button row */}
+        {!isUser && (
+          <div className="flex items-center gap-1.5 mt-3 pt-3 border-t border-border/40">
+            {message.toolCalls && message.toolCalls.length > 0 && (
+              <>
+                <Wrench className="h-3 w-3 text-muted-foreground mt-[1px] shrink-0" />
+                {message.toolCalls.map((tc, idx) => (
+                  <Badge
+                    key={idx}
+                    variant="secondary"
+                    className="text-[10px] font-semibold px-2 py-0"
+                  >
+                    {formatToolName(tc.name)}
+                  </Badge>
+                ))}
+              </>
+            )}
+            {onTogglePin && (
+              <button
+                type="button"
+                onClick={() => onTogglePin(message.id)}
+                className={`ml-auto h-8 px-3 rounded-[8px] flex items-center gap-1.5 text-[12px] font-semibold transition-colors duration-150 cursor-pointer ${
+                  isPinned
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-accent hover:text-foreground'
+                }`}
+                title={isPinned ? 'Unpin from report' : 'Pin to report'}
+              >
+                <Pin className="h-3.5 w-3.5" />
+                {isPinned ? 'Pinned' : 'Pin'}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Tool call badges for user messages (shouldn't happen, but safe) */}
+        {isUser && message.toolCalls && message.toolCalls.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mt-3 pt-3 border-t border-border/40">
             <Wrench className="h-3 w-3 text-muted-foreground mt-[3px] shrink-0" />
             {message.toolCalls.map((tc, idx) => (
@@ -476,11 +298,13 @@ export default function CopilotPage() {
   const navigate = useNavigate()
   const {
     messages,
+    pinnedMessageIds,
     isLoading,
     isConfigured,
     error,
     checkConfiguration,
     sendMessage,
+    togglePin,
     clearMessages,
     clearError,
   } = useCopilotStore()
@@ -488,8 +312,11 @@ export default function CopilotPage() {
 
   const [input, setInput] = useState('')
   const [isSaving, setIsSaving] = useState(false)
+  const [showReportBuilder, setShowReportBuilder] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  const pinnedCount = pinnedMessageIds.length
 
   // Check configuration on mount
   useEffect(() => {
@@ -596,6 +423,22 @@ export default function CopilotPage() {
         </div>
         {isConfigured && messages.length > 0 && (
           <div className="flex items-center gap-2">
+            {pinnedCount > 0 && (
+              <Badge variant="secondary" className="text-[10px] font-semibold px-2 py-0 gap-1">
+                <Pin className="h-3 w-3" />
+                {pinnedCount} pinned
+              </Badge>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowReportBuilder(true)}
+              disabled={isLoading}
+              className="h-8"
+            >
+              <FileDown className="h-4 w-4 mr-1" />
+              Generate PDF
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -639,7 +482,12 @@ export default function CopilotPage() {
               ) : (
                 <div className="p-4">
                   {messages.map((msg) => (
-                    <MessageBubble key={msg.id} message={msg} />
+                    <MessageBubble
+                      key={msg.id}
+                      message={msg}
+                      isPinned={pinnedMessageIds.includes(msg.id)}
+                      onTogglePin={togglePin}
+                    />
                   ))}
                   {isLoading && <LoadingDots />}
                 </div>
@@ -681,6 +529,17 @@ export default function CopilotPage() {
           </div>
         </div>
       )}
+
+      {/* Report builder dialog */}
+      <ReportBuilderDialog
+        open={showReportBuilder}
+        onOpenChange={setShowReportBuilder}
+        messages={messages}
+        pinnedIds={pinnedMessageIds}
+        defaultTitle={messages.find((m) => m.role === 'user')?.content.slice(0, 120)}
+      />
+
+      <ActionReviewModal />
     </div>
   )
 }

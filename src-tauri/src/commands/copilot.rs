@@ -174,7 +174,27 @@ Present 3-5 stocks that are NOT in the current portfolio but worth watching. For
 
 Focus on variety: mix sectors, market caps, and styles (growth, value, momentum). Avoid overlapping with existing portfolio holdings. These should be fresh ideas the user probably isn't already tracking.
 
-Keep the full briefing concise but substantive — this should take about 10 minutes to read and act on."#,
+Keep the full briefing concise but substantive — this should take about 10 minutes to read and act on.
+
+## IMPORTANT: Actionable Recommendations
+At the very end of your briefing, after all sections, include an ACTIONS_JSON block with any specific trade recommendations you made in your analysis. For example, if you recommend buying a New Stock Corner pick, selling a Risk Radar position, or setting a stop loss — include those as structured actions.
+
+Format (place at the very end, after all sections):
+<!-- ACTIONS_JSON
+[
+  {{ "symbol": "TICKER", "exchange": "NASDAQ", "side": "BUY", "quantity": 10, "orderType": "MARKET", "product": "CNC", "price": 0, "rationale": "brief reason" }},
+  {{ "symbol": "TICKER2", "exchange": "NYSE", "side": "SELL", "quantity": 5, "orderType": "SL-M", "product": "CNC", "price": 0, "triggerPrice": 135.00, "rationale": "stop loss at support" }}
+]
+-->
+
+Only include trades you explicitly recommend in your analysis. If you have no concrete buy/sell recommendations, omit this block entirely. The user will review and adjust before confirming.
+
+CRITICAL — Position-aware constraints:
+- NEVER recommend SELL for a symbol that is NOT in the portfolio above — you can only sell what the user actually holds
+- NEVER recommend selling more shares than the user holds — match or stay under the portfolio quantity shown above
+- For stop loss (SL, SL-M) and trailing stop orders on existing positions, the quantity MUST match the position's current quantity exactly
+- For BUY recommendations (New Stock Corner picks or adding to existing positions), use reasonable quantities appropriate to the stock price (e.g., 5-10 shares for $100+ stocks, 10-25 for $20-$100 stocks)
+- The portfolio data above is the source of truth for what the user owns and how many shares"#,
         portfolio = portfolio_context.0,
         symbols = symbol_list,
     );
