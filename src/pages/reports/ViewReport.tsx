@@ -3,212 +3,31 @@ import {
   ArrowLeft,
   BookOpen,
   Check,
+  FileDown,
   Loader2,
   Pencil,
   Plus,
+  ShoppingCart,
   StickyNote,
   Trash2,
   Wrench,
   X,
 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
+import { ActionReviewModal } from '@/components/trading/ActionReviewModal'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
+import { ReportBuilderDialog } from '@/components/reports/ReportBuilderDialog'
+import { parseActionsFromMarkdown } from '@/lib/parseActions'
+import { renderMarkdown, formatToolName } from '@/lib/markdown'
+import { useActionQueueStore } from '@/stores/actionQueueStore'
 import { useReportsStore, type ReportNote } from '@/stores/reportsStore'
 import type { CopilotMessage, ToolCallInfo } from '@/stores/copilotStore'
-
-// ---------- Markdown renderer (shared with CopilotPage) ----------
-
-function renderMarkdown(text: string): React.ReactNode[] {
-  const lines = text.split('\n')
-  const elements: React.ReactNode[] = []
-  let codeBlock: string[] | null = null
-  let codeBlockLang = ''
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-
-    if (line.startsWith('```')) {
-      if (codeBlock === null) {
-        codeBlock = []
-        codeBlockLang = line.slice(3).trim()
-      } else {
-        elements.push(
-          <div key={`code-${i}`} className="my-2 rounded-[8px] border bg-muted/50 overflow-hidden">
-            {codeBlockLang && (
-              <div className="px-3 py-1 border-b text-[10px] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
-                {codeBlockLang}
-              </div>
-            )}
-            <pre className="p-3 overflow-x-auto text-[13px] leading-relaxed font-mono">
-              <code>{codeBlock.join('\n')}</code>
-            </pre>
-          </div>
-        )
-        codeBlock = null
-        codeBlockLang = ''
-      }
-      continue
-    }
-
-    if (codeBlock !== null) {
-      codeBlock.push(line)
-      continue
-    }
-
-    if (line.trim() === '') {
-      elements.push(<div key={`blank-${i}`} className="h-2" />)
-      continue
-    }
-
-    if (line.startsWith('### ')) {
-      elements.push(
-        <p key={`h3-${i}`} className="text-[14px] font-semibold mt-3 mb-1">
-          {inlineFormat(line.slice(4))}
-        </p>
-      )
-      continue
-    }
-    if (line.startsWith('## ')) {
-      elements.push(
-        <p key={`h2-${i}`} className="text-[14px] font-semibold mt-3 mb-1">
-          {inlineFormat(line.slice(3))}
-        </p>
-      )
-      continue
-    }
-    if (line.startsWith('# ')) {
-      elements.push(
-        <p key={`h1-${i}`} className="text-[16px] font-semibold mt-3 mb-1">
-          {inlineFormat(line.slice(2))}
-        </p>
-      )
-      continue
-    }
-
-    if (line.match(/^(\s*)[*-]\s/)) {
-      const indent = line.match(/^(\s*)/)?.[1]?.length || 0
-      const content = line.replace(/^(\s*)[*-]\s/, '')
-      elements.push(
-        <div
-          key={`li-${i}`}
-          className="flex gap-2 text-[14px] leading-[1.5]"
-          style={{ paddingLeft: `${Math.max(indent * 4, 0) + 8}px` }}
-        >
-          <span className="text-muted-foreground mt-[2px] shrink-0">&#8226;</span>
-          <span>{inlineFormat(content)}</span>
-        </div>
-      )
-      continue
-    }
-
-    if (line.match(/^\d+\.\s/)) {
-      const match = line.match(/^(\d+)\.\s(.*)/)
-      if (match) {
-        elements.push(
-          <div key={`ol-${i}`} className="flex gap-2 text-[14px] leading-[1.5] pl-2">
-            <span className="text-muted-foreground shrink-0 tabular-nums">{match[1]}.</span>
-            <span>{inlineFormat(match[2])}</span>
-          </div>
-        )
-        continue
-      }
-    }
-
-    elements.push(
-      <p key={`p-${i}`} className="text-[14px] leading-[1.5]">
-        {inlineFormat(line)}
-      </p>
-    )
-  }
-
-  if (codeBlock !== null) {
-    elements.push(
-      <pre key="code-unclosed" className="my-2 p-3 rounded-[8px] border bg-muted/50 overflow-x-auto text-[13px] font-mono">
-        <code>{codeBlock.join('\n')}</code>
-      </pre>
-    )
-  }
-
-  return elements
-}
-
-function inlineFormat(text: string): React.ReactNode {
-  const parts: React.ReactNode[] = []
-  let remaining = text
-  let key = 0
-
-  while (remaining.length > 0) {
-    const codeMatch = remaining.match(/^(.*?)`([^`]+)`(.*)$/)
-    if (codeMatch) {
-      if (codeMatch[1]) {
-        parts.push(...inlineBoldItalic(codeMatch[1], key))
-        key += 10
-      }
-      parts.push(
-        <code
-          key={`ic-${key++}`}
-          className="px-1.5 py-0.5 rounded-[4px] bg-muted text-[13px] font-mono"
-        >
-          {codeMatch[2]}
-        </code>
-      )
-      remaining = codeMatch[3]
-      continue
-    }
-
-    parts.push(...inlineBoldItalic(remaining, key))
-    break
-  }
-
-  return parts.length === 1 ? parts[0] : <>{parts}</>
-}
-
-function inlineBoldItalic(text: string, startKey: number): React.ReactNode[] {
-  const parts: React.ReactNode[] = []
-  let remaining = text
-  let key = startKey
-
-  while (remaining.length > 0) {
-    const boldMatch = remaining.match(/^(.*?)\*\*(.+?)\*\*(.*)$/)
-    if (boldMatch) {
-      if (boldMatch[1]) parts.push(<span key={`t-${key++}`}>{boldMatch[1]}</span>)
-      parts.push(
-        <span key={`b-${key++}`} className="font-semibold">
-          {boldMatch[2]}
-        </span>
-      )
-      remaining = boldMatch[3]
-      continue
-    }
-
-    const italicMatch = remaining.match(/^(.*?)\*(.+?)\*(.*)$/)
-    if (italicMatch) {
-      if (italicMatch[1]) parts.push(<span key={`t-${key++}`}>{italicMatch[1]}</span>)
-      parts.push(
-        <em key={`i-${key++}`}>{italicMatch[2]}</em>
-      )
-      remaining = italicMatch[3]
-      continue
-    }
-
-    parts.push(<span key={`t-${key++}`}>{remaining}</span>)
-    break
-  }
-
-  return parts
-}
-
-function formatToolName(name: string): string {
-  return name
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase())
-}
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr + 'Z')
@@ -403,6 +222,7 @@ export default function ViewReport() {
   const [titleDraft, setTitleDraft] = useState('')
   const [newNote, setNewNote] = useState('')
   const [showNoteInput, setShowNoteInput] = useState(false)
+  const [showReportBuilder, setShowReportBuilder] = useState(false)
   const titleInputRef = useRef<HTMLInputElement>(null)
   const noteInputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -522,6 +342,15 @@ export default function ViewReport() {
   const toolCalls = parseToolCalls(currentReport.tool_calls_json)
   const uniqueTools = [...new Set(toolCalls.map((tc) => tc.name))]
 
+  const reportActions = useMemo(
+    () =>
+      currentMessages
+        .filter((m) => m.role === 'assistant')
+        .flatMap((m) => parseActionsFromMarkdown(m.content, 'report')),
+    [currentMessages]
+  )
+  const setItemsAndOpen = useActionQueueStore((s) => s.setItemsAndOpen)
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -563,6 +392,28 @@ export default function ViewReport() {
               >
                 <Pencil className="h-3.5 w-3.5" />
               </Button>
+              <div className="ml-auto shrink-0 flex items-center gap-2">
+                {reportActions.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8"
+                    onClick={() => setItemsAndOpen(reportActions)}
+                  >
+                    <ShoppingCart className="h-4 w-4 mr-1" />
+                    Review {reportActions.length} Action{reportActions.length !== 1 ? 's' : ''}
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8"
+                  onClick={() => setShowReportBuilder(true)}
+                >
+                  <FileDown className="h-4 w-4 mr-1" />
+                  Generate PDF
+                </Button>
+              </div>
             </div>
           )}
         </div>
@@ -701,6 +552,18 @@ export default function ViewReport() {
           </Button>
         </div>
       </div>
+
+      {/* Report builder dialog */}
+      <ReportBuilderDialog
+        open={showReportBuilder}
+        onOpenChange={setShowReportBuilder}
+        messages={currentMessages}
+        pinnedIds={[]}
+        defaultTitle={currentReport.title}
+        notes={notes}
+      />
+
+      <ActionReviewModal />
     </div>
   )
 }
