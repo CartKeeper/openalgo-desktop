@@ -391,6 +391,21 @@ impl Broker for SchwabBroker {
                 order_body["stopPrice"] = serde_json::json!(format!("{:.2}", trigger));
             }
         }
+        // Trailing stop parameters
+        if order.order_type == "TRAILING_STOP" {
+            order_body["stopPriceLinkBasis"] = serde_json::json!("LAST");
+            if let Some(tp) = order.trail_price {
+                if tp > 0.0 {
+                    order_body["stopPriceLinkType"] = serde_json::json!("VALUE");
+                    order_body["stopPriceOffset"] = serde_json::json!(tp);
+                }
+            } else if let Some(tp) = order.trail_percent {
+                if tp > 0.0 {
+                    order_body["stopPriceLinkType"] = serde_json::json!("PERCENT");
+                    order_body["stopPriceOffset"] = serde_json::json!(tp);
+                }
+            }
+        }
 
         let response = self
             .client
@@ -897,6 +912,7 @@ fn map_order_type(ot: &str) -> &str {
         "LIMIT" => "LIMIT",
         "SL" => "STOP_LIMIT",
         "SL-M" => "STOP",
+        "TRAILING_STOP" => "TRAILING_STOP",
         _ => "MARKET",
     }
 }
@@ -907,7 +923,7 @@ fn map_order_type_back(ot: &str) -> String {
         "LIMIT" => "LIMIT",
         "STOP_LIMIT" => "SL",
         "STOP" => "SL-M",
-        "TRAILING_STOP" => "SL-M",
+        "TRAILING_STOP" => "TRAILING_STOP",
         _ => "MARKET",
     }
     .to_string()
@@ -916,7 +932,8 @@ fn map_order_type_back(ot: &str) -> String {
 fn map_validity(v: &str) -> &str {
     match v {
         "DAY" => "DAY",
-        "IOC" => "FILL_OR_KILL",
+        "IOC" => "IMMEDIATE_OR_CANCEL",
+        "FOK" => "FILL_OR_KILL",
         "GTC" => "GOOD_TILL_CANCEL",
         _ => "DAY",
     }

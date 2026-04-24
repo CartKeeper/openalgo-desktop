@@ -16,6 +16,10 @@ pub struct OrderRequest {
     pub trigger_price: Option<f64>,
     pub disclosed_quantity: Option<i32>,
     pub amo: bool,
+    #[serde(default)]
+    pub trail_price: Option<f64>,
+    #[serde(default)]
+    pub trail_percent: Option<f64>,
     /// Broker-specific symbol format (e.g., "NSE:RELIANCE-EQ" for Fyers)
     /// Set by OrderService after looking up from symbol cache
     #[serde(skip_deserializing)]

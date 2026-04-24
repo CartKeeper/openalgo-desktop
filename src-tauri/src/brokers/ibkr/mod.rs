@@ -356,17 +356,32 @@ impl Broker for IbkrBroker {
             )));
         }
 
+        let mut order_obj = serde_json::json!({
+            "conid": conid,
+            "orderType": map_order_type(&order.order_type),
+            "side": order.side.to_uppercase(),
+            "quantity": order.quantity,
+            "tif": map_validity(&order.validity),
+            "price": order.price,
+            "auxPrice": order.trigger_price.unwrap_or(0.0),
+            "outsideRTH": order.amo,
+        });
+        // Trailing stop parameters
+        if order.order_type == "TRAILING_STOP" {
+            if let Some(tp) = order.trail_price {
+                if tp > 0.0 {
+                    order_obj["trailingType"] = serde_json::json!("amt");
+                    order_obj["trailingAmt"] = serde_json::json!(tp);
+                }
+            } else if let Some(tp) = order.trail_percent {
+                if tp > 0.0 {
+                    order_obj["trailingType"] = serde_json::json!("%");
+                    order_obj["trailingAmt"] = serde_json::json!(tp);
+                }
+            }
+        }
         let order_body = serde_json::json!({
-            "orders": [{
-                "conid": conid,
-                "orderType": map_order_type(&order.order_type),
-                "side": order.side.to_uppercase(),
-                "quantity": order.quantity,
-                "tif": map_validity(&order.validity),
-                "price": order.price,
-                "auxPrice": order.trigger_price.unwrap_or(0.0),
-                "outsideRTH": order.amo,
-            }]
+            "orders": [order_obj]
         });
 
         let response = self
@@ -824,6 +839,7 @@ fn map_order_type(ot: &str) -> &str {
         "LIMIT" => "LMT",
         "SL" => "STP LMT",
         "SL-M" => "STP",
+        "TRAILING_STOP" => "TRAIL",
         _ => "MKT",
     }
 }
@@ -834,7 +850,7 @@ fn map_order_type_back(ot: &str) -> String {
         "LMT" => "LIMIT",
         "STP LMT" | "STP_LMT" => "SL",
         "STP" => "SL-M",
-        "TRAIL" => "SL-M",
+        "TRAIL" => "TRAILING_STOP",
         _ => "MARKET",
     }
     .to_string()

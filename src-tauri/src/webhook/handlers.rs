@@ -321,6 +321,8 @@ pub async fn place_order(
         disclosed_quantity: if req.disclosed_quantity > 0 { Some(req.disclosed_quantity) } else { None },
         validity: "DAY".to_string(),
         amo: false,
+        trail_price: None,
+        trail_percent: None,
         broker_symbol: None,  // Set by OrderService from symbol cache
         symbol_token: None,   // Set by OrderService from symbol cache
     };
@@ -917,6 +919,8 @@ pub async fn place_basket_order(
         disclosed_quantity: None,
         validity: "DAY".to_string(),
         amo: false,
+        trail_price: None,
+        trail_percent: None,
         broker_symbol: None,  // Set by OrderService from symbol cache
         symbol_token: None,   // Set by OrderService from symbol cache
     }).collect();

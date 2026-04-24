@@ -64,6 +64,7 @@ pub async fn broker_login(
         auth_token: auth_response.auth_token,
         feed_token: auth_response.feed_token,
         user_id: auth_response.user_id.clone(),
+        user_name: auth_response.user_name.clone(),
         authenticated_at: chrono::Utc::now(),
     };
 
@@ -141,6 +142,7 @@ pub async fn set_active_broker(
             auth_token,
             feed_token,
             user_id: String::new(), // Will be populated on first API call
+            user_name: None,
             authenticated_at: chrono::Utc::now(),
         };
         state.set_broker_session(Some(session));

@@ -116,6 +116,8 @@ impl SmartOrderService {
             disclosed_quantity: None,
             validity: "DAY".to_string(),
             amo: false,
+            trail_price: None,
+            trail_percent: None,
             broker_symbol: None,  // Set by OrderService from symbol cache
             symbol_token: None,   // Set by OrderService from symbol cache
         };
@@ -166,6 +168,8 @@ impl SmartOrderService {
                 disclosed_quantity: None,
                 validity: "DAY".to_string(),
                 amo: false,
+                trail_price: None,
+                trail_percent: None,
                 broker_symbol: None,  // Set by OrderService from symbol cache
                 symbol_token: None,   // Set by OrderService from symbol cache
             };

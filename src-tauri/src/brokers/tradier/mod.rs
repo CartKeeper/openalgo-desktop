@@ -429,6 +429,18 @@ impl Broker for TradierBroker {
                 params.push(("stop", format!("{:.2}", trigger)));
             }
         }
+        // Trailing stop parameters
+        if order.order_type == "TRAILING_STOP" {
+            if let Some(tp) = order.trail_price {
+                if tp > 0.0 {
+                    params.push(("stop", format!("{:.2}", tp)));
+                }
+            } else if let Some(tp) = order.trail_percent {
+                if tp > 0.0 {
+                    params.push(("stop", format!("{:.2}", tp)));
+                }
+            }
+        }
 
         let response = self
             .client
@@ -939,6 +951,7 @@ fn map_order_type(ot: &str) -> &str {
         "LIMIT" => "limit",
         "SL" => "stop_limit",
         "SL-M" => "stop",
+        "TRAILING_STOP" => "trailing_stop",
         _ => "market",
     }
 }
@@ -949,6 +962,7 @@ fn map_order_type_back(ot: &str) -> String {
         "limit" => "LIMIT",
         "stop_limit" => "SL",
         "stop" => "SL-M",
+        "trailing_stop" => "TRAILING_STOP",
         _ => "MARKET",
     }
     .to_string()

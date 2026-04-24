@@ -28,6 +28,7 @@ pub struct BrokerSession {
     pub auth_token: String,
     pub feed_token: Option<String>,
     pub user_id: String,
+    pub user_name: Option<String>,
     pub authenticated_at: chrono::DateTime<chrono::Utc>,
 }
 

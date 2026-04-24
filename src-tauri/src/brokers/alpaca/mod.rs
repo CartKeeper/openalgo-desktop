@@ -308,6 +308,19 @@ impl Broker for AlpacaBroker {
                 body["stop_price"] = serde_json::json!(trigger.to_string());
             }
         }
+        // Trailing stop parameters
+        if order.order_type == "TRAILING_STOP" {
+            if let Some(tp) = order.trail_price {
+                if tp > 0.0 {
+                    body["trail_price"] = serde_json::json!(tp.to_string());
+                }
+            }
+            if let Some(tp) = order.trail_percent {
+                if tp > 0.0 {
+                    body["trail_percent"] = serde_json::json!(tp.to_string());
+                }
+            }
+        }
         // Extended hours for AMO
         if order.amo {
             body["extended_hours"] = serde_json::json!(true);
@@ -804,6 +817,7 @@ fn map_order_type(ot: &str) -> &str {
         "LIMIT" => "limit",
         "SL" => "stop_limit",
         "SL-M" => "stop",
+        "TRAILING_STOP" => "trailing_stop",
         _ => "market",
     }
 }
@@ -814,7 +828,7 @@ fn map_order_type_back(ot: &str) -> String {
         "limit" => "LIMIT",
         "stop_limit" => "SL",
         "stop" => "SL-M",
-        "trailing_stop" => "SL-M",
+        "trailing_stop" => "TRAILING_STOP",
         _ => "MARKET",
     }
     .to_string()
@@ -825,6 +839,7 @@ fn map_validity(v: &str) -> &str {
         "DAY" => "day",
         "IOC" => "ioc",
         "GTC" => "gtc",
+        "FOK" => "fok",
         _ => "day",
     }
 }
