@@ -1,4 +1,4 @@
-import { Check, Loader2, ShoppingCart, X } from 'lucide-react'
+import { Check, Copy, Loader2, ShoppingCart, X } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { emit } from '@tauri-apps/api/event'
@@ -22,6 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { formatRecommendationsAsCsv } from '@/lib/csvRecommendations'
 import { cn } from '@/lib/utils'
 import { useActionQueueStore } from '@/stores/actionQueueStore'
 import type { OrderRecommendation } from '@/types/actionQueue'
@@ -257,6 +258,16 @@ export function ActionReviewModal({
     close()
   }
 
+  const handleCopyCsv = async () => {
+    try {
+      const csv = formatRecommendationsAsCsv(items)
+      await navigator.clipboard.writeText(csv)
+      toast.success(`Copied ${items.length} trade${items.length !== 1 ? 's' : ''} to clipboard`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to copy')
+    }
+  }
+
   const defaultApplyLabel = onApply
     ? cloneNameRequired
       ? 'Create Clone & Apply'
@@ -275,6 +286,19 @@ export function ActionReviewModal({
               <Badge variant="secondary" className="ml-1 text-xs">
                 {items.length} order{items.length !== 1 ? 's' : ''}
               </Badge>
+            )}
+            {!showResults && items.length > 0 && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={handleCopyCsv}
+                title="Copy as CSV"
+                aria-label="Copy as CSV"
+                className="ml-auto h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+              >
+                <Copy className="h-4 w-4" />
+              </Button>
             )}
           </DialogTitle>
           <DialogDescription>
