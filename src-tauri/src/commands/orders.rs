@@ -2,7 +2,7 @@
 
 use crate::brokers::types::{Order, OrderRequest, ModifyOrderRequest};
 use crate::error::Result;
-use crate::services::{OrderService, OrderbookService};
+use crate::services::{OrderService, OrderbookService, PlaceOrderResult, SmartOrderService};
 use crate::state::AppState;
 use serde::Serialize;
 use tauri::State;
@@ -92,4 +92,16 @@ pub async fn get_trade_book(state: State<'_, AppState>) -> Result<Vec<Order>> {
     let result = OrderbookService::get_tradebook(&state, None).await?;
     tracing::info!("Trade book retrieved in {} mode", result.mode);
     Ok(result.trades)
+}
+
+/// Place a basket of orders
+///
+/// Routes each order through OrderService (sandbox in analyze mode).
+#[tauri::command]
+pub async fn place_basket_order(
+    state: State<'_, AppState>,
+    orders: Vec<OrderRequest>,
+) -> Result<Vec<PlaceOrderResult>> {
+    tracing::info!("Placing basket order: {} orders", orders.len());
+    SmartOrderService::place_basket_order(&state, orders, None).await
 }

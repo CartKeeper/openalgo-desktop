@@ -104,6 +104,11 @@ export function useSocket() {
       }
     }).then((unlisten) => unlisteners.push(unlisten))
 
+    // Basket order event (from ActionReviewModal)
+    listen<{ count: number }>('basket_order_event', () => {
+      playAlertSound()
+    }).then((unlisten) => unlisteners.push(unlisten))
+
     // Generic notification
     listen<{ message: string; type?: string }>('notification', (event) => {
       playAlertSound()

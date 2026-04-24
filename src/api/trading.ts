@@ -113,6 +113,10 @@ export interface PlaceOrderRequest {
   quantity: number
   trigger_price?: number
   disclosed_quantity?: number
+  validity?: string
+  amo?: boolean
+  trail_price?: number
+  trail_percent?: number
 }
 
 // Convert Quote to QuotesData format
@@ -220,7 +224,14 @@ export const tradingApi = {
    */
   getPositions: async (_apiKey: string): Promise<ApiResponse<Position[]>> => {
     try {
-      const positions = await positionCommands.getPositions()
+      const rawPositions = await positionCommands.getPositions()
+      // Map: Rust doesn't send pnlpercent, calculate from pnl and cost basis
+      const positions: Position[] = rawPositions.map((p) => ({
+        ...p,
+        pnlpercent: p.pnlpercent ?? (p.average_price && p.quantity
+          ? (p.pnl / (p.average_price * Math.abs(p.quantity))) * 100
+          : 0),
+      }))
       return {
         status: 'success',
         data: positions,
@@ -313,11 +324,18 @@ export const tradingApi = {
     _apiKey: string
   ): Promise<ApiResponse<{ holdings: Holding[]; statistics: PortfolioStats }>> => {
     try {
-      const holdings = await holdingsCommands.getHoldings()
+      const rawHoldings = await holdingsCommands.getHoldings()
+
+      // Map Rust field names to frontend field names
+      const holdings: Holding[] = rawHoldings.map((h) => ({
+        ...h,
+        pnlpercent: h.pnl_percentage ?? h.pnlpercent ?? 0,
+        product: h.product || 'CNC',
+      }))
 
       // Calculate statistics
-      const totalInvestment = holdings.reduce((sum, h) => sum + h.average_price * h.quantity, 0)
-      const currentValue = holdings.reduce((sum, h) => sum + h.current_value, 0)
+      const totalInvestment = holdings.reduce((sum, h) => sum + (h.average_price ?? 0) * h.quantity, 0)
+      const currentValue = rawHoldings.reduce((sum, h) => sum + (h.current_value ?? 0), 0)
       const totalPnl = holdings.reduce((sum, h) => sum + h.pnl, 0)
       const totalPnlPercent = totalInvestment > 0 ? (totalPnl / totalInvestment) * 100 : 0
 
@@ -353,10 +371,12 @@ export const tradingApi = {
         price: order.price,
         order_type: order.pricetype,
         product: order.product,
-        validity: 'DAY',
+        validity: order.validity || 'DAY',
         trigger_price: order.trigger_price,
         disclosed_quantity: order.disclosed_quantity,
-        amo: false,
+        amo: order.amo || false,
+        trail_price: order.trail_price,
+        trail_percent: order.trail_percent,
       })
 
       return {
@@ -506,6 +526,48 @@ export const tradingApi = {
    */
   getMarketDepth: async (exchange: string, symbol: string): Promise<MarketDepth> => {
     return quoteCommands.getMarketDepth(exchange, symbol)
+  },
+
+  /**
+   * Place a basket of orders
+   */
+  placeBasketOrder: async (
+    orders: PlaceOrderRequest[]
+  ): Promise<ApiResponse<{ symbol: string; exchange: string; orderId: string | null; success: boolean; message: string }[]>> => {
+    try {
+      const results = await orderCommands.placeBasketOrder(
+        orders.map((o) => ({
+          symbol: o.symbol,
+          exchange: o.exchange,
+          side: o.action,
+          quantity: o.quantity,
+          price: o.price,
+          order_type: o.pricetype,
+          product: o.product,
+          validity: o.validity || 'DAY',
+          trigger_price: o.trigger_price,
+          disclosed_quantity: o.disclosed_quantity,
+          amo: o.amo || false,
+          trail_price: o.trail_price,
+          trail_percent: o.trail_percent,
+        }))
+      )
+      return {
+        status: 'success',
+        data: results.map((r, i) => ({
+          symbol: orders[i].symbol,
+          exchange: orders[i].exchange,
+          orderId: r.order_id,
+          success: r.success,
+          message: r.message,
+        })),
+      }
+    } catch (error) {
+      return {
+        status: 'error',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      }
+    }
   },
 }
 

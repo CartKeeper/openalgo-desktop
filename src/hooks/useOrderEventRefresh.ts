@@ -13,6 +13,7 @@ import { useEffect, useRef } from 'react'
  */
 export type OrderEventType =
   | 'order_event'
+  | 'basket_order_event'
   | 'analyzer_update'
   | 'close_position_event'
   | 'cancel_order_event'

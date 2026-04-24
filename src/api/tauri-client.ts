@@ -81,6 +81,8 @@ export interface OrderRequest {
   trigger_price?: number
   disclosed_quantity?: number
   amo: boolean
+  trail_price?: number
+  trail_percent?: number
 }
 
 export interface ModifyOrderRequest {
@@ -95,6 +97,13 @@ export interface OrderResponse {
   success: boolean
   order_id: string
   message?: string
+}
+
+export interface PlaceOrderResult {
+  success: boolean
+  order_id: string | null
+  message: string
+  mode: string
 }
 
 export interface Order {
@@ -545,6 +554,8 @@ export const orderCommands = {
   getOrderBook: () => tauriInvoke<Order[]>('get_order_book'),
 
   getTradeBook: () => tauriInvoke<Order[]>('get_trade_book'),
+  placeBasketOrder: (orders: OrderRequest[]) =>
+    tauriInvoke<PlaceOrderResult[]>('place_basket_order', { orders }),
 }
 
 // ============================================================================
