@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import {
   Bot,
   ClipboardCheck,
+  Copy,
   Loader2,
   Send,
   Sparkles,
@@ -23,6 +24,7 @@ import { renderMarkdown, formatToolName } from '@/lib/markdown'
 import { parseActionsFromMarkdown } from '@/lib/parseActions'
 import { ActionReviewModal } from '@/components/trading/ActionReviewModal'
 import { applyScenarioRecommendations } from '@/lib/applyScenarioRecommendations'
+import { formatRecommendationsAsCsv } from '@/lib/csvRecommendations'
 import { useActionQueueStore } from '@/stores/actionQueueStore'
 import type { OrderRecommendation } from '@/types/actionQueue'
 import { useClientScenarioStore } from '@/stores/clientScenarioStore'
@@ -218,6 +220,21 @@ export default function AnalyzeWithClaudeDialog({
     }
   }
 
+  const handleCopyMessageCsv = async (messageContent: string) => {
+    const actions = parseActionsFromMarkdown(messageContent, 'copilot')
+    if (actions.length === 0) {
+      toast.error('No recommended trades found in this message')
+      return
+    }
+    try {
+      const csv = formatRecommendationsAsCsv(actions)
+      await navigator.clipboard.writeText(csv)
+      toast.success(`Copied ${actions.length} trade${actions.length !== 1 ? 's' : ''} to clipboard`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to copy')
+    }
+  }
+
   return (
     <>
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -302,15 +319,28 @@ export default function AnalyzeWithClaudeDialog({
                         )}
                       </div>
                       {hasActions && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="mt-2 text-xs h-8"
-                          onClick={() => handleReviewRecommendations(msg.content)}
-                        >
-                          <ClipboardCheck className="h-3.5 w-3.5 mr-2" />
-                          Review Recommendations
-                        </Button>
+                        <div className="mt-2 flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-xs h-8"
+                            onClick={() => handleReviewRecommendations(msg.content)}
+                          >
+                            <ClipboardCheck className="h-3.5 w-3.5 mr-2" />
+                            Review Recommendations
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleCopyMessageCsv(msg.content)}
+                            title="Copy as CSV"
+                            aria-label="Copy as CSV"
+                            className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
                       )}
                     </div>
                   )
