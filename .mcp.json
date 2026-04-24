@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "sidekick": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "/Users/jasonborst/sidekick/node_modules/tsx/dist/cli.mjs",
+        "/Users/jasonborst/sidekick/src/mcp/index.ts"
+      ],
+      "cwd": "/Users/jasonborst/sidekick",
+      "env": {}
+    }
+  }
+}

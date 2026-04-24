@@ -83,6 +83,23 @@ When something isn't working:
 6. **EXECUTE.** Make the fix.
 7. **VERIFY.** Prove it works.
 
+### Runtime "Not Found" Errors — Check the Basics First
+
+When a function, command, or module exists in source code and compiles successfully but fails at runtime with "not found":
+
+1. **Verify which directory the dev server is actually running from.** Check the startup logs for the watched/compiled path. If the process is running from a different project directory, the compiled binary will not contain the code you're looking at.
+2. **Do NOT assume the issue is caching, ACL, permissions, or framework internals** until you have confirmed step 1. The simplest explanation — wrong directory, wrong binary, wrong build — is usually correct.
+3. **If you have failed to fix the same error more than once, STOP and enumerate ALL possible causes before retrying the same theory.** Repeating the same fix that already failed is prohibited.
+
+### When the Code Looks Correct But Things Still Fail
+
+If the code is verified correct and the error persists, **stop looking at the code.** The problem is outside it. Deconstruct the error message literally and trace every step in the workflow that could produce it — including steps on the user's side:
+
+1. **Deconstruct the error.** What system generated it? What input produced it? Trace backward from the error to the origin, not forward from the code to the error.
+2. **Consider the ENTIRE workflow, not just the codebase.** The failure could be in: the run command, the working directory, the environment, the process that launched the app, a proxy, a port conflict, a stale process, a config file outside the repo, or the user's local setup.
+3. **"The code is correct" is not a diagnosis.** If the code is correct and the error exists, then something between the code and the runtime is wrong. Find that something. Do not keep re-verifying the code.
+4. **NEVER assume only code can cause errors.** Infrastructure, environment, tooling, and workflow are equally valid failure sources. ALL options for failure MUST be considered — not just the ones inside the source tree.
+
 ---
 
 ## 🚨 IF YOU'RE ABOUT TO IGNORE A RULE
