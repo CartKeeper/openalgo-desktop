@@ -163,7 +163,7 @@ export default function OrderBook() {
 
   // Refresh when orders are placed from other pages (Fundamentals, Copilot, Watchlist)
   useOrderEventRefresh(() => fetchOrders(true), {
-    events: ['order_event'],
+    events: ['order_event', 'basket_order_event'],
     delay: 500,
   })
 

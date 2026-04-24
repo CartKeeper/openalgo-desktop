@@ -9,6 +9,7 @@ import {
   Loader2,
   Play,
   RefreshCw,
+  ShoppingCart,
   Shield,
   Target,
   TrendingUp,
@@ -17,7 +18,10 @@ import {
 import React, { useCallback, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
+import { ActionReviewModal } from '@/components/trading/ActionReviewModal'
 import type { ToolCallInfo } from '@/stores/copilotStore'
+import { parseActionsFromMarkdown } from '@/lib/parseActions'
+import { useActionQueueStore } from '@/stores/actionQueueStore'
 import { useReportsStore } from '@/stores/reportsStore'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -388,8 +392,10 @@ export default function BriefingPage() {
   const [generatedAt, setGeneratedAt] = useState<string | null>(null)
   const [rawText, setRawText] = useState('')
   const [isSaving, setIsSaving] = useState(false)
+  const [actionCount, setActionCount] = useState(0)
   const navigate = useNavigate()
   const { saveReport } = useReportsStore()
+  const setItemsAndOpen = useActionQueueStore((s) => s.setItemsAndOpen)
 
   const generate = useCallback(async () => {
     setIsGenerating(true)
@@ -407,6 +413,9 @@ export default function BriefingPage() {
       }))
 
       const parsed = parseSections(response.response_text)
+
+      const actions = parseActionsFromMarkdown(response.response_text, 'briefing')
+      setActionCount(actions.length)
 
       setSections(parsed)
       setToolCalls(tools)
@@ -499,16 +508,32 @@ export default function BriefingPage() {
         </Button>
 
         {sections.length > 0 && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-10 gap-2"
-            onClick={handleSaveAsReport}
-            disabled={isSaving}
-          >
-            <FileText className="h-4 w-4" />
-            {isSaving ? 'Saving...' : 'Save as Report'}
-          </Button>
+          <>
+            {actionCount > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-10 gap-2"
+                onClick={() => {
+                  const actions = parseActionsFromMarkdown(rawText, 'briefing')
+                  if (actions.length > 0) setItemsAndOpen(actions)
+                }}
+              >
+                <ShoppingCart className="h-4 w-4" />
+                Review {actionCount} Action{actionCount !== 1 ? 's' : ''}
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-10 gap-2"
+              onClick={handleSaveAsReport}
+              disabled={isSaving}
+            >
+              <FileText className="h-4 w-4" />
+              {isSaving ? 'Saving...' : 'Save as Report'}
+            </Button>
+          </>
         )}
 
         {generatedAt && (
@@ -572,6 +597,8 @@ export default function BriefingPage() {
           ))}
         </div>
       )}
+
+      <ActionReviewModal />
     </div>
   )
 }

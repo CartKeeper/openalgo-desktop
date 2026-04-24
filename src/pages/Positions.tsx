@@ -1,17 +1,22 @@
 import {
   ArrowUpDown,
+  Bell,
   ChevronDown,
   ChevronRight,
   Download,
   Loader2,
+  MoreHorizontal,
   Radio,
   RefreshCw,
+  Scissors,
   Settings2,
+  ShieldAlert,
   TrendingDown,
   TrendingUp,
   X,
 } from 'lucide-react'
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { tradingApi } from '@/api/trading'
 import {
@@ -37,6 +42,14 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { PlaceOrderDialog } from '@/components/trading/PlaceOrderDialog'
 import { Label } from '@/components/ui/label'
 import {
   Table,
@@ -128,10 +141,22 @@ const PRODUCT_COLORS: Record<string, string> = {
 
 export default function Positions() {
   const { apiKey } = useAuthStore()
+  const navigate = useNavigate()
   const [positions, setPositions] = useState<Position[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Order dialog state for position actions
+  const [orderDialogConfig, setOrderDialogConfig] = useState<{
+    open: boolean
+    symbol: string
+    side: 'BUY' | 'SELL'
+    orderType: 'MARKET' | 'LIMIT' | 'SL' | 'SL-M' | 'TRAILING_STOP'
+    quantity: number
+    price?: number
+    triggerPrice?: number
+  } | null>(null)
 
   // Filter and grouping state
   const [grouping, setGrouping] = useState<GroupingType>('none')
@@ -222,7 +247,7 @@ export default function Positions() {
 
   // Centralized Socket.IO event listener for order events
   useOrderEventRefresh(fetchPositions, {
-    events: ['order_event', 'analyzer_update', 'close_position_event'],
+    events: ['order_event', 'basket_order_event', 'analyzer_update', 'close_position_event'],
     delay: 500,
   })
 
@@ -416,6 +441,45 @@ export default function Positions() {
       console.error('Close all positions error:', err)
       toast.error('Failed to close all positions')
     }
+  }
+
+  // Position action handlers
+  const handleSetStopLoss = (position: Position) => {
+    const side = position.quantity > 0 ? 'SELL' : 'BUY'
+    setOrderDialogConfig({
+      open: true,
+      symbol: position.symbol,
+      side,
+      orderType: 'SL-M',
+      quantity: Math.abs(position.quantity),
+    })
+  }
+
+  const handleSetTrailingStop = (position: Position) => {
+    const side = position.quantity > 0 ? 'SELL' : 'BUY'
+    setOrderDialogConfig({
+      open: true,
+      symbol: position.symbol,
+      side,
+      orderType: 'TRAILING_STOP',
+      quantity: Math.abs(position.quantity),
+    })
+  }
+
+  const handleTakePartialProfit = (position: Position) => {
+    const side = position.quantity > 0 ? 'SELL' : 'BUY'
+    setOrderDialogConfig({
+      open: true,
+      symbol: position.symbol,
+      side,
+      orderType: 'LIMIT',
+      quantity: Math.floor(Math.abs(position.quantity) / 2) || 1,
+      price: position.ltp,
+    })
+  }
+
+  const handleSetPriceAlert = (position: Position) => {
+    navigate(`/alerts?symbol=${encodeURIComponent(position.symbol)}`)
   }
 
   const exportToCSV = () => {
@@ -917,14 +981,39 @@ export default function Positions() {
                                 {position.pnlpercent?.toFixed(2) ?? '0.00'}%
                               </TableCell>
                               <TableCell className="w-[60px] text-right">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="text-destructive hover:text-destructive hover:bg-destructive/10"
-                                  onClick={() => handleClosePosition(position)}
-                                >
-                                  <X className="h-4 w-4" />
-                                </Button>
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                                      <MoreHorizontal className="h-4 w-4" />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end" className="w-48">
+                                    <DropdownMenuItem onClick={() => handleSetStopLoss(position)}>
+                                      <ShieldAlert className="h-4 w-4 mr-2" />
+                                      Set Stop Loss
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleSetTrailingStop(position)}>
+                                      <TrendingDown className="h-4 w-4 mr-2" />
+                                      Set Trailing Stop
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleTakePartialProfit(position)}>
+                                      <Scissors className="h-4 w-4 mr-2" />
+                                      Take Partial Profit
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleSetPriceAlert(position)}>
+                                      <Bell className="h-4 w-4 mr-2" />
+                                      Set Price Alert
+                                    </DropdownMenuItem>
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem
+                                      className="text-destructive focus:text-destructive"
+                                      onClick={() => handleClosePosition(position)}
+                                    >
+                                      <X className="h-4 w-4 mr-2" />
+                                      Close Position
+                                    </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
                               </TableCell>
                             </TableRow>
                           ))}
@@ -954,6 +1043,26 @@ export default function Positions() {
           )}
         </CardContent>
       </Card>
+
+      {/* Controlled PlaceOrderDialog for position actions */}
+      {orderDialogConfig && (
+        <PlaceOrderDialog
+          open={orderDialogConfig.open}
+          onOpenChange={(open) => {
+            if (!open) setOrderDialogConfig(null)
+          }}
+          defaultSymbol={orderDialogConfig.symbol}
+          defaultSide={orderDialogConfig.side}
+          defaultOrderType={orderDialogConfig.orderType}
+          defaultQuantity={orderDialogConfig.quantity}
+          defaultPrice={orderDialogConfig.price}
+          defaultTriggerPrice={orderDialogConfig.triggerPrice}
+          onOrderPlaced={() => {
+            setOrderDialogConfig(null)
+            fetchPositions(true)
+          }}
+        />
+      )}
     </div>
   )
 }

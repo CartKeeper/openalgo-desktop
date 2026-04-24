@@ -996,9 +996,9 @@ export function WatchlistCard() {
                                 </div>
                                 <span className={cn(
                                   'text-xs font-bold tabular-nums',
-                                  pos.pnl >= 0 ? 'text-green-500' : 'text-red-500'
+                                  (pos.pnl ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'
                                 )}>
-                                  {pos.pnl >= 0 ? '+' : ''}{formatPrice(pos.pnl)}
+                                  {(pos.pnl ?? 0) >= 0 ? '+' : ''}{formatPrice(pos.pnl ?? 0)}
                                 </span>
                               </div>
                               <div className="grid grid-cols-3 gap-2 text-[10px]">
@@ -1012,8 +1012,8 @@ export function WatchlistCard() {
                                 </div>
                                 <div className="text-right">
                                   <span className="text-muted-foreground">P&L %</span>
-                                  <div className={cn('font-medium tabular-nums', pos.pnlpercent >= 0 ? 'text-green-500' : 'text-red-500')}>
-                                    {pos.pnlpercent >= 0 ? '+' : ''}{pos.pnlpercent.toFixed(2)}%
+                                  <div className={cn('font-medium tabular-nums', (pos.pnlpercent ?? 0) >= 0 ? 'text-green-500' : 'text-red-500')}>
+                                    {(pos.pnlpercent ?? 0) >= 0 ? '+' : ''}{(pos.pnlpercent ?? 0).toFixed(2)}%
                                   </div>
                                 </div>
                               </div>
@@ -1037,9 +1037,9 @@ export function WatchlistCard() {
                                 </span>
                                 <span className={cn(
                                   'text-xs font-bold tabular-nums',
-                                  hold.pnl >= 0 ? 'text-green-500' : 'text-red-500'
+                                  (hold.pnl ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'
                                 )}>
-                                  {hold.pnl >= 0 ? '+' : ''}{formatPrice(hold.pnl)} ({hold.pnlpercent >= 0 ? '+' : ''}{hold.pnlpercent.toFixed(2)}%)
+                                  {(hold.pnl ?? 0) >= 0 ? '+' : ''}{formatPrice(hold.pnl ?? 0)} ({(hold.pnlpercent ?? 0) >= 0 ? '+' : ''}{(hold.pnlpercent ?? 0).toFixed(2)}%)
                                 </span>
                               </div>
                               <div className="grid grid-cols-2 gap-2 text-[10px]">

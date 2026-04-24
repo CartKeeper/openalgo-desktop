@@ -107,7 +107,7 @@ export default function Holdings() {
 
   // Centralized Socket.IO event listener for order events
   useOrderEventRefresh(fetchHoldings, {
-    events: ['order_event', 'analyzer_update'],
+    events: ['order_event', 'basket_order_event', 'analyzer_update'],
     delay: 500,
   })
 

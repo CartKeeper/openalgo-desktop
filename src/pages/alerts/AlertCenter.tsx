@@ -21,7 +21,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -522,6 +522,7 @@ export default function AlertCenter() {
     updateSettings,
   } = useAlertStore()
 
+  const [searchParams, setSearchParams] = useSearchParams()
   const [historyFilter, setHistoryFilter] = useState<string>('all')
   const [showForm, setShowForm] = useState(false)
   const [editingAlert, setEditingAlert] = useState<AlertConfig | null>(null)
@@ -533,6 +534,16 @@ export default function AlertCenter() {
     fetchUnacknowledgedCount()
     fetchSettings()
   }, [fetchAlerts, fetchHistory, fetchUnacknowledgedCount, fetchSettings])
+
+  // Pre-fill from query params (e.g. /alerts?symbol=PLTR)
+  useEffect(() => {
+    const symbolParam = searchParams.get('symbol')
+    if (symbolParam) {
+      setShowForm(true)
+      // Clear the param so it doesn't re-trigger
+      setSearchParams({}, { replace: true })
+    }
+  }, [searchParams, setSearchParams])
 
   // ---------- Handlers ----------
 
@@ -628,6 +639,7 @@ export default function AlertCenter() {
       ? history
       : history.filter((h) => h.alert_type === historyFilter)
 
+  const symbolFromUrl = searchParams.get('symbol') || ''
   const formInitial: AlertFormData = editingAlert
     ? {
         symbol: editingAlert.symbol,
@@ -639,7 +651,9 @@ export default function AlertCenter() {
             : '',
         cooldown_minutes: String(editingAlert.cooldown_minutes),
       }
-    : EMPTY_FORM
+    : symbolFromUrl
+      ? { ...EMPTY_FORM, symbol: symbolFromUrl }
+      : EMPTY_FORM
 
   // ---------- Render ----------
 
