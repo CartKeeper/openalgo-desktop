@@ -233,6 +233,7 @@ export function ActionReviewModal({
         setResults(response.data)
         setShowResults(true)
 
+        // Emit basket event for auto-refresh (distinct from order_event to avoid single-order toast)
         emit('basket_order_event', { count: successCount })
 
         if (failCount === 0) {
@@ -255,6 +256,13 @@ export function ActionReviewModal({
     setCloneName('')
     close()
   }
+
+  const defaultApplyLabel = onApply
+    ? cloneNameRequired
+      ? 'Create Clone & Apply'
+      : 'Apply to Scenario'
+    : `Place ${items.length} Order${items.length !== 1 ? 's' : ''}`
+  const resolvedApplyLabel = applyButtonLabel ?? defaultApplyLabel
 
   return (
     <Dialog open={isReviewOpen} onOpenChange={(open) => !open && handleClose()}>
@@ -358,12 +366,7 @@ export function ActionReviewModal({
                 {isSubmitting ? (
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 ) : null}
-                {applyButtonLabel ??
-                  (onApply
-                    ? cloneNameRequired
-                      ? 'Create Clone & Apply'
-                      : 'Apply to Scenario'
-                    : `Place ${items.length} Order${items.length !== 1 ? 's' : ''}`)}
+                {resolvedApplyLabel}
               </Button>
             </>
           )}
