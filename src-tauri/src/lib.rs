@@ -100,6 +100,7 @@ pub fn run() {
             commands::orders::cancel_order,
             commands::orders::get_order_book,
             commands::orders::get_trade_book,
+            commands::orders::place_basket_order,
             // Position commands
             commands::positions::get_positions,
             commands::positions::close_position,
@@ -304,8 +305,26 @@ pub fn run() {
             commands::clients::import_client_trades_csv,
             commands::clients::get_import_batches,
             commands::clients::delete_import_batch,
+            commands::clients::update_import_batch_account_type,
             commands::clients::get_client_positions,
+            commands::clients::get_client_positions_by_account,
+            commands::clients::get_client_positions_by_each_account,
+            commands::clients::get_client_accounts,
+            commands::clients::get_client_trades_by_account,
             commands::clients::export_client_trades_csv,
+            // Client scenario commands
+            commands::client_scenarios::create_client_scenario,
+            commands::client_scenarios::get_client_scenarios,
+            commands::client_scenarios::get_client_scenario,
+            commands::client_scenarios::update_client_scenario,
+            commands::client_scenarios::delete_client_scenario,
+            commands::client_scenarios::clone_client_scenario,
+            commands::client_scenarios::sync_baseline_scenario,
+            commands::client_scenarios::get_scenario_positions,
+            commands::client_scenarios::add_scenario_position,
+            commands::client_scenarios::update_scenario_position,
+            commands::client_scenarios::delete_scenario_position,
+            commands::client_scenarios::apply_scenario_trade,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -3,16 +3,17 @@ import {
   ArrowLeft,
   Download,
   Edit2,
+  GitBranch,
   Loader2,
   Plus,
   Trash2,
   Upload,
 } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Dialog,
   DialogContent,
@@ -38,6 +39,9 @@ import type {
   ClientTrade,
   ImportBatch,
 } from '@/types/clients'
+import { ACCOUNT_TYPES } from '@/types/clients'
+import { useAccountStore } from '@/stores/accountStore'
+import { AccountSwitcher } from '@/components/AccountSwitcher'
 import ImportCsvDialog from './ImportCsvDialog'
 
 function errMsg(err: unknown): string {
@@ -57,6 +61,23 @@ export default function ClientDetail() {
   const [isLoading, setIsLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('positions')
 
+  // Account switcher
+  const { selectedAccount, accounts, fetchClientAccounts, reset: resetAccountStore } = useAccountStore()
+  const showAccountColumn = selectedAccount === 'all' && accounts.length >= 2
+
+  // Portfolio summary stats computed from current positions
+  const portfolioStats = useMemo(() => {
+    if (positions.length === 0) return null
+    const totalPositions = positions.filter((p) => Math.abs(p.net_quantity) > 0.001).length
+    const totalTrades = positions.reduce((sum, p) => sum + p.trade_count, 0)
+    const totalFees = positions.reduce((sum, p) => sum + p.total_fees, 0)
+    const totalRealizedPnl = positions.reduce((sum, p) => sum + p.realized_pnl, 0)
+    const totalCostBasis = positions
+      .filter((p) => p.net_quantity > 0)
+      .reduce((sum, p) => sum + p.avg_price * p.net_quantity, 0)
+    return { totalPositions, totalTrades, totalFees, totalRealizedPnl, totalCostBasis }
+  }, [positions])
+
   // Edit client dialog
   const [showEditDialog, setShowEditDialog] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -66,6 +87,7 @@ export default function ClientDetail() {
     phone: '',
     broker: '',
     account_id: '',
+    account_type: '',
     notes: '',
   })
 
@@ -99,6 +121,7 @@ export default function ClientDetail() {
         phone: data.phone || '',
         broker: data.broker || '',
         account_id: data.account_id || '',
+        account_type: data.account_type || '',
         notes: data.notes || '',
       })
     } catch (err) {
@@ -109,7 +132,18 @@ export default function ClientDetail() {
 
   const loadPositions = useCallback(async () => {
     try {
-      const data = await invoke<ClientPosition[]>('get_client_positions', { clientId })
+      const acct = useAccountStore.getState().selectedAccount
+      const accounts = useAccountStore.getState().accounts
+      let data: ClientPosition[]
+      if (acct === 'all' && accounts.length >= 2) {
+        // Multiple accounts — show positions split by account so each row shows which account it belongs to
+        data = await invoke<ClientPosition[]>('get_client_positions_by_each_account', { clientId })
+      } else if (acct === 'all') {
+        // Single or no accounts — aggregate as before
+        data = await invoke<ClientPosition[]>('get_client_positions', { clientId })
+      } else {
+        data = await invoke<ClientPosition[]>('get_client_positions_by_account', { clientId, accountType: acct })
+      }
       setPositions(data)
     } catch (err) {
       console.error('Failed to load positions:', err)
@@ -118,7 +152,10 @@ export default function ClientDetail() {
 
   const loadTrades = useCallback(async () => {
     try {
-      const data = await invoke<ClientTrade[]>('get_client_trades', { clientId })
+      const acct = useAccountStore.getState().selectedAccount
+      const data = acct === 'all'
+        ? await invoke<ClientTrade[]>('get_client_trades', { clientId })
+        : await invoke<ClientTrade[]>('get_client_trades_by_account', { clientId, accountType: acct })
       setTrades(data)
     } catch (err) {
       console.error('Failed to load trades:', err)
@@ -136,13 +173,22 @@ export default function ClientDetail() {
 
   const loadAll = useCallback(async () => {
     setIsLoading(true)
-    await Promise.all([loadClient(), loadPositions(), loadTrades(), loadBatches()])
+    await Promise.all([loadClient(), loadPositions(), loadTrades(), loadBatches(), fetchClientAccounts(clientId)])
     setIsLoading(false)
-  }, [loadClient, loadPositions, loadTrades, loadBatches])
+  }, [loadClient, loadPositions, loadTrades, loadBatches, fetchClientAccounts, clientId])
 
   useEffect(() => {
     loadAll()
-  }, [loadAll])
+    return () => { resetAccountStore() }
+  }, [loadAll, resetAccountStore])
+
+  // Re-fetch positions and trades when the selected account changes
+  useEffect(() => {
+    if (!isLoading) {
+      loadPositions()
+      loadTrades()
+    }
+  }, [selectedAccount, loadPositions, loadTrades, isLoading])
 
   // Edit client
   const handleEditClient = async () => {
@@ -159,6 +205,7 @@ export default function ClientDetail() {
         phone: editForm.phone.trim() || null,
         broker: editForm.broker.trim() || null,
         accountId: editForm.account_id.trim() || null,
+        accountType: editForm.account_type || null,
         notes: editForm.notes.trim() || null,
       })
       toast.success('Client updated')
@@ -206,6 +253,8 @@ export default function ClientDetail() {
         notes: '',
       })
       await Promise.all([loadTrades(), loadPositions()])
+      // Auto-sync baselines after manual trade
+      invoke('sync_baseline_scenario', { clientId }).catch(() => {})
     } catch (err) {
       const msg = errMsg(err)
       toast.error(`Failed to add trade: ${msg}`)
@@ -220,6 +269,8 @@ export default function ClientDetail() {
       await invoke('delete_client_trade', { id: tradeId })
       toast.success('Trade deleted')
       await Promise.all([loadTrades(), loadPositions()])
+      // Auto-sync baselines after trade deletion
+      invoke('sync_baseline_scenario', { clientId }).catch(() => {})
     } catch (err) {
       const msg = errMsg(err)
       toast.error(`Failed to delete trade: ${msg}`)
@@ -233,7 +284,9 @@ export default function ClientDetail() {
       const count = await invoke<number>('delete_import_batch', { batchId: deleteBatchTarget.id })
       toast.success(`Undid import: removed ${count} trades`)
       setDeleteBatchTarget(null)
-      await Promise.all([loadTrades(), loadPositions(), loadBatches()])
+      await Promise.all([loadTrades(), loadPositions(), loadBatches(), fetchClientAccounts(clientId)])
+      // Auto-sync baselines after batch deletion
+      invoke('sync_baseline_scenario', { clientId }).catch(() => {})
     } catch (err) {
       const msg = errMsg(err)
       toast.error(`Failed to undo import: ${msg}`)
@@ -261,7 +314,9 @@ export default function ClientDetail() {
   // After CSV import success
   const handleImportSuccess = async () => {
     setShowImportDialog(false)
-    await Promise.all([loadTrades(), loadPositions(), loadBatches()])
+    await Promise.all([loadTrades(), loadPositions(), loadBatches(), fetchClientAccounts(clientId)])
+    // Auto-sync baseline scenarios so per-account baselines are created/updated
+    invoke('sync_baseline_scenario', { clientId }).catch(() => {})
   }
 
   if (isLoading) {
@@ -298,14 +353,66 @@ export default function ClientDetail() {
           <div className="flex items-center gap-3 text-sm text-muted-foreground">
             {client.broker && <span>Broker: {client.broker}</span>}
             {client.account_id && <span className="font-mono">Acct: {client.account_id}</span>}
+            {client.account_type && (
+              <Badge variant="outline" className="text-xs">
+                {ACCOUNT_TYPES.find((t) => t.value === client.account_type)?.label || client.account_type}
+              </Badge>
+            )}
             {client.email && <span>{client.email}</span>}
+            <AccountSwitcher />
           </div>
         </div>
-        <Button variant="outline" size="sm" onClick={() => setShowEditDialog(true)}>
-          <Edit2 className="h-4 w-4 mr-2" />
-          Edit
-        </Button>
+        <div className="flex gap-2">
+          <Link to={`/clients/${clientId}/scenarios`}>
+            <Button variant="outline" size="sm">
+              <GitBranch className="h-4 w-4 mr-2" />
+              Scenarios
+            </Button>
+          </Link>
+          <Button variant="outline" size="sm" onClick={() => setShowEditDialog(true)}>
+            <Edit2 className="h-4 w-4 mr-2" />
+            Edit
+          </Button>
+        </div>
       </div>
+
+      {/* Portfolio Summary Cards */}
+      {portfolioStats && (
+        <div className="grid gap-4 md:grid-cols-4">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>Open Positions</CardDescription>
+              <CardTitle className="text-2xl text-primary font-mono tabular-nums">
+                {portfolioStats.totalPositions}
+              </CardTitle>
+            </CardHeader>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>Cost Basis</CardDescription>
+              <CardTitle className="text-2xl font-mono tabular-nums">
+                {fmt(portfolioStats.totalCostBasis)}
+              </CardTitle>
+            </CardHeader>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>Realized P&L</CardDescription>
+              <CardTitle className={`text-2xl font-mono tabular-nums ${portfolioStats.totalRealizedPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                {fmt(portfolioStats.totalRealizedPnl)}
+              </CardTitle>
+            </CardHeader>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>Total Fees</CardDescription>
+              <CardTitle className="text-2xl font-mono tabular-nums text-muted-foreground">
+                {fmt(portfolioStats.totalFees)}
+              </CardTitle>
+            </CardHeader>
+          </Card>
+        </div>
+      )}
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -337,6 +444,9 @@ export default function ClientDetail() {
                       <tr className="border-b bg-muted/50">
                         <th className="h-10 px-4 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Symbol</th>
                         <th className="h-10 px-4 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Exchange</th>
+                        {showAccountColumn && (
+                          <th className="h-10 px-4 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Account</th>
+                        )}
                         <th className="h-10 px-4 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Net Qty</th>
                         <th className="h-10 px-4 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Avg Price</th>
                         <th className="h-10 px-4 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Fees</th>
@@ -346,9 +456,16 @@ export default function ClientDetail() {
                     </thead>
                     <tbody>
                       {positions.map((pos) => (
-                        <tr key={`${pos.symbol}-${pos.exchange}`} className="border-b">
+                        <tr key={`${pos.symbol}-${pos.exchange}-${pos.account_type ?? ''}`} className="border-b">
                           <td className="h-12 px-4 font-medium">{pos.symbol}</td>
                           <td className="h-12 px-4 text-muted-foreground">{pos.exchange}</td>
+                          {showAccountColumn && (
+                            <td className="h-12 px-4">
+                              <Badge variant="outline" className="text-xs">
+                                {ACCOUNT_TYPES.find((t) => t.value === pos.account_type)?.label || pos.account_type || 'Unspecified'}
+                              </Badge>
+                            </td>
+                          )}
                           <td className="h-12 px-4 text-right font-mono tabular-nums">
                             {pos.net_quantity.toFixed(2)}
                           </td>
@@ -465,6 +582,7 @@ export default function ClientDetail() {
                     <thead>
                       <tr className="border-b bg-muted/50">
                         <th className="h-10 px-4 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Filename</th>
+                        <th className="h-10 px-4 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Account Type</th>
                         <th className="h-10 px-4 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Rows</th>
                         <th className="h-10 px-4 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Imported</th>
                         <th className="h-10 px-4 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Actions</th>
@@ -473,7 +591,39 @@ export default function ClientDetail() {
                     <tbody>
                       {batches.map((batch) => (
                         <tr key={batch.id} className="border-b">
-                          <td className="h-12 px-4 font-medium">{batch.filename}</td>
+                          <td className="h-12 px-4 font-medium truncate max-w-60">{batch.filename}</td>
+                          <td className="h-12 px-4 text-sm">
+                            <Select
+                              value={batch.account_type || 'none'}
+                              onValueChange={async (v) => {
+                                const newType = v === 'none' ? null : v
+                                try {
+                                  await invoke('update_import_batch_account_type', {
+                                    batchId: batch.id,
+                                    accountType: newType,
+                                  })
+                                  toast.success(`Account type updated for ${batch.filename}`)
+                                  await Promise.all([loadBatches(), loadPositions(), fetchClientAccounts(clientId)])
+                                  // Auto-sync baselines after account type change
+                                  invoke('sync_baseline_scenario', { clientId }).catch(() => {})
+                                } catch (err) {
+                                  toast.error(`Failed to update: ${errMsg(err)}`)
+                                }
+                              }}
+                            >
+                              <SelectTrigger className="h-8 w-48 text-xs">
+                                <SelectValue placeholder="Set account type" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="none">Not specified</SelectItem>
+                                {ACCOUNT_TYPES.map((at) => (
+                                  <SelectItem key={at.value} value={at.value}>
+                                    {at.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </td>
                           <td className="h-12 px-4 text-right font-mono tabular-nums">{batch.row_count}</td>
                           <td className="h-12 px-4 text-sm text-muted-foreground">
                             {batch.imported_at ? new Date(batch.imported_at + 'Z').toLocaleString() : '—'}
@@ -533,6 +683,28 @@ export default function ClientDetail() {
                   onChange={(e) => setEditForm({ ...editForm, account_id: e.target.value })}
                 />
               </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-account-type">Account Type</Label>
+              <Select
+                value={editForm.account_type || 'none'}
+                onValueChange={(v) => setEditForm({ ...editForm, account_type: v === 'none' ? '' : v })}
+              >
+                <SelectTrigger id="edit-account-type">
+                  <SelectValue placeholder="Select account type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Not specified</SelectItem>
+                  {ACCOUNT_TYPES.map((at) => (
+                    <SelectItem key={at.value} value={at.value}>
+                      {at.label}
+                      {!at.shortSellingAllowed && (
+                        <span className="text-muted-foreground ml-1">(no short selling)</span>
+                      )}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">

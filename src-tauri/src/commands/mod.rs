@@ -28,3 +28,4 @@ pub mod reports;
 pub mod watchlist;
 pub mod alerts;
 pub mod clients;
+pub mod client_scenarios;

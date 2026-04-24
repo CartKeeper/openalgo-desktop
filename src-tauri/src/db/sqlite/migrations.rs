@@ -59,6 +59,11 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "041_alert_system", CREATE_ALERT_SYSTEM_TABLES)?;
     run_migration(conn, "042_clients", CREATE_CLIENTS_TABLE)?;
     run_migration(conn, "043_client_trades", CREATE_CLIENT_TRADES_TABLES)?;
+    run_migration(conn, "044_client_scenarios", CREATE_CLIENT_SCENARIOS_TABLE)?;
+    run_migration(conn, "045_client_scenario_positions", CREATE_CLIENT_SCENARIO_POSITIONS_TABLE)?;
+    run_migration(conn, "046_client_account_type", ADD_CLIENT_ACCOUNT_TYPE)?;
+    run_migration(conn, "047_import_batch_account_type", ADD_IMPORT_BATCH_ACCOUNT_TYPE)?;
+    run_migration(conn, "048_scenario_account_type", ADD_SCENARIO_ACCOUNT_TYPE)?;
 
     tracing::info!("Database migrations completed");
     Ok(())
@@ -762,4 +767,52 @@ CREATE TABLE client_trades (
 CREATE INDEX IF NOT EXISTS idx_client_trades_client ON client_trades(client_id);
 CREATE INDEX IF NOT EXISTS idx_client_trades_symbol ON client_trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_client_trades_date ON client_trades(trade_date);
+"#;
+
+/// Migration to create client_scenarios table for what-if portfolio modeling
+const CREATE_CLIENT_SCENARIOS_TABLE: &str = r#"
+CREATE TABLE client_scenarios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    description TEXT,
+    is_baseline INTEGER NOT NULL DEFAULT 0,
+    cloned_from_id INTEGER REFERENCES client_scenarios(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_client_scenarios_client ON client_scenarios(client_id);
+"#;
+
+/// Migration to create client_scenario_positions table
+const CREATE_CLIENT_SCENARIO_POSITIONS_TABLE: &str = r#"
+CREATE TABLE client_scenario_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scenario_id INTEGER NOT NULL REFERENCES client_scenarios(id) ON DELETE CASCADE,
+    symbol TEXT NOT NULL,
+    exchange TEXT NOT NULL DEFAULT 'GENERIC',
+    quantity REAL NOT NULL,
+    avg_price REAL NOT NULL,
+    side TEXT NOT NULL DEFAULT 'long',
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_scenario_positions_scenario ON client_scenario_positions(scenario_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scenario_positions_unique ON client_scenario_positions(scenario_id, symbol, exchange);
+"#;
+
+/// Migration to add account_type column to clients table
+const ADD_CLIENT_ACCOUNT_TYPE: &str = r#"
+ALTER TABLE clients ADD COLUMN account_type TEXT;
+"#;
+
+/// Migration to add account_type column to import_batches table
+const ADD_IMPORT_BATCH_ACCOUNT_TYPE: &str = r#"
+ALTER TABLE import_batches ADD COLUMN account_type TEXT;
+"#;
+
+/// Migration to add account_type column to client_scenarios table
+const ADD_SCENARIO_ACCOUNT_TYPE: &str = r#"
+ALTER TABLE client_scenarios ADD COLUMN account_type TEXT;
 "#;

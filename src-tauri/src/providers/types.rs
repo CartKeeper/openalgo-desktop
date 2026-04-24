@@ -519,6 +519,7 @@ pub struct Client {
     pub phone: Option<String>,
     pub broker: Option<String>,
     pub account_id: Option<String>,
+    pub account_type: Option<String>,
     pub notes: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
@@ -549,6 +550,7 @@ pub struct ImportBatch {
     pub client_id: i64,
     pub filename: String,
     pub row_count: i64,
+    pub account_type: Option<String>,
     pub imported_at: Option<String>,
 }
 
@@ -562,4 +564,35 @@ pub struct ClientPosition {
     pub total_fees: f64,
     pub trade_count: i64,
     pub realized_pnl: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_type: Option<String>,
+}
+
+/// A what-if scenario for a client portfolio
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientScenario {
+    pub id: Option<i64>,
+    pub client_id: i64,
+    pub name: String,
+    pub description: Option<String>,
+    pub is_baseline: bool,
+    pub cloned_from_id: Option<i64>,
+    pub account_type: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+/// A position within a client scenario
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioPosition {
+    pub id: Option<i64>,
+    pub scenario_id: i64,
+    pub symbol: String,
+    pub exchange: String,
+    pub quantity: f64,
+    pub avg_price: f64,
+    pub side: String,
+    pub notes: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
 }

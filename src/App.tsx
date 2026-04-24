@@ -88,6 +88,9 @@ const PortfolioManager = lazy(() => import('@/pages/portfolio/PortfolioManager')
 // Client management pages
 const ClientsIndex = lazy(() => import('@/pages/clients/ClientsIndex'))
 const ClientDetail = lazy(() => import('@/pages/clients/ClientDetail'))
+const ScenariosList = lazy(() => import('@/pages/clients/ScenariosList'))
+const ScenarioDetail = lazy(() => import('@/pages/clients/ScenarioDetail'))
+const ScenarioCompare = lazy(() => import('@/pages/clients/ScenarioCompare'))
 
 // Research & Analysis pages
 const BriefingPage = lazy(() => import('@/pages/briefing/BriefingPage'))
@@ -204,6 +207,9 @@ function App() {
                 {/* Client Management */}
                 <Route path="/clients" element={<ClientsIndex />} />
                 <Route path="/clients/:id" element={<ClientDetail />} />
+                <Route path="/clients/:id/scenarios" element={<ScenariosList />} />
+                <Route path="/clients/:id/scenarios/compare" element={<ScenarioCompare />} />
+                <Route path="/clients/:id/scenarios/:scenarioId" element={<ScenarioDetail />} />
                 {/* Data Provider API Keys (accessible when logged into any broker) */}
                 <Route path="/providers" element={<GenericSetup />} />
                 {/* Research & Analysis */}

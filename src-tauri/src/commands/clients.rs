@@ -1,5 +1,6 @@
 //! Client management commands
 
+use crate::db::sqlite::ClientAccount;
 use crate::error::AppError;
 use crate::providers::types::{Client, ClientPosition, ClientTrade, ImportBatch};
 use crate::state::AppState;
@@ -17,6 +18,7 @@ pub async fn create_client(
     phone: Option<String>,
     broker: Option<String>,
     account_id: Option<String>,
+    account_type: Option<String>,
     notes: Option<String>,
 ) -> Result<Client, AppError> {
     state.sqlite.add_client(
@@ -25,6 +27,7 @@ pub async fn create_client(
         phone.as_deref(),
         broker.as_deref(),
         account_id.as_deref(),
+        account_type.as_deref(),
         notes.as_deref(),
     )
 }
@@ -53,6 +56,7 @@ pub async fn update_client(
     phone: Option<String>,
     broker: Option<String>,
     account_id: Option<String>,
+    account_type: Option<String>,
     notes: Option<String>,
 ) -> Result<Client, AppError> {
     state.sqlite.update_client(
@@ -62,6 +66,7 @@ pub async fn update_client(
         phone.as_deref(),
         broker.as_deref(),
         account_id.as_deref(),
+        account_type.as_deref(),
         notes.as_deref(),
     )
 }
@@ -133,12 +138,13 @@ pub async fn import_client_trades_csv(
     client_id: i64,
     csv_content: String,
     filename: String,
+    account_type: Option<String>,
 ) -> Result<ImportBatch, AppError> {
     let trades = parse_trades_csv(&csv_content)?;
     let count = trades.len() as i64;
 
     // Create the import batch first
-    let batch = state.sqlite.add_import_batch(client_id, &filename, count)?;
+    let batch = state.sqlite.add_import_batch(client_id, &filename, count, account_type.as_deref())?;
     let batch_id = batch.id.unwrap();
 
     // Insert each trade linked to the batch
@@ -177,6 +183,15 @@ pub async fn delete_import_batch(
     state.sqlite.delete_import_batch(batch_id)
 }
 
+#[tauri::command]
+pub async fn update_import_batch_account_type(
+    state: State<'_, AppState>,
+    batch_id: i64,
+    account_type: Option<String>,
+) -> Result<ImportBatch, AppError> {
+    state.sqlite.update_import_batch_account_type(batch_id, account_type.as_deref())
+}
+
 // ---------------------------------------------------------------------------
 // Positions (computed)
 // ---------------------------------------------------------------------------
@@ -187,6 +202,40 @@ pub async fn get_client_positions(
     client_id: i64,
 ) -> Result<Vec<ClientPosition>, AppError> {
     state.sqlite.get_client_positions(client_id)
+}
+
+#[tauri::command]
+pub async fn get_client_positions_by_account(
+    state: State<'_, AppState>,
+    client_id: i64,
+    account_type: String,
+) -> Result<Vec<ClientPosition>, AppError> {
+    state.sqlite.get_client_positions_by_account(client_id, &account_type)
+}
+
+#[tauri::command]
+pub async fn get_client_positions_by_each_account(
+    state: State<'_, AppState>,
+    client_id: i64,
+) -> Result<Vec<ClientPosition>, AppError> {
+    state.sqlite.get_client_positions_by_each_account(client_id)
+}
+
+#[tauri::command]
+pub async fn get_client_accounts(
+    state: State<'_, AppState>,
+    client_id: i64,
+) -> Result<Vec<ClientAccount>, AppError> {
+    state.sqlite.get_client_accounts(client_id)
+}
+
+#[tauri::command]
+pub async fn get_client_trades_by_account(
+    state: State<'_, AppState>,
+    client_id: i64,
+    account_type: String,
+) -> Result<Vec<ClientTrade>, AppError> {
+    state.sqlite.get_client_trades_by_account(client_id, &account_type)
 }
 
 // ---------------------------------------------------------------------------
@@ -219,10 +268,28 @@ struct ParsedTrade {
     notes: Option<String>,
 }
 
+/// Strip `$`, commas, and whitespace from a monetary string and parse as f64.
+/// Returns `None` for empty strings. Handles formats like `$1,234.56`, `-$500.00`, `($100)`.
+fn parse_money(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let cleaned = s
+        .replace('$', "")
+        .replace(',', "")
+        .replace('(', "-")
+        .replace(')', "");
+    cleaned.trim().parse::<f64>().ok()
+}
+
 /// Parse CSV content into trade records with flexible column mapping.
 /// Supports two modes:
 ///   1. **Trade CSV** — has date, type, qty, price columns (full brokerage export)
 ///   2. **Portfolio CSV** — only has symbol (+ optional status/%) — imported as buy trades with today's date
+///
+/// Handles broker-specific formats (Schwab, etc.) with `$`-prefixed values,
+/// mixed action types (dividends, splits, corporate actions), and `"as of"` dates.
 fn parse_trades_csv(content: &str) -> Result<Vec<ParsedTrade>, AppError> {
     let mut trades = Vec::new();
     let mut lines = content.lines();
@@ -248,13 +315,14 @@ fn parse_trades_csv(content: &str) -> Result<Vec<ParsedTrade>, AppError> {
     let qty_idx = find_column(&headers, &["quantity", "qty", "shares", "volume"]).ok();
     let price_idx = find_column(&headers, &["price", "rate", "avg_price", "executed_price"]).ok();
 
-    let is_trade_csv = date_idx.is_some() && qty_idx.is_some() && price_idx.is_some();
+    let is_trade_csv = date_idx.is_some() && (qty_idx.is_some() || price_idx.is_some());
 
     // Optional columns (work in both modes)
-    let fees_idx = find_column(&headers, &["fees", "brokerage", "commission", "charges"]).ok();
+    let fees_idx = find_column(&headers, &["fees", "fees & comm", "brokerage", "commission", "charges"]).ok();
     let order_idx = find_column(&headers, &["order_id", "order_no", "trade_id"]).ok();
     let exch_idx = find_column(&headers, &["exchange", "market", "segment"]).ok();
-    let notes_idx = find_column(&headers, &["notes", "comment", "memo"]).ok();
+    let notes_idx = find_column(&headers, &["notes", "comment", "memo", "description"]).ok();
+    let amount_idx = find_column(&headers, &["amount", "net_amount", "total", "value"]).ok();
 
     // Portfolio-mode columns (used when trade columns are missing)
     let status_idx = find_column(&headers, &["status", "state", "active"]).ok();
@@ -277,10 +345,16 @@ fn parse_trades_csv(content: &str) -> Result<Vec<ParsedTrade>, AppError> {
 
         if is_trade_csv {
             // Full trade mode
-            let trade_date = date_idx
+            let mut trade_date = date_idx
                 .and_then(|i| cols.get(i))
                 .map(|s| s.to_string())
                 .unwrap_or_default();
+
+            // Strip "as of" suffix (e.g., "12/05/2025 as of 12/04/2025")
+            if let Some(pos) = trade_date.find(" as of ") {
+                trade_date.truncate(pos);
+            }
+
             if trade_date.is_empty() {
                 return Err(AppError::Validation(format!(
                     "Missing date on line {}", line_num + 2
@@ -292,30 +366,34 @@ fn parse_trades_csv(content: &str) -> Result<Vec<ParsedTrade>, AppError> {
                 .unwrap_or(&"buy")
                 .to_lowercase();
             let trade_type = match raw_type.as_str() {
-                "buy" | "b" | "long" => "buy".to_string(),
-                "sell" | "s" | "short" => "sell".to_string(),
+                "buy" | "b" | "long" | "buy to open" => "buy".to_string(),
+                "sell" | "s" | "short" | "sell to close" => "sell".to_string(),
                 other if !other.is_empty() => other.to_string(),
                 _ => "buy".to_string(),
             };
 
+            // Use parse_money for $-prefixed values; default to 0 for empty fields (dividends, etc.)
             let quantity: f64 = qty_idx
                 .and_then(|i| cols.get(i))
-                .and_then(|v| v.parse().ok())
-                .ok_or_else(|| {
-                    AppError::Validation(format!("Invalid quantity on line {}", line_num + 2))
-                })?;
+                .and_then(|v| parse_money(v))
+                .unwrap_or(0.0)
+                .abs();
 
             let price: f64 = price_idx
                 .and_then(|i| cols.get(i))
-                .and_then(|v| v.parse().ok())
-                .ok_or_else(|| {
-                    AppError::Validation(format!("Invalid price on line {}", line_num + 2))
-                })?;
+                .and_then(|v| parse_money(v))
+                .unwrap_or(0.0)
+                .abs();
 
             let fees: f64 = fees_idx
                 .and_then(|i| cols.get(i))
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0.0);
+                .and_then(|v| parse_money(v))
+                .unwrap_or(0.0)
+                .abs();
+
+            let amount: Option<f64> = amount_idx
+                .and_then(|i| cols.get(i))
+                .and_then(|v| parse_money(v));
 
             let exchange = exch_idx
                 .and_then(|i| cols.get(i))
@@ -328,10 +406,17 @@ fn parse_trades_csv(content: &str) -> Result<Vec<ParsedTrade>, AppError> {
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
 
-            let notes = notes_idx
-                .and_then(|i| cols.get(i))
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
+            // Build notes: description first, then amount for non-trade rows
+            let mut note_parts: Vec<String> = Vec::new();
+            if let Some(desc) = notes_idx.and_then(|i| cols.get(i)).filter(|s| !s.is_empty()) {
+                note_parts.push(desc.to_string());
+            }
+            if let Some(amt) = amount {
+                if trade_type != "buy" && trade_type != "sell" {
+                    note_parts.push(format!("Amount: {:.2}", amt));
+                }
+            }
+            let notes = if note_parts.is_empty() { None } else { Some(note_parts.join(" | ")) };
 
             trades.push(ParsedTrade {
                 symbol, exchange, trade_date, trade_type, quantity, price, fees, order_id, notes,

@@ -21,10 +21,12 @@ mod reports;
 mod watchlist;
 pub mod alerts;
 mod clients;
+mod client_scenarios;
 
 pub use reports::{ResearchReport, ResearchReportSummary, ReportNote};
 pub use watchlist::WatchlistItem;
 pub use alerts::{AlertConfig, AlertHistoryEntry, AlertGlobalSettings};
+pub use clients::ClientAccount;
 
 use crate::error::Result;
 use crate::security::SecurityManager;
@@ -1211,10 +1213,11 @@ impl SqliteDb {
         phone: Option<&str>,
         broker: Option<&str>,
         account_id: Option<&str>,
+        account_type: Option<&str>,
         notes: Option<&str>,
     ) -> Result<crate::providers::types::Client> {
         let conn = self.conn.lock();
-        clients::add_client(&conn, name, email, phone, broker, account_id, notes)
+        clients::add_client(&conn, name, email, phone, broker, account_id, account_type, notes)
     }
 
     /// Get all clients
@@ -1239,10 +1242,11 @@ impl SqliteDb {
         phone: Option<&str>,
         broker: Option<&str>,
         account_id: Option<&str>,
+        account_type: Option<&str>,
         notes: Option<&str>,
     ) -> Result<crate::providers::types::Client> {
         let conn = self.conn.lock();
-        clients::update_client(&conn, id, name, email, phone, broker, account_id, notes)
+        clients::update_client(&conn, id, name, email, phone, broker, account_id, account_type, notes)
     }
 
     /// Delete a client
@@ -1292,9 +1296,10 @@ impl SqliteDb {
         client_id: i64,
         filename: &str,
         row_count: i64,
+        account_type: Option<&str>,
     ) -> Result<crate::providers::types::ImportBatch> {
         let conn = self.conn.lock();
-        clients::add_import_batch(&conn, client_id, filename, row_count)
+        clients::add_import_batch(&conn, client_id, filename, row_count, account_type)
     }
 
     /// Get import batches for a client
@@ -1309,9 +1314,159 @@ impl SqliteDb {
         clients::delete_import_batch(&conn, batch_id)
     }
 
+    /// Update account_type on an existing import batch
+    pub fn update_import_batch_account_type(
+        &self,
+        batch_id: i64,
+        account_type: Option<&str>,
+    ) -> Result<crate::providers::types::ImportBatch> {
+        let conn = self.conn.lock();
+        clients::update_import_batch_account_type(&conn, batch_id, account_type)
+    }
+
     /// Get computed positions for a client
     pub fn get_client_positions(&self, client_id: i64) -> Result<Vec<crate::providers::types::ClientPosition>> {
         let conn = self.conn.lock();
         clients::get_client_positions(&conn, client_id)
+    }
+
+    /// Get computed positions filtered by account_type
+    pub fn get_client_positions_by_account(&self, client_id: i64, account_type: &str) -> Result<Vec<crate::providers::types::ClientPosition>> {
+        let conn = self.conn.lock();
+        clients::get_client_positions_by_account(&conn, client_id, account_type)
+    }
+
+    /// Get computed positions split by each account (not aggregated)
+    pub fn get_client_positions_by_each_account(&self, client_id: i64) -> Result<Vec<crate::providers::types::ClientPosition>> {
+        let conn = self.conn.lock();
+        clients::get_client_positions_by_each_account(&conn, client_id)
+    }
+
+    /// Get distinct accounts for a client (from import batches)
+    pub fn get_client_accounts(&self, client_id: i64) -> Result<Vec<clients::ClientAccount>> {
+        let conn = self.conn.lock();
+        clients::get_client_accounts(&conn, client_id)
+    }
+
+    /// Get trades filtered by account_type
+    pub fn get_client_trades_by_account(&self, client_id: i64, account_type: &str) -> Result<Vec<crate::providers::types::ClientTrade>> {
+        let conn = self.conn.lock();
+        clients::get_trades_by_account(&conn, client_id, account_type)
+    }
+
+    // ========== Client Scenario Methods ==========
+
+    /// Create a new client scenario
+    pub fn create_client_scenario(
+        &self,
+        client_id: i64,
+        name: &str,
+        description: Option<&str>,
+        is_baseline: bool,
+    ) -> Result<crate::providers::types::ClientScenario> {
+        let conn = self.conn.lock();
+        client_scenarios::create_scenario(&conn, client_id, name, description, is_baseline)
+    }
+
+    /// Get all scenarios for a client
+    pub fn get_client_scenarios(&self, client_id: i64) -> Result<Vec<crate::providers::types::ClientScenario>> {
+        let conn = self.conn.lock();
+        client_scenarios::get_scenarios(&conn, client_id)
+    }
+
+    /// Get a single scenario by ID
+    pub fn get_client_scenario_by_id(&self, id: i64) -> Result<crate::providers::types::ClientScenario> {
+        let conn = self.conn.lock();
+        client_scenarios::get_scenario_by_id(&conn, id)
+    }
+
+    /// Update a scenario
+    pub fn update_client_scenario(
+        &self,
+        id: i64,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<crate::providers::types::ClientScenario> {
+        let conn = self.conn.lock();
+        client_scenarios::update_scenario(&conn, id, name, description)
+    }
+
+    /// Delete a scenario
+    pub fn delete_client_scenario(&self, id: i64) -> Result<bool> {
+        let conn = self.conn.lock();
+        client_scenarios::delete_scenario(&conn, id)
+    }
+
+    /// Clone a scenario with all positions
+    pub fn clone_client_scenario(
+        &self,
+        source_id: i64,
+        client_id: i64,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<crate::providers::types::ClientScenario> {
+        let conn = self.conn.lock();
+        client_scenarios::clone_scenario(&conn, source_id, client_id, name, description)
+    }
+
+    /// Sync baseline scenarios from trade history (one per account type)
+    pub fn sync_baseline_scenarios(&self, client_id: i64) -> Result<Vec<crate::providers::types::ClientScenario>> {
+        let conn = self.conn.lock();
+        client_scenarios::sync_baseline_scenarios(&conn, client_id)
+    }
+
+    /// Get all positions for a scenario
+    pub fn get_scenario_positions(&self, scenario_id: i64) -> Result<Vec<crate::providers::types::ScenarioPosition>> {
+        let conn = self.conn.lock();
+        client_scenarios::get_scenario_positions(&conn, scenario_id)
+    }
+
+    /// Add a position to a scenario
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_scenario_position(
+        &self,
+        scenario_id: i64,
+        symbol: &str,
+        exchange: &str,
+        quantity: f64,
+        avg_price: f64,
+        side: &str,
+        notes: Option<&str>,
+    ) -> Result<crate::providers::types::ScenarioPosition> {
+        let conn = self.conn.lock();
+        client_scenarios::add_scenario_position(&conn, scenario_id, symbol, exchange, quantity, avg_price, side, notes)
+    }
+
+    /// Update a scenario position
+    pub fn update_scenario_position(
+        &self,
+        id: i64,
+        quantity: Option<f64>,
+        avg_price: Option<f64>,
+        side: Option<&str>,
+        notes: Option<&str>,
+    ) -> Result<crate::providers::types::ScenarioPosition> {
+        let conn = self.conn.lock();
+        client_scenarios::update_scenario_position(&conn, id, quantity, avg_price, side, notes)
+    }
+
+    /// Delete a scenario position
+    pub fn delete_scenario_position(&self, id: i64) -> Result<bool> {
+        let conn = self.conn.lock();
+        client_scenarios::delete_scenario_position(&conn, id)
+    }
+
+    /// Apply a simulated trade to a scenario
+    pub fn apply_scenario_trade(
+        &self,
+        scenario_id: i64,
+        symbol: &str,
+        exchange: &str,
+        side: &str,
+        quantity: f64,
+        price: f64,
+    ) -> Result<crate::providers::types::ScenarioPosition> {
+        let conn = self.conn.lock();
+        client_scenarios::apply_trade_to_scenario(&conn, scenario_id, symbol, exchange, side, quantity, price)
     }
 }
