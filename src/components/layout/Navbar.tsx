@@ -1,4 +1,5 @@
 import { BarChart3, Bell, BookOpen, LogOut, Menu, Moon, Sun, Zap } from 'lucide-react'
+import { AccountSwitcher } from '@/components/AccountSwitcher'
 import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -138,6 +139,9 @@ export function Navbar() {
           <img src="/logo.png" alt="OpenAlgo" className="h-8 w-8" />
           <span className="hidden font-semibold sm:inline-block">OpenAlgo</span>
         </Link>
+
+        {/* Account Switcher — top bar, left side (TOS-style) */}
+        <AccountSwitcher />
 
         {/* Right Side */}
         <div className="ml-auto flex items-center gap-1 sm:gap-2">
