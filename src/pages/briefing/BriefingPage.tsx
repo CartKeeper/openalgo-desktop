@@ -12,10 +12,11 @@ import {
   ShoppingCart,
   Shield,
   Target,
+  TrendingDown,
   TrendingUp,
   Zap,
 } from 'lucide-react'
-import React, { useCallback, useState } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { ActionReviewModal } from '@/components/trading/ActionReviewModal'
@@ -23,10 +24,14 @@ import type { ToolCallInfo } from '@/stores/copilotStore'
 import { parseActionsFromMarkdown } from '@/lib/parseActions'
 import { useActionQueueStore } from '@/stores/actionQueueStore'
 import { useReportsStore } from '@/stores/reportsStore'
+import { useAuthStore } from '@/stores/authStore'
+import { tradingApi } from '@/api/trading'
+import type { HoldingsStats } from '@/types/trading'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
+import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { cn } from '@/lib/utils'
 
 // ============================================================================
 // Types
@@ -384,6 +389,18 @@ function ToolActivity({ tools }: { tools: ToolCallInfo[] }) {
 // Main Component
 // ============================================================================
 
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+  }).format(value)
+}
+
+function formatPercent(value: number): string {
+  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
+}
+
 export default function BriefingPage() {
   const [sections, setSections] = useState<BriefingSection[]>([])
   const [toolCalls, setToolCalls] = useState<ToolCallInfo[]>([])
@@ -393,9 +410,34 @@ export default function BriefingPage() {
   const [rawText, setRawText] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [actionCount, setActionCount] = useState(0)
+  const [portfolioStats, setPortfolioStats] = useState<HoldingsStats | null>(null)
+  const [isStatsLoading, setIsStatsLoading] = useState(true)
   const navigate = useNavigate()
   const { saveReport } = useReportsStore()
   const setItemsAndOpen = useActionQueueStore((s) => s.setItemsAndOpen)
+  const { apiKey } = useAuthStore()
+
+  useEffect(() => {
+    let cancelled = false
+    setIsStatsLoading(true)
+    tradingApi
+      .getHoldings(apiKey ?? '')
+      .then((response) => {
+        if (cancelled) return
+        if (response.status === 'success' && response.data?.statistics) {
+          setPortfolioStats(response.data.statistics)
+        }
+      })
+      .catch(() => {
+        // Non-blocking — briefing still works without portfolio stats.
+      })
+      .finally(() => {
+        if (!cancelled) setIsStatsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [apiKey])
 
   const generate = useCallback(async () => {
     setIsGenerating(true)
@@ -480,6 +522,89 @@ export default function BriefingPage() {
         <p className="text-sm text-muted-foreground ml-6">
           AI-powered market brief based on your live portfolio. One click, full picture.
         </p>
+      </div>
+
+      {/* Portfolio Summary Cards */}
+      <div className="grid gap-4 md:grid-cols-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>Total Holding Value</CardDescription>
+            <CardTitle className="text-2xl text-primary tabular-nums">
+              {isStatsLoading ? (
+                <Skeleton className="h-7 w-32" />
+              ) : portfolioStats ? (
+                formatCurrency(portfolioStats.totalholdingvalue)
+              ) : (
+                '---'
+              )}
+            </CardTitle>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>Total Investment Value</CardDescription>
+            <CardTitle className="text-2xl tabular-nums">
+              {isStatsLoading ? (
+                <Skeleton className="h-7 w-32" />
+              ) : portfolioStats ? (
+                formatCurrency(portfolioStats.totalinvvalue)
+              ) : (
+                '---'
+              )}
+            </CardTitle>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>Total Profit and Loss</CardDescription>
+            <CardTitle
+              className={cn(
+                'text-2xl tabular-nums',
+                portfolioStats &&
+                  (portfolioStats.totalprofitandloss >= 0
+                    ? 'text-green-600'
+                    : 'text-red-600')
+              )}
+            >
+              {isStatsLoading ? (
+                <Skeleton className="h-7 w-32" />
+              ) : portfolioStats ? (
+                <div className="flex items-center gap-1">
+                  {portfolioStats.totalprofitandloss >= 0 ? (
+                    <TrendingUp className="h-5 w-5" />
+                  ) : (
+                    <TrendingDown className="h-5 w-5" />
+                  )}
+                  {formatCurrency(portfolioStats.totalprofitandloss)}
+                </div>
+              ) : (
+                '---'
+              )}
+            </CardTitle>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>Total PnL Percentage</CardDescription>
+            <CardTitle
+              className={cn(
+                'text-2xl tabular-nums',
+                portfolioStats &&
+                  (portfolioStats.totalpnlpercentage >= 0
+                    ? 'text-green-600'
+                    : 'text-red-600')
+              )}
+            >
+              {isStatsLoading ? (
+                <Skeleton className="h-7 w-24" />
+              ) : portfolioStats ? (
+                formatPercent(portfolioStats.totalpnlpercentage)
+              ) : (
+                '---'
+              )}
+            </CardTitle>
+          </CardHeader>
+        </Card>
       </div>
 
       {/* Action Bar */}

@@ -3,6 +3,7 @@ import {
   Bot,
   ClipboardCheck,
   Copy,
+  FileText,
   Loader2,
   Send,
   Sparkles,
@@ -25,9 +26,12 @@ import { parseActionsFromMarkdown } from '@/lib/parseActions'
 import { ActionReviewModal } from '@/components/trading/ActionReviewModal'
 import { applyScenarioRecommendations } from '@/lib/applyScenarioRecommendations'
 import { formatRecommendationsAsCsv } from '@/lib/csvRecommendations'
+import { filterRecommendationsForAccount } from '@/lib/filterRecommendationsForAccount'
 import { useActionQueueStore } from '@/stores/actionQueueStore'
 import type { OrderRecommendation } from '@/types/actionQueue'
 import { useClientScenarioStore } from '@/stores/clientScenarioStore'
+import { useReportsStore } from '@/stores/reportsStore'
+import type { CopilotMessage } from '@/stores/copilotStore'
 
 interface CopilotResponse {
   response_text: string
@@ -60,6 +64,10 @@ interface AnalyzeWithClaudeDialogProps {
   scenarioId: number
   scenarioName: string
   isBaseline: boolean
+  /** Account type ('401k', 'roth_ira', etc.) — used to enforce short-selling restrictions on AI output. */
+  accountType?: string | null
+  /** Symbol → net long quantity in the active scenario. Used by the restriction filter. */
+  longQtyBySymbol?: Record<string, number>
   onTradesApplied?: () => void
 }
 
@@ -70,16 +78,20 @@ export default function AnalyzeWithClaudeDialog({
   scenarioId,
   scenarioName,
   isBaseline,
+  accountType = null,
+  longQtyBySymbol = {},
   onTradesApplied,
 }: AnalyzeWithClaudeDialogProps) {
   const navigate = useNavigate()
   const { cloneScenario } = useClientScenarioStore()
   const setItemsAndOpen = useActionQueueStore((s) => s.setItemsAndOpen)
+  const saveReport = useReportsStore((s) => s.saveReport)
 
   const [messages, setMessages] = useState<MessageEntry[]>([])
   const [conversationHistory, setConversationHistory] = useState<ConversationEntry[]>([])
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
   const [isConfigured, setIsConfigured] = useState<boolean | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -182,9 +194,26 @@ export default function AnalyzeWithClaudeDialog({
       toast.error('No recommended trades found in this message')
       return
     }
-    // parseActionsFromMarkdown returns fully-formed OrderRecommendation objects
-    // (see src/lib/parseActions.ts) — pass through directly.
-    setItemsAndOpen(actions)
+    const { allowed, dropped } = filterRecommendationsForAccount(actions, {
+      accountType,
+      longQtyBySymbol,
+    })
+    if (dropped.length > 0) {
+      toast.warning(
+        `${dropped.length} recommendation${dropped.length === 1 ? '' : 's'} dropped — account type restriction`,
+        {
+          description: dropped
+            .map((d) => `${d.item.side} ${d.item.quantity} ${d.item.symbol}: ${d.reason}`)
+            .join('\n'),
+          duration: 8000,
+        }
+      )
+    }
+    if (allowed.length === 0) {
+      toast.error('All recommendations were disallowed for this account type')
+      return
+    }
+    setItemsAndOpen(allowed)
   }
 
   const handleApplyToScenario = async (
@@ -220,16 +249,67 @@ export default function AnalyzeWithClaudeDialog({
     }
   }
 
+  const handleSaveAsReport = async () => {
+    if (messages.length === 0 || isSaving) return
+    setIsSaving(true)
+    try {
+      const dateLabel = new Date().toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        timeZone: 'America/New_York',
+      })
+      const title = `Scenario Analysis — ${scenarioName} (${dateLabel})`
+      const firstAssistant = messages.find((m) => m.role === 'assistant')
+      const summary = firstAssistant?.content.slice(0, 300) || ''
+      const allToolNames = new Set<string>()
+      for (const m of messages) {
+        if (m.toolCalls) for (const tc of m.toolCalls) allToolNames.add(tc.name)
+      }
+      const tags = [
+        'Scenario Analysis',
+        ...Array.from(allToolNames)
+          .map((n) => n.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()))
+          .slice(0, 5),
+      ]
+      const ts = Date.now()
+      const reportMessages: CopilotMessage[] = messages.map((m, i) => ({
+        id: String(i + 1),
+        role: m.role,
+        content: m.content,
+        toolCalls: m.toolCalls,
+        timestamp: ts + i,
+      }))
+      const report = await saveReport(title, summary, tags, reportMessages)
+      toast.success('Conversation saved as report')
+      onOpenChange(false)
+      navigate(`/reports/${report.id}`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save report')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
   const handleCopyMessageCsv = async (messageContent: string) => {
     const actions = parseActionsFromMarkdown(messageContent, 'copilot')
     if (actions.length === 0) {
       toast.error('No recommended trades found in this message')
       return
     }
+    const { allowed, dropped } = filterRecommendationsForAccount(actions, {
+      accountType,
+      longQtyBySymbol,
+    })
+    if (allowed.length === 0) {
+      toast.error('All recommendations were disallowed for this account type')
+      return
+    }
     try {
-      const csv = formatRecommendationsAsCsv(actions)
+      const csv = formatRecommendationsAsCsv(allowed)
       await navigator.clipboard.writeText(csv)
-      toast.success(`Copied ${actions.length} trade${actions.length !== 1 ? 's' : ''} to clipboard`)
+      const suffix = dropped.length > 0 ? ` (${dropped.length} dropped)` : ''
+      toast.success(`Copied ${allowed.length} trade${allowed.length !== 1 ? 's' : ''} to clipboard${suffix}`)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to copy')
     }
@@ -361,7 +441,25 @@ export default function AnalyzeWithClaudeDialog({
             </div>
 
             {/* Input */}
-            <div className="px-6 py-3 border-t shrink-0">
+            <div className="px-6 py-3 border-t shrink-0 space-y-2">
+              {messages.some((m) => m.role === 'assistant') && (
+                <div className="flex items-center justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 gap-2"
+                    onClick={handleSaveAsReport}
+                    disabled={isSaving}
+                  >
+                    {isSaving ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <FileText className="h-3.5 w-3.5" />
+                    )}
+                    {isSaving ? 'Saving...' : 'Save as Report'}
+                  </Button>
+                </div>
+              )}
               <div className="flex gap-2">
                 <Input
                   value={inputValue}

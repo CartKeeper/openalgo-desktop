@@ -40,6 +40,7 @@ pub mod history_service;
 pub mod portfolio_service;
 pub mod quant_service;
 pub mod copilot_service;
+pub mod client_brief_service;
 pub mod greeks;
 pub mod indicators_service;
 pub mod alert_service;

@@ -1,0 +1,38 @@
+{
+  "_comment": "Strict 401k prohibited symbol list. Used by importers/schwab/rules_401k.rs to flag holdings and open orders. Add new tickers here without code changes.",
+  "leveraged_etfs": [
+    "TQQQ", "QLD", "UPRO", "SSO", "UDOW", "DDM", "URTY", "UWM",
+    "USD", "ROM", "UYG", "UYM", "DIG", "RXL", "UGE", "UCC",
+    "TNA", "FAS", "SOXL", "TECL", "LABU", "DPST", "CURE", "NUGT",
+    "JNUG", "ERX", "GUSH", "BOIL", "UCO", "AGQ", "UGL",
+    "TSLL", "NVDU", "NVDL", "FNGU", "BULZ", "WEBL", "PILL", "DRN",
+    "EDC", "YINN", "EURL", "MEXX", "INDL", "BRZU", "RUSL",
+    "TBT", "TMV", "SVIX"
+  ],
+  "inverse_etfs": [
+    "SQQQ", "PSQ", "QID", "SH", "SDS", "SPXU", "SPXS", "DOG", "DXD", "SDOW",
+    "RWM", "TWM", "TZA", "FAZ", "SOXS", "TECS", "LABD", "WEBS", "DUST",
+    "JDST", "ERY", "DRIP", "KOLD", "SCO", "DGAZ", "DSLV", "GLL", "DZZ",
+    "TSLQ", "NVDD", "FNGD", "DRV", "EDZ", "YANG", "EUO", "BZQ", "INDZ",
+    "TBF", "TMF", "UVXY", "VIXY", "SVXY", "BTAL"
+  ],
+  "comment_options_keywords": [
+    " CALL ", " PUT ", " C00", " P00", " EXP "
+  ],
+  "comment_futures_keywords": [
+    "/ES", "/NQ", "/CL", "/GC", "/SI", "/ZB", "/ZN", "/6E", "/6J"
+  ],
+  "comment_crypto_keywords": [
+    "BTC", "ETH", "BITCOIN", "ETHEREUM"
+  ],
+  "mlp_symbols": [
+    "ET", "EPD", "MPLX", "PAA", "MMP", "WES", "MMLP", "USAC", "NS", "SUN",
+    "TRGP", "BSM", "AM", "DKL", "HEP", "GLP", "SPH", "SUN", "DCP", "OKE"
+  ],
+  "_notes": {
+    "leveraged_etfs": "Any 1.5x, 2x, or 3x bull/long fund. Banned in strict 401k.",
+    "inverse_etfs": "Any -1x, -2x, -3x short / inverse / bear fund. Banned in strict 401k.",
+    "mlp_symbols": "Master Limited Partnerships - generate UBTI, prohibited per most 401k plans. OKE is a C-corp now but kept for safety; remove if needed.",
+    "name_pattern_fallback": "If a symbol isn't on these lists but its description contains 'Ultra', 'Pro', '3x', '2x', 'Leveraged', 'Inverse', 'Short', or 'Bear', it is also flagged."
+  }
+}

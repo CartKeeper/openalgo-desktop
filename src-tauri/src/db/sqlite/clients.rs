@@ -1,7 +1,10 @@
 //! Client management CRUD operations
 
 use crate::error::{AppError, Result};
-use crate::providers::types::{Client, ClientPosition, ClientTrade, ImportBatch};
+use crate::providers::types::{
+    Client, ClientHolding, ClientOpenOrder, ClientPosition, ClientTrade, ComplianceViolation,
+    ImportBatch,
+};
 use rusqlite::Connection;
 
 // ---------------------------------------------------------------------------
@@ -612,4 +615,224 @@ pub fn get_trades_by_account(
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
     Ok(trades)
+}
+
+// ---------------------------------------------------------------------------
+// Documents (raw broker file uploads)
+// ---------------------------------------------------------------------------
+
+pub fn add_client_document(
+    conn: &Connection,
+    client_id: i64,
+    doc_type: &str,
+    filename: &str,
+    content: &str,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO client_documents (client_id, doc_type, filename, content, byte_size)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![client_id, doc_type, filename, content, content.len() as i64],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+// ---------------------------------------------------------------------------
+// Holdings (replaced wholesale on each import)
+// ---------------------------------------------------------------------------
+
+pub fn replace_client_holdings(
+    conn: &mut Connection,
+    client_id: i64,
+    holdings: &[ClientHolding],
+) -> Result<usize> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM client_holdings WHERE client_id = ?1", [client_id])?;
+    let mut inserted = 0usize;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO client_holdings
+             (client_id, symbol, description, quantity, avg_cost, total_cost, realized_pnl, last_activity_date)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )?;
+        for h in holdings {
+            stmt.execute(rusqlite::params![
+                client_id,
+                h.symbol,
+                h.description,
+                h.quantity,
+                h.avg_cost,
+                h.total_cost,
+                h.realized_pnl,
+                h.last_activity_date,
+            ])?;
+            inserted += 1;
+        }
+    }
+    tx.commit()?;
+    Ok(inserted)
+}
+
+pub fn get_client_holdings(conn: &Connection, client_id: i64) -> Result<Vec<ClientHolding>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, client_id, symbol, description, quantity, avg_cost, total_cost,
+                realized_pnl, last_activity_date, updated_at
+         FROM client_holdings WHERE client_id = ?1 ORDER BY symbol ASC",
+    )?;
+    let rows = stmt
+        .query_map([client_id], |row| {
+            Ok(ClientHolding {
+                id: Some(row.get(0)?),
+                client_id: row.get(1)?,
+                symbol: row.get(2)?,
+                description: row.get(3)?,
+                quantity: row.get(4)?,
+                avg_cost: row.get(5)?,
+                total_cost: row.get(6)?,
+                realized_pnl: row.get(7)?,
+                last_activity_date: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+// ---------------------------------------------------------------------------
+// Open orders (replaced wholesale on each import)
+// ---------------------------------------------------------------------------
+
+pub fn replace_client_open_orders(
+    conn: &mut Connection,
+    client_id: i64,
+    orders: &[ClientOpenOrder],
+) -> Result<usize> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM client_open_orders WHERE client_id = ?1", [client_id])?;
+    let mut inserted = 0usize;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO client_open_orders
+             (client_id, order_number, symbol, description, action, quantity, order_type,
+              limit_price, stop_price, time_in_force, status, placed_at, last_activity_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        )?;
+        for o in orders {
+            stmt.execute(rusqlite::params![
+                client_id,
+                o.order_number,
+                o.symbol,
+                o.description,
+                o.action,
+                o.quantity,
+                o.order_type,
+                o.limit_price,
+                o.stop_price,
+                o.time_in_force,
+                o.status,
+                o.placed_at,
+                o.last_activity_at,
+            ])?;
+            inserted += 1;
+        }
+    }
+    tx.commit()?;
+    Ok(inserted)
+}
+
+pub fn get_client_open_orders(conn: &Connection, client_id: i64) -> Result<Vec<ClientOpenOrder>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, client_id, order_number, symbol, description, action, quantity, order_type,
+                limit_price, stop_price, time_in_force, status, placed_at, last_activity_at, updated_at
+         FROM client_open_orders WHERE client_id = ?1 ORDER BY placed_at DESC",
+    )?;
+    let rows = stmt
+        .query_map([client_id], |row| {
+            Ok(ClientOpenOrder {
+                id: Some(row.get(0)?),
+                client_id: row.get(1)?,
+                order_number: row.get(2)?,
+                symbol: row.get(3)?,
+                description: row.get(4)?,
+                action: row.get(5)?,
+                quantity: row.get(6)?,
+                order_type: row.get(7)?,
+                limit_price: row.get(8)?,
+                stop_price: row.get(9)?,
+                time_in_force: row.get(10)?,
+                status: row.get(11)?,
+                placed_at: row.get(12)?,
+                last_activity_at: row.get(13)?,
+                updated_at: row.get(14)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+// ---------------------------------------------------------------------------
+// Compliance violations (replaced wholesale on each import)
+// ---------------------------------------------------------------------------
+
+pub fn replace_client_compliance_violations(
+    conn: &mut Connection,
+    client_id: i64,
+    violations: &[ComplianceViolation],
+) -> Result<usize> {
+    let tx = conn.transaction()?;
+    tx.execute(
+        "DELETE FROM client_compliance_violations WHERE client_id = ?1",
+        [client_id],
+    )?;
+    let mut inserted = 0usize;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO client_compliance_violations
+             (client_id, rule_set, violation_type, severity, symbol, quantity, message, resolved)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )?;
+        for v in violations {
+            stmt.execute(rusqlite::params![
+                client_id,
+                v.rule_set,
+                v.violation_type,
+                v.severity,
+                v.symbol,
+                v.quantity,
+                v.message,
+                v.resolved as i64,
+            ])?;
+            inserted += 1;
+        }
+    }
+    tx.commit()?;
+    Ok(inserted)
+}
+
+pub fn get_client_compliance_violations(
+    conn: &Connection,
+    client_id: i64,
+) -> Result<Vec<ComplianceViolation>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, client_id, rule_set, violation_type, severity, symbol, quantity, message,
+                detected_at, resolved
+         FROM client_compliance_violations WHERE client_id = ?1 ORDER BY detected_at DESC",
+    )?;
+    let rows = stmt
+        .query_map([client_id], |row| {
+            let resolved: i64 = row.get(9)?;
+            Ok(ComplianceViolation {
+                id: Some(row.get(0)?),
+                client_id: row.get(1)?,
+                rule_set: row.get(2)?,
+                violation_type: row.get(3)?,
+                severity: row.get(4)?,
+                symbol: row.get(5)?,
+                quantity: row.get(6)?,
+                message: row.get(7)?,
+                detected_at: row.get(8)?,
+                resolved: resolved != 0,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
 }

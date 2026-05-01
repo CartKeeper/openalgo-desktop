@@ -315,27 +315,9 @@ pub fn sync_baseline_scenarios(conn: &Connection, client_id: i64) -> Result<Vec<
             result
         };
 
-        // Compute positions using weighted-average cost basis
-        let mut positions: std::collections::BTreeMap<(String, String), (f64, f64)> =
-            std::collections::BTreeMap::new();
-
-        for (symbol, exchange, trade_type, qty, price) in &rows {
-            let entry = positions
-                .entry((symbol.clone(), exchange.clone()))
-                .or_insert((0.0, 0.0));
-
-            let tt = trade_type.to_lowercase();
-            if tt == "buy" {
-                let old_cost = entry.0 * entry.1;
-                let new_cost = qty * price;
-                entry.0 += qty;
-                if entry.0.abs() > 1e-10 {
-                    entry.1 = (old_cost + new_cost) / entry.0;
-                }
-            } else if tt == "sell" {
-                entry.0 -= qty;
-            }
-        }
+        // Compute positions using weighted-average cost basis with correct
+        // handling of position-flipping (long → short → long, etc.).
+        let positions = compute_positions_from_trades(&rows);
 
         // Insert positions with non-zero quantity
         for ((symbol, exchange), (net_qty, avg_price)) in &positions {
@@ -591,4 +573,206 @@ fn get_scenario_position_by_id(conn: &Connection, id: i64) -> Result<ScenarioPos
         }
         other => other.into(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// Position computation
+// ---------------------------------------------------------------------------
+
+/// Compute net positions from a chronologically-ordered trade list using
+/// weighted-average cost basis. Correctly handles position flipping
+/// (long → short or short → long) by re-anchoring the basis at the
+/// flipping trade's price.
+///
+/// Returns BTreeMap keyed by (symbol, exchange) with values (signed_qty, avg_price).
+/// Positive qty = long, negative qty = short. Zero-qty entries are omitted.
+///
+/// `trades`: ordered list of (symbol, exchange, trade_type, quantity, price)
+/// where `trade_type` is "buy" or "sell" (case-insensitive) and `quantity`
+/// and `price` are non-negative.
+pub fn compute_positions_from_trades(
+    trades: &[(String, String, String, f64, f64)],
+) -> std::collections::BTreeMap<(String, String), (f64, f64)> {
+    let mut positions: std::collections::BTreeMap<(String, String), (f64, f64)> =
+        std::collections::BTreeMap::new();
+
+    const EPS: f64 = 1e-10;
+
+    for (symbol, exchange, trade_type, qty, price) in trades {
+        let entry = positions
+            .entry((symbol.clone(), exchange.clone()))
+            .or_insert((0.0, 0.0));
+        let net_qty = entry.0;
+        let avg_price = entry.1;
+        let qty = *qty;
+        let price = *price;
+        let tt = trade_type.to_lowercase();
+
+        if tt == "buy" {
+            if net_qty >= -EPS {
+                // Adding to (or starting) a long. Weighted average across long shares.
+                let new_qty = net_qty + qty;
+                if new_qty.abs() > EPS {
+                    entry.1 = (net_qty.max(0.0) * avg_price + qty * price) / new_qty;
+                }
+                entry.0 = new_qty;
+            } else {
+                // Covering a short. Cost basis of remaining short stays the same;
+                // realized P&L is not tracked here.
+                let to_cover = qty.min(-net_qty);
+                let new_qty = net_qty + to_cover;
+                let remaining = qty - to_cover;
+                if remaining > EPS {
+                    // Flipped short → long. Re-anchor basis at this trade's price.
+                    entry.0 = remaining;
+                    entry.1 = price;
+                } else {
+                    entry.0 = new_qty;
+                    if new_qty.abs() <= EPS {
+                        entry.1 = 0.0;
+                    }
+                }
+            }
+        } else if tt == "sell" {
+            if net_qty <= EPS {
+                // Adding to (or starting) a short. Weighted avg across short shares
+                // (use absolute quantity; avg_price stored as a positive number).
+                let prev_short = -net_qty.min(0.0);
+                let new_short = prev_short + qty;
+                if new_short.abs() > EPS {
+                    entry.1 = (prev_short * avg_price + qty * price) / new_short;
+                }
+                entry.0 = -new_short;
+            } else {
+                // Closing a long. Avg basis of remaining long is unchanged.
+                let to_close = qty.min(net_qty);
+                let new_qty = net_qty - to_close;
+                let remaining = qty - to_close;
+                if remaining > EPS {
+                    // Flipped long → short. Re-anchor basis at this trade's price.
+                    entry.0 = -remaining;
+                    entry.1 = price;
+                } else {
+                    entry.0 = new_qty;
+                    if new_qty.abs() <= EPS {
+                        entry.1 = 0.0;
+                    }
+                }
+            }
+        }
+    }
+
+    // Strip zero-qty entries.
+    positions.retain(|_, (qty, _)| qty.abs() > EPS);
+    positions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_positions_from_trades;
+
+    fn t(symbol: &str, tt: &str, qty: f64, price: f64) -> (String, String, String, f64, f64) {
+        (symbol.to_string(), "NASDAQ".to_string(), tt.to_string(), qty, price)
+    }
+
+    fn pos(positions: &std::collections::BTreeMap<(String, String), (f64, f64)>, symbol: &str) -> (f64, f64) {
+        *positions
+            .get(&(symbol.to_string(), "NASDAQ".to_string()))
+            .expect("position not found")
+    }
+
+    #[test]
+    fn weighted_avg_basic_long() {
+        let trades = vec![t("AAPL", "buy", 10.0, 100.0), t("AAPL", "buy", 10.0, 200.0)];
+        let p = compute_positions_from_trades(&trades);
+        let (qty, avg) = pos(&p, "AAPL");
+        assert!((qty - 20.0).abs() < 1e-6);
+        assert!((avg - 150.0).abs() < 1e-6, "avg should be 150, got {}", avg);
+    }
+
+    #[test]
+    fn partial_sell_preserves_long_avg() {
+        let trades = vec![
+            t("AAPL", "buy", 10.0, 100.0),
+            t("AAPL", "buy", 10.0, 200.0), // avg = 150
+            t("AAPL", "sell", 5.0, 250.0), // realized P&L not tracked; avg unchanged
+        ];
+        let p = compute_positions_from_trades(&trades);
+        let (qty, avg) = pos(&p, "AAPL");
+        assert!((qty - 15.0).abs() < 1e-6);
+        assert!((avg - 150.0).abs() < 1e-6, "avg should remain 150, got {}", avg);
+    }
+
+    #[test]
+    fn long_to_short_flip_reanchors_basis() {
+        // Long 10 @ $100, then sell 15 @ $200 → short 5 @ $200 (re-anchored)
+        let trades = vec![
+            t("AAPL", "buy", 10.0, 100.0),
+            t("AAPL", "sell", 15.0, 200.0),
+        ];
+        let p = compute_positions_from_trades(&trades);
+        let (qty, avg) = pos(&p, "AAPL");
+        assert!((qty - -5.0).abs() < 1e-6, "qty should be -5, got {}", qty);
+        assert!((avg - 200.0).abs() < 1e-6, "avg should be 200, got {}", avg);
+    }
+
+    #[test]
+    fn short_to_long_flip_reanchors_basis() {
+        // Short 10 @ $100, then buy 15 @ $50 → long 5 @ $50 (re-anchored)
+        let trades = vec![
+            t("AAPL", "sell", 10.0, 100.0),
+            t("AAPL", "buy", 15.0, 50.0),
+        ];
+        let p = compute_positions_from_trades(&trades);
+        let (qty, avg) = pos(&p, "AAPL");
+        assert!((qty - 5.0).abs() < 1e-6, "qty should be 5, got {}", qty);
+        assert!((avg - 50.0).abs() < 1e-6, "avg should be 50, got {}", avg);
+    }
+
+    #[test]
+    fn weighted_avg_short() {
+        // Short 10 @ $100, short another 10 @ $200 → short 20 @ $150
+        let trades = vec![
+            t("AAPL", "sell", 10.0, 100.0),
+            t("AAPL", "sell", 10.0, 200.0),
+        ];
+        let p = compute_positions_from_trades(&trades);
+        let (qty, avg) = pos(&p, "AAPL");
+        assert!((qty - -20.0).abs() < 1e-6);
+        assert!((avg - 150.0).abs() < 1e-6, "avg should be 150, got {}", avg);
+    }
+
+    #[test]
+    fn position_round_trip_zero() {
+        // Buy 10, sell 10 → no position recorded
+        let trades = vec![
+            t("AAPL", "buy", 10.0, 100.0),
+            t("AAPL", "sell", 10.0, 200.0),
+        ];
+        let p = compute_positions_from_trades(&trades);
+        assert!(p.get(&("AAPL".to_string(), "NASDAQ".to_string())).is_none());
+    }
+
+    #[test]
+    fn regression_aapl_negative_avg_bug() {
+        // Reproduces the bug where interleaved buy/sell flipping past zero
+        // produced nonsense (often negative) avg prices for the resulting long.
+        // Sequence: long 100 @ $200, oversell 105 @ $300, oversell again 5 @ $100,
+        // then buy 110 @ $250 → final position should be long 5 @ $250.
+        let trades = vec![
+            t("AAPL", "buy", 100.0, 200.0),
+            t("AAPL", "sell", 105.0, 300.0), // flips to short 5 @ $300
+            t("AAPL", "sell", 5.0, 100.0),   // adds to short, weighted: short 10 @ $200
+            t("AAPL", "buy", 110.0, 250.0),  // covers 10 short, leaves long 100 @ $250
+        ];
+        let p = compute_positions_from_trades(&trades);
+        let (qty, avg) = pos(&p, "AAPL");
+        assert!((qty - 100.0).abs() < 1e-6, "qty should be 100, got {}", qty);
+        assert!(
+            avg > 0.0,
+            "avg price must be positive (was {} — the original bug produced negative)",
+            avg
+        );
+        assert!((avg - 250.0).abs() < 1e-6, "avg should be 250, got {}", avg);
+    }
 }

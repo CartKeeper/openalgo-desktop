@@ -249,6 +249,15 @@ export default function ViewReport() {
     }
   }, [showNoteInput])
 
+  const reportActions = useMemo(
+    () =>
+      currentMessages
+        .filter((m) => m.role === 'assistant')
+        .flatMap((m) => parseActionsFromMarkdown(m.content, 'report')),
+    [currentMessages]
+  )
+  const setItemsAndOpen = useActionQueueStore((s) => s.setItemsAndOpen)
+
   const handleTitleSave = async () => {
     if (!reportId || !titleDraft.trim()) return
     try {
@@ -341,15 +350,6 @@ export default function ViewReport() {
   const tags = parseTags(currentReport.tags)
   const toolCalls = parseToolCalls(currentReport.tool_calls_json)
   const uniqueTools = [...new Set(toolCalls.map((tc) => tc.name))]
-
-  const reportActions = useMemo(
-    () =>
-      currentMessages
-        .filter((m) => m.role === 'assistant')
-        .flatMap((m) => parseActionsFromMarkdown(m.content, 'report')),
-    [currentMessages]
-  )
-  const setItemsAndOpen = useActionQueueStore((s) => s.setItemsAndOpen)
 
   return (
     <div className="space-y-6">

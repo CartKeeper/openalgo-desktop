@@ -2,7 +2,12 @@
 
 use crate::db::sqlite::ClientAccount;
 use crate::error::AppError;
-use crate::providers::types::{Client, ClientPosition, ClientTrade, ImportBatch};
+use crate::importers::schwab;
+use crate::providers::types::{
+    Client, ClientHolding, ClientOpenOrder, ClientPosition, ClientTrade, ComplianceViolation,
+    GoldmanBrief, ImportBatch, ImportReport,
+};
+use crate::services::client_brief_service::ClientBriefService;
 use crate::state::AppState;
 use tauri::State;
 
@@ -236,6 +241,119 @@ pub async fn get_client_trades_by_account(
     account_type: String,
 ) -> Result<Vec<ClientTrade>, AppError> {
     state.sqlite.get_client_trades_by_account(client_id, &account_type)
+}
+
+// ---------------------------------------------------------------------------
+// Schwab dual-document import (Transactions + optional Order Status, 401k rules)
+// ---------------------------------------------------------------------------
+
+/// Import a Schwab Transactions file (JSON or CSV) and an optional Order Status CSV.
+///
+/// Always runs the strict 401k rule set. Returns a full `ImportReport` containing
+/// reconstructed holdings, open orders, compliance violations, and reconciliation
+/// mismatches between the two files. On mismatch, **transactions win** (the holdings
+/// reflect the transaction ledger; mismatches are surfaced for review).
+///
+/// Persists to: `client_documents`, `client_holdings`, `client_open_orders`,
+/// `client_compliance_violations` (and pre-existing `client_trades` / `import_batches`
+/// for backward compatibility with the existing positions UI).
+#[tauri::command]
+pub async fn import_schwab_documents(
+    state: State<'_, AppState>,
+    client_id: i64,
+    transactions_filename: String,
+    transactions_content: String,
+    order_status_filename: Option<String>,
+    order_status_content: Option<String>,
+) -> Result<ImportReport, AppError> {
+    let order_status_ref = order_status_content.as_deref();
+    let report = schwab::run_import(client_id, &transactions_content, order_status_ref)?;
+
+    // Persist raw documents for traceability
+    state.sqlite.add_client_document(
+        client_id,
+        "transactions",
+        &transactions_filename,
+        &transactions_content,
+    )?;
+    if let (Some(name), Some(content)) = (order_status_filename.as_deref(), order_status_ref) {
+        state
+            .sqlite
+            .add_client_document(client_id, "order_status", name, content)?;
+    }
+
+    // Replace derived data wholesale
+    state
+        .sqlite
+        .replace_client_holdings(client_id, &report.holdings)?;
+    state
+        .sqlite
+        .replace_client_open_orders(client_id, &report.open_orders)?;
+    state
+        .sqlite
+        .replace_client_compliance_violations(client_id, &report.violations)?;
+
+    // Auto-set account_type to 401k for the client (per spec — strict 401k rules apply)
+    state
+        .sqlite
+        .update_client(client_id, None, None, None, None, None, Some("401k"), None)?;
+
+    Ok(report)
+}
+
+#[tauri::command]
+pub async fn get_client_holdings(
+    state: State<'_, AppState>,
+    client_id: i64,
+) -> Result<Vec<ClientHolding>, AppError> {
+    state.sqlite.get_client_holdings(client_id)
+}
+
+#[tauri::command]
+pub async fn get_client_open_orders(
+    state: State<'_, AppState>,
+    client_id: i64,
+) -> Result<Vec<ClientOpenOrder>, AppError> {
+    state.sqlite.get_client_open_orders(client_id)
+}
+
+#[tauri::command]
+pub async fn get_client_compliance_violations(
+    state: State<'_, AppState>,
+    client_id: i64,
+) -> Result<Vec<ComplianceViolation>, AppError> {
+    state.sqlite.get_client_compliance_violations(client_id)
+}
+
+/// Generate a Goldman Sax & Violins brief for a client using Claude.
+///
+/// Pulls the client's holdings, open orders, and 401(k) violations from the DB,
+/// sends them to Anthropic with the house-style system prompt, and returns the
+/// resulting `GoldmanBrief` JSON for the frontend to render via `<GoldmanReport>`.
+///
+/// Also persists the generated brief JSON to `client_documents` (doc_type =
+/// "goldman_brief") so it can be retrieved without regenerating.
+#[tauri::command]
+pub async fn generate_client_brief(
+    state: State<'_, AppState>,
+    client_id: i64,
+) -> Result<GoldmanBrief, AppError> {
+    let brief = ClientBriefService::generate(&state, client_id).await?;
+
+    // Persist the JSON for traceability / re-download
+    let json = serde_json::to_string(&brief).map_err(|e| {
+        AppError::Provider(format!("Failed to serialize brief for storage: {}", e))
+    })?;
+    let filename = format!(
+        "Goldman_Brief_{}_{}.json",
+        brief.document_label.replace(|c: char| !c.is_alphanumeric(), "_"),
+        chrono::Local::now().format("%Y%m%d-%H%M%S"),
+    );
+    state
+        .sqlite
+        .add_client_document(client_id, "goldman_brief", &filename, &json)?;
+
+    Ok(brief)
 }
 
 // ---------------------------------------------------------------------------

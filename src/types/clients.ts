@@ -78,3 +78,86 @@ export interface ClientAccount {
   trade_count: number
   batch_count: number
 }
+
+// ---------------------------------------------------------------------------
+// Schwab dual-document import (Transactions + optional Order Status, 401k rules)
+// ---------------------------------------------------------------------------
+
+export interface ClientHolding {
+  id: number | null
+  client_id: number
+  symbol: string
+  description: string | null
+  quantity: number
+  avg_cost: number
+  total_cost: number
+  realized_pnl: number
+  last_activity_date: string | null
+  updated_at: string | null
+}
+
+export interface ClientOpenOrder {
+  id: number | null
+  client_id: number
+  order_number: string | null
+  symbol: string
+  description: string | null
+  action: string
+  quantity: number
+  order_type: string | null
+  limit_price: number | null
+  stop_price: number | null
+  time_in_force: string | null
+  status: string
+  placed_at: string | null
+  last_activity_at: string | null
+  updated_at: string | null
+}
+
+export interface ComplianceViolation {
+  id: number | null
+  client_id: number
+  rule_set: string
+  violation_type: string
+  severity: string
+  symbol: string | null
+  quantity: number | null
+  message: string
+  detected_at: string | null
+  resolved: boolean
+}
+
+export interface ReconciliationMismatch {
+  order_number: string | null
+  symbol: string
+  action: string
+  order_quantity: number
+  order_fill_price: number | null
+  transaction_quantity: number | null
+  transaction_price: number | null
+  mismatch_kind: string
+  note: string
+}
+
+export interface ImportReportSummary {
+  transactions_processed: number
+  order_status_processed: number
+  total_holdings: number
+  total_cost_basis: number
+  open_buy_orders: number
+  open_sell_orders: number
+  violation_count: number
+  is_compliant: boolean
+}
+
+export interface ImportReport {
+  client_id: number
+  summary: ImportReportSummary
+  holdings: ClientHolding[]
+  open_orders: ClientOpenOrder[]
+  violations: ComplianceViolation[]
+  reconciliation_mismatches: ReconciliationMismatch[]
+}
+
+// Re-export Goldman brief types so callers don't need to dig into /components.
+export type { GoldmanBrief } from '@/components/reports/goldman/types'

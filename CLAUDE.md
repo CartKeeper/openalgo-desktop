@@ -54,7 +54,7 @@ This section exists because of repeated violations. Read it. Internalize it.
 - [ ] **When working on a task involving a web platform (e.g., Netlify, AWS, Supabase, Meta, Stripe, Vercel), MANDATORY: fetch current documentation.** DO NOT USE OUTDATED DATA FOR INSTRUCTIONS. If you cannot verify the current UI, say so — do not guess.
 
 ### UI Requirements (Non-Negotiable):
-- [ ] **Every page MUST include a help icon (life preserver style)** with contextually relevant functions/guidance.
+- [ ] **Every page MUST include a help icon (`?` in a thin circle outline — e.g. Ionicons `help-circle-outline`)** with contextually relevant functions/guidance. NEVER wrap it in a filled background bubble or pill — render the icon bare.
 
 ---
 

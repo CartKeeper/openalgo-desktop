@@ -568,6 +568,266 @@ pub struct ClientPosition {
     pub account_type: Option<String>,
 }
 
+/// Reconstructed long-only holding for a client (one row per symbol)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientHolding {
+    pub id: Option<i64>,
+    pub client_id: i64,
+    pub symbol: String,
+    pub description: Option<String>,
+    pub quantity: f64,
+    pub avg_cost: f64,
+    pub total_cost: f64,
+    pub realized_pnl: f64,
+    pub last_activity_date: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+/// Open / pending order parsed from broker order-status export
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientOpenOrder {
+    pub id: Option<i64>,
+    pub client_id: i64,
+    pub order_number: Option<String>,
+    pub symbol: String,
+    pub description: Option<String>,
+    pub action: String,
+    pub quantity: f64,
+    pub order_type: Option<String>,
+    pub limit_price: Option<f64>,
+    pub stop_price: Option<f64>,
+    pub time_in_force: Option<String>,
+    pub status: String,
+    pub placed_at: Option<String>,
+    pub last_activity_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+/// 401k or other rule-set violation flagged during import
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComplianceViolation {
+    pub id: Option<i64>,
+    pub client_id: i64,
+    pub rule_set: String,
+    pub violation_type: String,
+    pub severity: String,
+    pub symbol: Option<String>,
+    pub quantity: Option<f64>,
+    pub message: String,
+    pub detected_at: Option<String>,
+    pub resolved: bool,
+}
+
+/// Mismatch between Order Status (Filled) and Transactions ledger
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconciliationMismatch {
+    pub order_number: Option<String>,
+    pub symbol: String,
+    pub action: String,
+    pub order_quantity: f64,
+    pub order_fill_price: Option<f64>,
+    pub transaction_quantity: Option<f64>,
+    pub transaction_price: Option<f64>,
+    pub mismatch_kind: String,
+    pub note: String,
+}
+
+/// Summary header for an import report
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportReportSummary {
+    pub transactions_processed: i64,
+    pub order_status_processed: i64,
+    pub total_holdings: i64,
+    pub total_cost_basis: f64,
+    pub open_buy_orders: i64,
+    pub open_sell_orders: i64,
+    pub violation_count: i64,
+    pub is_compliant: bool,
+}
+
+/// Full report returned by `import_schwab_documents`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportReport {
+    pub client_id: i64,
+    pub summary: ImportReportSummary,
+    pub holdings: Vec<ClientHolding>,
+    pub open_orders: Vec<ClientOpenOrder>,
+    pub violations: Vec<ComplianceViolation>,
+    pub reconciliation_mismatches: Vec<ReconciliationMismatch>,
+}
+
+// ===========================================================================
+// Goldman Sax & Violins brief — house report schema (mirrors goldman/types.ts)
+// ===========================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoldmanBrief {
+    pub client_name: String,
+    pub document_label: String,
+    pub tempo: String,
+    pub generated_date: String,
+    pub subtitle: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidential_label: Option<String>,
+    pub movements: Vec<GoldmanMovement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum GoldmanMovement {
+    Diagnosis(DiagnosisMovement),
+    Restructuring(RestructuringMovement),
+    Tactical(TacticalMovement),
+    Coda(CodaMovement),
+    Narrative(NarrativeMovement),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosisMovement {
+    pub numeral: String,
+    pub tempo: String,
+    pub title_main: String,
+    pub title_accent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intro: Option<String>,
+    pub issues: Vec<DiagnosisIssue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headline: Option<HeadlineNote>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosisIssue {
+    pub title: String,
+    pub body: String,
+    pub bullets: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeadlineNote {
+    pub lead: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestructuringMovement {
+    pub numeral: String,
+    pub tempo: String,
+    pub title_main: String,
+    pub title_accent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intro: Option<String>,
+    pub allocation_cards: Vec<AllocationCard>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposed_core_table: Option<ProposedCoreTable>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sector_sleeve: Option<BulletSection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub immediate_eliminations: Option<BulletSection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllocationCard {
+    pub percentage: String,
+    pub label: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProposedCoreTable {
+    pub heading: String,
+    pub rows: Vec<PortfolioRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulletSection {
+    pub heading: String,
+    pub bullets: Vec<BulletItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulletItem {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lead: Option<String>,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortfolioRow {
+    pub ticker: String,
+    pub name: String,
+    pub pl: String,
+    pub pl_positive: bool,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TacticalMovement {
+    pub numeral: String,
+    pub tempo: String,
+    pub title_main: String,
+    pub title_accent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intro: Option<String>,
+    pub sections: Vec<TacticalSection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TacticalSection {
+    pub number: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bullets: Option<Vec<BulletItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table: Option<TacticalTable>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TacticalTable {
+    pub columns: Vec<String>,
+    pub rows: Vec<PortfolioRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodaMovement {
+    pub numeral: String,
+    pub tempo: String,
+    pub title_main: String,
+    pub title_accent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intro: Option<String>,
+    pub groups: Vec<ChecklistGroup>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closing_note: Option<HeadlineNote>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChecklistGroup {
+    pub heading: String,
+    pub items: Vec<ChecklistItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChecklistItem {
+    pub lead: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NarrativeMovement {
+    pub numeral: String,
+    pub tempo: String,
+    pub title_main: String,
+    pub title_accent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intro: Option<String>,
+    pub paragraphs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bullets: Option<Vec<BulletItem>>,
+}
+
 /// A what-if scenario for a client portfolio
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientScenario {

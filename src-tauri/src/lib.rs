@@ -14,6 +14,7 @@ pub mod scheduler;
 pub mod error;
 pub mod state;
 pub mod services;
+pub mod importers;
 
 use scheduler::{AutoLogoutScheduler, AlertMonitor};
 use state::AppState;
@@ -312,6 +313,11 @@ pub fn run() {
             commands::clients::get_client_accounts,
             commands::clients::get_client_trades_by_account,
             commands::clients::export_client_trades_csv,
+            commands::clients::import_schwab_documents,
+            commands::clients::get_client_holdings,
+            commands::clients::get_client_open_orders,
+            commands::clients::get_client_compliance_violations,
+            commands::clients::generate_client_brief,
             // Client scenario commands
             commands::client_scenarios::create_client_scenario,
             commands::client_scenarios::get_client_scenarios,

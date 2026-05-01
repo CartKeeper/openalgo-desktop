@@ -1354,6 +1354,70 @@ impl SqliteDb {
         clients::get_trades_by_account(&conn, client_id, account_type)
     }
 
+    // ========== Schwab Import: documents / holdings / open orders / violations ==========
+
+    pub fn add_client_document(
+        &self,
+        client_id: i64,
+        doc_type: &str,
+        filename: &str,
+        content: &str,
+    ) -> Result<i64> {
+        let conn = self.conn.lock();
+        clients::add_client_document(&conn, client_id, doc_type, filename, content)
+    }
+
+    pub fn replace_client_holdings(
+        &self,
+        client_id: i64,
+        holdings: &[crate::providers::types::ClientHolding],
+    ) -> Result<usize> {
+        let mut conn = self.conn.lock();
+        clients::replace_client_holdings(&mut conn, client_id, holdings)
+    }
+
+    pub fn get_client_holdings(
+        &self,
+        client_id: i64,
+    ) -> Result<Vec<crate::providers::types::ClientHolding>> {
+        let conn = self.conn.lock();
+        clients::get_client_holdings(&conn, client_id)
+    }
+
+    pub fn replace_client_open_orders(
+        &self,
+        client_id: i64,
+        orders: &[crate::providers::types::ClientOpenOrder],
+    ) -> Result<usize> {
+        let mut conn = self.conn.lock();
+        clients::replace_client_open_orders(&mut conn, client_id, orders)
+    }
+
+    pub fn get_client_open_orders(
+        &self,
+        client_id: i64,
+    ) -> Result<Vec<crate::providers::types::ClientOpenOrder>> {
+        let conn = self.conn.lock();
+        clients::get_client_open_orders(&conn, client_id)
+    }
+
+    pub fn replace_client_compliance_violations(
+        &self,
+        client_id: i64,
+        violations: &[crate::providers::types::ComplianceViolation],
+    ) -> Result<usize> {
+        let mut conn = self.conn.lock();
+        clients::replace_client_compliance_violations(&mut conn, client_id, violations)
+    }
+
+    pub fn get_client_compliance_violations(
+        &self,
+        client_id: i64,
+    ) -> Result<Vec<crate::providers::types::ComplianceViolation>> {
+        let conn = self.conn.lock();
+        clients::get_client_compliance_violations(&conn, client_id)
+    }
+
     // ========== Client Scenario Methods ==========
 
     /// Create a new client scenario

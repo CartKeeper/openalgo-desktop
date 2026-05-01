@@ -64,6 +64,10 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "046_client_account_type", ADD_CLIENT_ACCOUNT_TYPE)?;
     run_migration(conn, "047_import_batch_account_type", ADD_IMPORT_BATCH_ACCOUNT_TYPE)?;
     run_migration(conn, "048_scenario_account_type", ADD_SCENARIO_ACCOUNT_TYPE)?;
+    run_migration(conn, "049_client_documents", CREATE_CLIENT_DOCUMENTS_TABLE)?;
+    run_migration(conn, "050_client_holdings", CREATE_CLIENT_HOLDINGS_TABLE)?;
+    run_migration(conn, "051_client_open_orders", CREATE_CLIENT_OPEN_ORDERS_TABLE)?;
+    run_migration(conn, "052_client_compliance_violations", CREATE_CLIENT_COMPLIANCE_VIOLATIONS_TABLE)?;
 
     tracing::info!("Database migrations completed");
     Ok(())
@@ -815,4 +819,78 @@ ALTER TABLE import_batches ADD COLUMN account_type TEXT;
 /// Migration to add account_type column to client_scenarios table
 const ADD_SCENARIO_ACCOUNT_TYPE: &str = r#"
 ALTER TABLE client_scenarios ADD COLUMN account_type TEXT;
+"#;
+
+/// Schwab document uploads — raw file metadata + content for traceability
+const CREATE_CLIENT_DOCUMENTS_TABLE: &str = r#"
+CREATE TABLE client_documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    doc_type TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    content TEXT NOT NULL,
+    byte_size INTEGER NOT NULL DEFAULT 0,
+    uploaded_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_client_documents_client ON client_documents(client_id);
+CREATE INDEX IF NOT EXISTS idx_client_documents_type ON client_documents(doc_type);
+"#;
+
+/// Reconstructed holdings per client (replaced wholesale on each import)
+const CREATE_CLIENT_HOLDINGS_TABLE: &str = r#"
+CREATE TABLE client_holdings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    symbol TEXT NOT NULL,
+    description TEXT,
+    quantity REAL NOT NULL,
+    avg_cost REAL NOT NULL DEFAULT 0.0,
+    total_cost REAL NOT NULL DEFAULT 0.0,
+    realized_pnl REAL NOT NULL DEFAULT 0.0,
+    last_activity_date TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_client_holdings_client ON client_holdings(client_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_client_holdings_unique ON client_holdings(client_id, symbol);
+"#;
+
+/// Open / pending orders parsed from Schwab Order Status export
+const CREATE_CLIENT_OPEN_ORDERS_TABLE: &str = r#"
+CREATE TABLE client_open_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    order_number TEXT,
+    symbol TEXT NOT NULL,
+    description TEXT,
+    action TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    order_type TEXT,
+    limit_price REAL,
+    stop_price REAL,
+    time_in_force TEXT,
+    status TEXT NOT NULL,
+    placed_at TEXT,
+    last_activity_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_client_open_orders_client ON client_open_orders(client_id);
+CREATE INDEX IF NOT EXISTS idx_client_open_orders_status ON client_open_orders(status);
+"#;
+
+/// 401k compliance violations detected during import
+const CREATE_CLIENT_COMPLIANCE_VIOLATIONS_TABLE: &str = r#"
+CREATE TABLE client_compliance_violations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    rule_set TEXT NOT NULL DEFAULT '401k',
+    violation_type TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'block',
+    symbol TEXT,
+    quantity REAL,
+    message TEXT NOT NULL,
+    detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_compliance_client ON client_compliance_violations(client_id);
+CREATE INDEX IF NOT EXISTS idx_compliance_resolved ON client_compliance_violations(resolved);
 "#;

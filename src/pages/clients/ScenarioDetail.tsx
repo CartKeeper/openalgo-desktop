@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   ArrowUp,
@@ -198,6 +199,22 @@ export default function ScenarioDetail() {
     return map
   }, [enrichedPositions, sourcePositions])
 
+  const accountType = activeScenario?.account_type ?? client?.account_type ?? null
+  const shortsAllowed = isShortSellingAllowed(accountType)
+  const restrictedShorts = useMemo(() => {
+    if (shortsAllowed) return [] as typeof enrichedPositions
+    return enrichedPositions.filter((p) => p.side === 'short')
+  }, [shortsAllowed, enrichedPositions])
+  const longQtyBySymbol = useMemo(() => {
+    const map: Record<string, number> = {}
+    for (const p of enrichedPositions) {
+      if (p.side !== 'long') continue
+      const key = p.symbol.toUpperCase()
+      map[key] = (map[key] ?? 0) + p.quantity
+    }
+    return map
+  }, [enrichedPositions])
+
   const handleApplyTrade = async (trade: {
     symbol: string
     exchange: string
@@ -394,6 +411,32 @@ export default function ScenarioDetail() {
             </CardContent>
           </Card>
         </div>
+      )}
+
+      {/* Restricted-Account Short-Position Warning */}
+      {restrictedShorts.length > 0 && (
+        <Card className="border-red-500/40 bg-red-500/5">
+          <CardContent className="py-3 px-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
+              <div className="space-y-1 text-sm">
+                <p className="font-semibold text-red-500">
+                  Short positions in restricted account
+                </p>
+                <p className="text-muted-foreground text-xs leading-relaxed">
+                  This account type does not permit short selling, but the
+                  baseline contains {restrictedShorts.length} short position
+                  {restrictedShorts.length === 1 ? '' : 's'}:{' '}
+                  <span className="font-mono font-semibold text-foreground">
+                    {restrictedShorts.map((p) => p.symbol).join(', ')}
+                  </span>
+                  . Verify the account type and source data — these positions
+                  should not exist in this account.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* Change Summary Banner */}
@@ -838,6 +881,8 @@ export default function ScenarioDetail() {
         scenarioId={scId}
         scenarioName={activeScenario?.name || 'Scenario'}
         isBaseline={activeScenario?.is_baseline ?? false}
+        accountType={accountType}
+        longQtyBySymbol={longQtyBySymbol}
         onTradesApplied={() => loadPositions(scId)}
       />
 
