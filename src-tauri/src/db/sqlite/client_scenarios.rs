@@ -178,10 +178,146 @@ pub fn clone_scenario(
     get_scenario_by_id(conn, new_id)
 }
 
-/// Create or update baseline scenarios from the client's trade history.
+/// Create or update baseline scenarios for a client.
+///
+/// Dispatch:
+///   - If `client_holdings` has rows for this client (Schwab dual-doc importer
+///     wrote them), use the holdings table directly as the source of truth —
+///     one baseline keyed off the client's `account_type`.
+///   - Otherwise fall back to the legacy `client_trades` + `import_batches`
+///     reconstruction, preserving behavior for clients imported via the older
+///     CSV-trades flow.
+pub fn sync_baseline_scenarios(conn: &Connection, client_id: i64) -> Result<Vec<ClientScenario>> {
+    let has_holdings: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM client_holdings WHERE client_id = ?1)",
+        [client_id],
+        |row| row.get(0),
+    )?;
+    if has_holdings {
+        return sync_baseline_from_holdings(conn, client_id);
+    }
+    sync_baseline_from_trades(conn, client_id)
+}
+
+/// Build a single baseline scenario from `client_holdings` (the new path).
+///
+/// Stranded CUSIP-only rows are skipped — they're not actionable in the
+/// scenario sandbox. The client's `account_type` from the `clients` table
+/// determines the scenario name and the baseline's `account_type` field.
+fn sync_baseline_from_holdings(
+    conn: &Connection,
+    client_id: i64,
+) -> Result<Vec<ClientScenario>> {
+    // 1. Look up account_type on the client record (set by the importer)
+    let account_type: Option<String> = conn.query_row(
+        "SELECT account_type FROM clients WHERE id = ?1",
+        [client_id],
+        |row| row.get(0),
+    )?;
+
+    // 2. Find or create the baseline matching this account_type
+    let existing_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM client_scenarios
+             WHERE client_id = ?1 AND is_baseline = 1
+               AND ((account_type IS NULL AND ?2 IS NULL) OR account_type = ?2)",
+            rusqlite::params![client_id, account_type],
+            |row| row.get(0),
+        )
+        .ok();
+
+    let scenario_id = if let Some(id) = existing_id {
+        conn.execute(
+            "DELETE FROM client_scenario_positions WHERE scenario_id = ?1",
+            [id],
+        )?;
+        conn.execute(
+            "UPDATE client_scenarios SET updated_at = datetime('now') WHERE id = ?1",
+            [id],
+        )?;
+        id
+    } else {
+        let name = match &account_type {
+            Some(at) => format!("Current Portfolio — {}", account_type_label(at)),
+            None => "Current Portfolio".to_string(),
+        };
+        let desc = match &account_type {
+            Some(at) => format!("Auto-synced from {} holdings snapshot", account_type_label(at)),
+            None => "Auto-synced from holdings snapshot".to_string(),
+        };
+        conn.execute(
+            "INSERT INTO client_scenarios (client_id, name, description, is_baseline, account_type)
+             VALUES (?1, ?2, ?3, 1, ?4)",
+            rusqlite::params![client_id, name, desc, account_type],
+        )?;
+        conn.last_insert_rowid()
+    };
+
+    // 3. Pull active holdings (skip stranded CUSIPs and zero-qty rows)
+    let mut stmt = conn.prepare(
+        "SELECT symbol, quantity, avg_cost
+         FROM client_holdings
+         WHERE client_id = ?1 AND quantity > 0
+         ORDER BY symbol ASC",
+    )?;
+    let rows: Vec<(String, f64, f64)> = stmt
+        .query_map([client_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?, row.get::<_, f64>(2)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    // 4. Insert as scenario positions (long-only — we never persist negative
+    //    quantities on no-shorts accounts thanks to the importer clamp)
+    for (symbol, quantity, avg_price) in rows {
+        if symbol_is_stranded(&symbol) {
+            continue;
+        }
+        conn.execute(
+            "INSERT INTO client_scenario_positions (scenario_id, symbol, exchange, quantity, avg_price, side)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![scenario_id, symbol, "GENERIC", quantity, avg_price, "long"],
+        )?;
+    }
+
+    // 5. Remove any other baseline scenarios that no longer match (e.g. the
+    //    client's account_type changed since last sync)
+    let mut cleanup_stmt = conn.prepare(
+        "SELECT id FROM client_scenarios
+         WHERE client_id = ?1 AND is_baseline = 1 AND id != ?2",
+    )?;
+    let stale_ids: Vec<i64> = cleanup_stmt
+        .query_map(rusqlite::params![client_id, scenario_id], |row| row.get(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for id in stale_ids {
+        conn.execute(
+            "DELETE FROM client_scenario_positions WHERE scenario_id = ?1",
+            [id],
+        )?;
+        conn.execute("DELETE FROM client_scenarios WHERE id = ?1", [id])?;
+    }
+
+    Ok(vec![get_scenario_by_id(conn, scenario_id)?])
+}
+
+/// Heuristic: a symbol is "stranded" (CUSIP-only / no ticker mapping) when it
+/// matches one of Schwab's untradable patterns. Mirrors the TS detection on
+/// ClientDetail's Holdings tab.
+fn symbol_is_stranded(symbol: &str) -> bool {
+    if symbol == "NO NUMBER" {
+        return true;
+    }
+    // Schwab uses 9-char alphanumeric CUSIPs as a fallback symbol when no
+    // ticker is mapped. Real tickers are 1–5 letters. Treat ≥6-char
+    // alphanumerics that contain a digit as CUSIPs.
+    symbol.len() >= 6
+        && symbol.chars().any(|c| c.is_ascii_digit())
+        && symbol.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// Legacy: build baselines from `client_trades` + `import_batches`.
 /// Creates one baseline per account type found in import batches.
 /// Trades with no import batch or batches with no account type go into a generic baseline.
-pub fn sync_baseline_scenarios(conn: &Connection, client_id: i64) -> Result<Vec<ClientScenario>> {
+fn sync_baseline_from_trades(conn: &Connection, client_id: i64) -> Result<Vec<ClientScenario>> {
     // 1. Get distinct account types from import batches for this client
     let mut at_stmt = conn.prepare(
         "SELECT DISTINCT ib.account_type
