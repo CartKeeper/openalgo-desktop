@@ -651,8 +651,9 @@ pub fn replace_client_holdings(
     {
         let mut stmt = tx.prepare(
             "INSERT INTO client_holdings
-             (client_id, symbol, description, quantity, avg_cost, total_cost, realized_pnl, last_activity_date)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (client_id, symbol, description, quantity, avg_cost, total_cost, realized_pnl,
+              last_activity_date, current_price, market_value, gain_percent)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )?;
         for h in holdings {
             stmt.execute(rusqlite::params![
@@ -664,6 +665,9 @@ pub fn replace_client_holdings(
                 h.total_cost,
                 h.realized_pnl,
                 h.last_activity_date,
+                h.current_price,
+                h.market_value,
+                h.gain_percent,
             ])?;
             inserted += 1;
         }
@@ -675,7 +679,8 @@ pub fn replace_client_holdings(
 pub fn get_client_holdings(conn: &Connection, client_id: i64) -> Result<Vec<ClientHolding>> {
     let mut stmt = conn.prepare(
         "SELECT id, client_id, symbol, description, quantity, avg_cost, total_cost,
-                realized_pnl, last_activity_date, updated_at
+                realized_pnl, last_activity_date, updated_at,
+                current_price, market_value, gain_percent
          FROM client_holdings WHERE client_id = ?1 ORDER BY symbol ASC",
     )?;
     let rows = stmt
@@ -691,6 +696,9 @@ pub fn get_client_holdings(conn: &Connection, client_id: i64) -> Result<Vec<Clie
                 realized_pnl: row.get(7)?,
                 last_activity_date: row.get(8)?,
                 updated_at: row.get(9)?,
+                current_price: row.get(10)?,
+                market_value: row.get(11)?,
+                gain_percent: row.get(12)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;

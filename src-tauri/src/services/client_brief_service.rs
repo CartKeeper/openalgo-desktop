@@ -23,6 +23,18 @@ House style (mandatory):
 - Strict 401(k) rules apply: no shorts, no leveraged/inverse ETFs, no options/futures/crypto. Surface every violation prominently.
 - Never give actual financial advice — the disclaimer covers it.
 
+ACCURACY RULES (mandatory — violations will be caught and rejected):
+1. Use `Generated date` from the user prompt as `generated_date` verbatim. Do NOT invent or guess a date.
+2. NEVER fabricate prices. If a holding's `market_value` is "unavailable" in the user prompt, do not state a price for it. Refer to it by quantity only ("100 shares of TQQQ").
+3. NEVER call a position with a positive `gain_percent` "speculative" or "underwater" or "lottery ticket". Use the gain_percent column literally:
+   - gain_percent < -50: "deep loss" / "candidate for elimination"
+   - gain_percent between -50 and 0: "underwater" / "trim or hold"
+   - gain_percent between 0 and +50: "core hold" / "maintain"
+   - gain_percent > +50: "outsized winner" / "consider trimming for diversification"
+4. When the user prompt provides an enumerated list (e.g. `Penny stock candidates`, `Stranded positions`, `Compliance violations`), use those lists verbatim in your output. Do not derive your own subset; do not omit names from the list. If the list has 11 entries, your bullet list has 11 entries.
+5. Cost basis and market value are DIFFERENT numbers. Label table columns accurately. If you show market value, write "Market: $X". If you show cost basis, write "Cost: $X". Never write "Current: $X" when the number is cost basis.
+6. The `account_type` and account-restriction language come from the user prompt. Don't use "401(k)" wording for an account whose type is "Traditional IRA" or vice versa.
+
 Output format: respond with VALID JSON ONLY (no markdown fences, no commentary), conforming to this TypeScript schema:
 
 {
@@ -159,7 +171,12 @@ impl ClientBriefService {
             ));
         }
 
-        let user_prompt = build_scenario_prompt(&client, &scenario, &positions);
+        // Enrich scenario positions with current market value + gain% by joining
+        // on symbol against the parent client's holdings (which were imported
+        // from the Schwab Positions snapshot). Symbols not in holdings get
+        // None — the prompt notes "unavailable" rather than fabricating prices.
+        let holdings = state.sqlite.get_client_holdings(scenario.client_id)?;
+        let user_prompt = build_scenario_prompt(&client, &scenario, &positions, &holdings);
 
         let anth = AnthropicClient::new((*state.http_client).clone());
         let messages = vec![Message {
@@ -214,24 +231,49 @@ fn build_user_prompt(
 ) -> String {
     let mut s = String::new();
 
+    // Date the brief is being generated. Claude must use this verbatim as
+    // `generated_date` rather than guessing.
+    let today = chrono::Local::now().format("%B %-d, %Y").to_string();
+    s.push_str(&format!("# Generated date\n{}\n\n", today));
+
     s.push_str(&format!("# Client\nName: {}\n", client.name));
     if let Some(b) = &client.broker {
         s.push_str(&format!("Broker: {}\n", b));
     }
-    s.push_str("Account type: 401(k) — strict rules apply (long only, no leveraged/inverse, no options/futures/crypto, no MLPs).\n\n");
+    let at_label = client
+        .account_type
+        .as_deref()
+        .map(account_type_label)
+        .unwrap_or("Unspecified");
+    s.push_str(&format!("Account type: {} ", at_label));
+    if account_disallows_shorts(client.account_type.as_deref()) {
+        s.push_str("(long only — no shorts, no leveraged/inverse, no options/futures/crypto, no MLPs)\n\n");
+    } else {
+        s.push_str("(taxable account — broader instrument set permitted)\n\n");
+    }
 
     s.push_str(&format!("# Holdings ({})\n", holdings.len()));
-    s.push_str("symbol | qty | avg_cost | total_cost | realized_pnl | last_activity\n");
+    s.push_str("symbol | qty | avg_cost | cost_basis | market_value | gain_pct | realized_pnl | last_activity\n");
     for h in holdings {
         s.push_str(&format!(
-            "{} | {} | {:.4} | {:.2} | {:.2} | {}\n",
+            "{} | {} | {:.4} | {:.2} | {} | {} | {:.2} | {}\n",
             h.symbol,
             h.quantity,
             h.avg_cost,
             h.total_cost,
+            h.market_value.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "unavailable".into()),
+            h.gain_percent.map(|v| format!("{:+.2}%", v)).unwrap_or_else(|| "unavailable".into()),
             h.realized_pnl,
             h.last_activity_date.as_deref().unwrap_or("—"),
         ));
+    }
+
+    // Enumerated lists for the rules engine. When market data is present,
+    // surface candidates by category so Claude doesn't have to derive them.
+    let enumerated = build_enumerated_lists(holdings);
+    if !enumerated.is_empty() {
+        s.push_str("\n# Enumerated candidate lists (use these verbatim in your output)\n");
+        s.push_str(&enumerated);
     }
 
     s.push_str(&format!("\n# Open Orders ({})\n", open_orders.len()));
@@ -275,12 +317,21 @@ fn build_user_prompt(
 }
 
 /// Build the scenario-specific user prompt fed to Claude.
+///
+/// Scenario positions only carry symbol/qty/avg_price; we enrich each row
+/// with current market_value and gain_percent by joining on symbol against
+/// the parent client's holdings (sourced from the Positions snapshot).
 fn build_scenario_prompt(
     client: &Client,
     scenario: &ClientScenario,
     positions: &[ScenarioPosition],
+    holdings: &[ClientHolding],
 ) -> String {
+    use std::collections::HashMap;
     let mut s = String::new();
+
+    let today = chrono::Local::now().format("%B %-d, %Y").to_string();
+    s.push_str(&format!("# Generated date\n{}\n\n", today));
 
     s.push_str(&format!("# Client\nName: {}\n", client.name));
     if let Some(b) = &client.broker {
@@ -312,22 +363,67 @@ fn build_scenario_prompt(
         }
     ));
 
-    s.push_str(&format!("\n# Positions ({})\n", positions.len()));
-    s.push_str("symbol | qty | avg_price | side | exchange\n");
-    for p in positions {
-        s.push_str(&format!(
-            "{} | {} | {:.4} | {} | {}\n",
-            p.symbol, p.quantity, p.avg_price, p.side, p.exchange,
-        ));
+    // Build a symbol → (market_value, gain_percent, current_price) map
+    let mut market_lookup: HashMap<String, &ClientHolding> = HashMap::new();
+    for h in holdings {
+        market_lookup.insert(h.symbol.to_uppercase(), h);
     }
 
-    s.push_str("\n# Task\nProduce the four-movement brief analyzing THIS scenario. Use the positions above as the source of truth — do not invent positions or fabricate P/L numbers. ");
+    s.push_str(&format!("\n# Positions ({})\n", positions.len()));
+    s.push_str("symbol | qty | avg_price | cost_basis | market_value | gain_pct | side\n");
+
+    // Project enriched holdings rows for the enumerated-list helper. We
+    // reuse ClientHolding so the same `build_enumerated_lists` logic applies.
+    let mut enriched: Vec<ClientHolding> = Vec::with_capacity(positions.len());
+
+    for p in positions {
+        let cost_basis = p.quantity * p.avg_price;
+        let lookup = market_lookup.get(&p.symbol.to_uppercase());
+        let market_value = lookup.and_then(|h| h.market_value);
+        let gain_percent = lookup.and_then(|h| h.gain_percent);
+        let current_price = lookup.and_then(|h| h.current_price);
+
+        s.push_str(&format!(
+            "{} | {} | {:.4} | {:.2} | {} | {} | {}\n",
+            p.symbol,
+            p.quantity,
+            p.avg_price,
+            cost_basis,
+            market_value.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "unavailable".into()),
+            gain_percent.map(|v| format!("{:+.2}%", v)).unwrap_or_else(|| "unavailable".into()),
+            p.side,
+        ));
+
+        enriched.push(ClientHolding {
+            id: None,
+            client_id: client.id.unwrap_or(0),
+            symbol: p.symbol.clone(),
+            description: None,
+            quantity: p.quantity,
+            avg_cost: p.avg_price,
+            total_cost: cost_basis,
+            realized_pnl: 0.0,
+            last_activity_date: None,
+            updated_at: None,
+            current_price,
+            market_value,
+            gain_percent,
+        });
+    }
+
+    let enumerated = build_enumerated_lists(&enriched);
+    if !enumerated.is_empty() {
+        s.push_str("\n# Enumerated candidate lists (use these verbatim in your output)\n");
+        s.push_str(&enumerated);
+    }
+
+    s.push_str("\n# Task\nProduce the four-movement brief analyzing THIS scenario. Use the positions above as the source of truth — do not invent positions or fabricate prices/P/L. ");
     if scenario.is_baseline {
         s.push_str("This is the current portfolio as imported; recommend structural improvements and tactical moves grounded in what's actually held.");
     } else {
         s.push_str("This is a what-if scenario; analyze whether the proposed structure works and what tactical moves would refine it.");
     }
-    s.push_str(" Keep the satirical orchestral voice but be substantively useful — every recommendation should reference specific tickers from the positions list.\n");
+    s.push_str(" Keep the satirical orchestral voice but be substantively useful — every recommendation should reference specific tickers from the positions list, and respect the accuracy rules in the system prompt.\n");
     s.push_str("\nRespond with JSON only — no markdown fences, no preamble.");
     s
 }
@@ -360,4 +456,80 @@ fn account_disallows_shorts(account_type: Option<&str>) -> bool {
                 | "sep_ira" | "simple_ira" | "529" | "custodial"
         ),
     }
+}
+
+/// Build enumerated candidate lists from holdings so Claude can apply rules
+/// without having to derive lists from a position table. Each line names a
+/// category and lists every matching symbol.
+fn build_enumerated_lists(holdings: &[ClientHolding]) -> String {
+    use std::fmt::Write;
+    let mut s = String::new();
+
+    // Penny stocks (current price under $0.10) — only if we have prices
+    let pennies: Vec<&str> = holdings
+        .iter()
+        .filter(|h| h.current_price.map(|p| p < 0.10).unwrap_or(false))
+        .map(|h| h.symbol.as_str())
+        .collect();
+    if !pennies.is_empty() {
+        let _ = writeln!(
+            s,
+            "Sub-$0.10 penny stocks ({}): {}",
+            pennies.len(),
+            pennies.join(", ")
+        );
+    }
+
+    // Deep losers — over 50% drawdown by gain_percent
+    let deep_losers: Vec<&str> = holdings
+        .iter()
+        .filter(|h| h.gain_percent.map(|g| g < -50.0).unwrap_or(false))
+        .map(|h| h.symbol.as_str())
+        .collect();
+    if !deep_losers.is_empty() {
+        let _ = writeln!(
+            s,
+            "Deep losers (>50% loss): {}",
+            deep_losers.join(", ")
+        );
+    }
+
+    // Outsized winners — over 50% gain
+    let big_winners: Vec<&str> = holdings
+        .iter()
+        .filter(|h| h.gain_percent.map(|g| g > 50.0).unwrap_or(false))
+        .map(|h| h.symbol.as_str())
+        .collect();
+    if !big_winners.is_empty() {
+        let _ = writeln!(
+            s,
+            "Outsized winners (>50% gain — consider trimming for diversification): {}",
+            big_winners.join(", ")
+        );
+    }
+
+    // Stranded — symbols matching CUSIP heuristic
+    let stranded: Vec<&str> = holdings
+        .iter()
+        .filter(|h| symbol_is_stranded(&h.symbol))
+        .map(|h| h.symbol.as_str())
+        .collect();
+    if !stranded.is_empty() {
+        let _ = writeln!(
+            s,
+            "Stranded / untradable (no live price — account hygiene): {}",
+            stranded.join(", ")
+        );
+    }
+
+    s
+}
+
+fn symbol_is_stranded(symbol: &str) -> bool {
+    if symbol == "NO NUMBER" {
+        return true;
+    }
+    symbol.len() >= 6
+        && symbol.chars().any(|c| c.is_ascii_digit())
+        && symbol.chars().all(|c| c.is_ascii_alphanumeric())
 }

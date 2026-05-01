@@ -581,6 +581,16 @@ pub struct ClientHolding {
     pub realized_pnl: f64,
     pub last_activity_date: Option<String>,
     pub updated_at: Option<String>,
+    /// Live price from the Positions snapshot at import time. None when the
+    /// holding was reconstructed from transactions only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_price: Option<f64>,
+    /// Market value from the Positions snapshot at import time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub market_value: Option<f64>,
+    /// Unrealized gain % from cost basis at the time of the snapshot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gain_percent: Option<f64>,
 }
 
 /// Open / pending order parsed from broker order-status export

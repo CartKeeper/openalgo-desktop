@@ -69,6 +69,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "051_client_open_orders", CREATE_CLIENT_OPEN_ORDERS_TABLE)?;
     run_migration(conn, "052_client_compliance_violations", CREATE_CLIENT_COMPLIANCE_VIOLATIONS_TABLE)?;
     run_migration(conn, "053_compliance_resolution_meta", ADD_COMPLIANCE_RESOLUTION_META)?;
+    run_migration(conn, "054_holdings_market_value", ADD_HOLDINGS_MARKET_VALUE)?;
 
     tracing::info!("Database migrations completed");
     Ok(())
@@ -883,6 +884,16 @@ CREATE INDEX IF NOT EXISTS idx_client_open_orders_status ON client_open_orders(s
 const ADD_COMPLIANCE_RESOLUTION_META: &str = r#"
 ALTER TABLE client_compliance_violations ADD COLUMN resolved_reason TEXT;
 ALTER TABLE client_compliance_violations ADD COLUMN resolved_at TEXT;
+"#;
+
+/// Persist current price + market value + gain% on each holding so brief
+/// generators can categorize positions correctly (winners vs losers vs penny
+/// stocks). Sourced from the Schwab Positions snapshot at import time. NULL
+/// for clients imported via the legacy transactions-only path.
+const ADD_HOLDINGS_MARKET_VALUE: &str = r#"
+ALTER TABLE client_holdings ADD COLUMN current_price REAL;
+ALTER TABLE client_holdings ADD COLUMN market_value REAL;
+ALTER TABLE client_holdings ADD COLUMN gain_percent REAL;
 "#;
 
 /// 401k compliance violations detected during import

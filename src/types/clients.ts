@@ -94,6 +94,12 @@ export interface ClientHolding {
   realized_pnl: number
   last_activity_date: string | null
   updated_at: string | null
+  /** Live price from the Positions snapshot at import time. */
+  current_price?: number | null
+  /** Market value from the Positions snapshot at import time. */
+  market_value?: number | null
+  /** Unrealized gain % from cost basis at the time of the snapshot. */
+  gain_percent?: number | null
 }
 
 export interface ClientOpenOrder {

@@ -88,18 +88,35 @@ pub fn reconstruct_from_positions(
             description: p.description.clone(),
             quantity: 0.0,
             cost_basis: 0.0,
+            market_value: 0.0,
+            has_market_value: false,
+            current_price: None,
         });
         if entry.description.is_empty() && !p.description.is_empty() {
             entry.description = p.description.clone();
         }
         entry.quantity += p.quantity;
         entry.cost_basis += p.cost_basis.unwrap_or(0.0);
+        if let Some(mv) = p.market_value {
+            entry.market_value += mv;
+            entry.has_market_value = true;
+        }
+        // Last non-None price across merged rows. Schwab reports the same
+        // price across split rows so this is safe.
+        if entry.current_price.is_none() {
+            entry.current_price = p.price;
+        }
     }
 
     let mut out: Vec<ClientHolding> = merged
         .into_iter()
         .map(|(key, m)| {
             let avg = if m.quantity.abs() > 1e-9 { m.cost_basis / m.quantity } else { 0.0 };
+            let market_value = if m.has_market_value { Some(round2(m.market_value)) } else { None };
+            let gain_percent = match (market_value, m.cost_basis.abs() > 1e-9) {
+                (Some(mv), true) => Some(round2((mv - m.cost_basis) / m.cost_basis * 100.0)),
+                _ => None,
+            };
             ClientHolding {
                 id: None,
                 client_id,
@@ -111,6 +128,9 @@ pub fn reconstruct_from_positions(
                 realized_pnl: round2(realized.get(&key).copied().unwrap_or(0.0)),
                 last_activity_date: last_activity.get(&key).cloned(),
                 updated_at: None,
+                current_price: m.current_price.map(round4),
+                market_value,
+                gain_percent,
             }
         })
         .collect();
@@ -123,6 +143,9 @@ struct MergedPos {
     description: String,
     quantity: f64,
     cost_basis: f64,
+    market_value: f64,
+    has_market_value: bool,
+    current_price: Option<f64>,
 }
 
 /// Stranded positions (revoked, restricted, escrow, CUSIP-only) extracted from
@@ -240,6 +263,12 @@ pub fn reconstruct(
                 realized_pnl: round2(acc.realized_pnl),
                 last_activity_date: if acc.last_activity.is_empty() { None } else { Some(acc.last_activity) },
                 updated_at: None,
+                // No market value when reconstructing from transactions only —
+                // we don't have prices in the transactions ledger. Brief
+                // generators must handle None gracefully.
+                current_price: None,
+                market_value: None,
+                gain_percent: None,
             }
         })
         .collect();
