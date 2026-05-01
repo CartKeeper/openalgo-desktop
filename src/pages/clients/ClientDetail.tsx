@@ -817,13 +817,27 @@ export default function ClientDetail() {
                     <tbody>
                       {holdings.map((h) => {
                         const isPulse = pulseSymbol === h.symbol.toUpperCase()
+                        // CUSIP-only / no-ticker rows render muted with an italic
+                        // description so they're visually distinct from active holdings.
+                        const isStranded =
+                          h.symbol === 'NO NUMBER' ||
+                          (h.symbol.length >= 6 &&
+                            /[0-9]/.test(h.symbol) &&
+                            /^[A-Z0-9]+$/.test(h.symbol))
                         return (
                           <tr
                             key={h.id ?? h.symbol}
-                            className={`border-b last:border-b-0 ${isPulse ? 'bg-amber-100/60 dark:bg-amber-950/40 transition-colors' : ''}`}
+                            className={`border-b last:border-b-0 ${isPulse ? 'bg-amber-100/60 dark:bg-amber-950/40 transition-colors' : ''} ${isStranded ? 'opacity-60' : ''}`}
                           >
-                            <td className="h-12 px-4 font-mono font-semibold">{h.symbol}</td>
-                            <td className="h-12 px-4 text-xs text-muted-foreground truncate max-w-[280px]" title={h.description ?? ''}>{h.description ?? '—'}</td>
+                            <td className="h-12 px-4 font-mono font-semibold">
+                              {h.symbol}
+                              {isStranded && (
+                                <span className="ml-2 text-[10px] uppercase tracking-wider text-muted-foreground font-normal">stranded</span>
+                              )}
+                            </td>
+                            <td className={`h-12 px-4 text-xs text-muted-foreground truncate max-w-[280px] ${isStranded ? 'italic' : ''}`} title={h.description ?? ''}>
+                              {h.description ?? '—'}
+                            </td>
                             <td className="h-12 px-4 text-right font-mono tabular-nums">{h.quantity.toLocaleString('en-US', { maximumFractionDigits: 4 })}</td>
                             <td className="h-12 px-4 text-right font-mono tabular-nums">{fmt(h.avg_cost)}</td>
                             <td className="h-12 px-4 text-right font-mono tabular-nums text-muted-foreground">{fmt(h.total_cost)}</td>

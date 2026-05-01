@@ -1,10 +1,12 @@
 import { invoke } from '@tauri-apps/api/core'
 import {
   AlertTriangle,
+  Archive,
   CheckCircle2,
   FileJson,
   FileSpreadsheet,
   HelpCircle,
+  Info,
   Loader2,
   ShieldAlert,
   ShieldCheck,
@@ -79,9 +81,11 @@ export default function ImportCsvDialog({
 }: ImportDocumentsDialogProps) {
   const txnRef = useRef<HTMLInputElement>(null)
   const orderRef = useRef<HTMLInputElement>(null)
+  const posRef = useRef<HTMLInputElement>(null)
 
   const [transactions, setTransactions] = useState<FilePayload | null>(null)
   const [orderStatus, setOrderStatus] = useState<FilePayload | null>(null)
+  const [positions, setPositions] = useState<FilePayload | null>(null)
   const [report, setReport] = useState<ImportReport | null>(null)
   const [isImporting, setIsImporting] = useState(false)
   const [isGeneratingBrief, setIsGeneratingBrief] = useState(false)
@@ -90,22 +94,25 @@ export default function ImportCsvDialog({
   const reset = () => {
     setTransactions(null)
     setOrderStatus(null)
+    setPositions(null)
     setReport(null)
     setIsImporting(false)
     if (txnRef.current) txnRef.current.value = ''
     if (orderRef.current) orderRef.current.value = ''
+    if (posRef.current) posRef.current.value = ''
   }
 
   const handlePick = async (
     e: React.ChangeEvent<HTMLInputElement>,
-    target: 'transactions' | 'order_status',
+    target: 'transactions' | 'order_status' | 'positions',
   ) => {
     const file = e.target.files?.[0]
     if (!file) return
     const content = await file.text()
     const payload: FilePayload = { filename: file.name, content, size: file.size }
     if (target === 'transactions') setTransactions(payload)
-    else setOrderStatus(payload)
+    else if (target === 'order_status') setOrderStatus(payload)
+    else setPositions(payload)
     setReport(null)
   }
 
@@ -119,6 +126,8 @@ export default function ImportCsvDialog({
         transactionsContent: transactions.content,
         orderStatusFilename: orderStatus?.filename ?? null,
         orderStatusContent: orderStatus?.content ?? null,
+        positionsFilename: positions?.filename ?? null,
+        positionsContent: positions?.content ?? null,
       })
       setReport(result)
       // Soft-fail: import always succeeds. Violations are persisted as flags
@@ -227,16 +236,19 @@ export default function ImportCsvDialog({
                 <strong>Transactions:</strong> History → Export → choose JSON or CSV. Required.
               </p>
               <p>
-                <strong>Order Status:</strong> Order Status → Export to CSV. Optional, but recommended — enables open-order detection and cross-validation against the transaction ledger.
+                <strong>Positions:</strong> Account → Positions → Export to CSV. Strongly recommended — provides authoritative current cost basis so positions you've held since before the transaction window aren't misread as shorts.
+              </p>
+              <p>
+                <strong>Order Status:</strong> Order Status → Export to CSV. Optional — enables open-order detection and cross-validation against the transaction ledger.
               </p>
               <p className="text-muted-foreground pt-1">
-                On any mismatch between the two files, transactions win (the holdings always reflect the transaction ledger). Mismatches are surfaced for review.
+                Positions wins when present (it's the authoritative snapshot). Otherwise transactions win on any reconciliation mismatch.
               </p>
             </div>
           )}
 
           {/* File pickers */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <FilePicker
               label="Transactions (JSON or CSV)"
               required
@@ -246,6 +258,18 @@ export default function ImportCsvDialog({
               onClear={() => {
                 setTransactions(null)
                 if (txnRef.current) txnRef.current.value = ''
+                setReport(null)
+              }}
+              disabled={isImporting}
+            />
+            <FilePicker
+              label="Positions (CSV) — recommended"
+              file={positions}
+              kind={positions ? 'csv' : null}
+              onChoose={() => posRef.current?.click()}
+              onClear={() => {
+                setPositions(null)
+                if (posRef.current) posRef.current.value = ''
                 setReport(null)
               }}
               disabled={isImporting}
@@ -268,6 +292,13 @@ export default function ImportCsvDialog({
               accept=".json,.csv"
               className="hidden"
               onChange={(e) => handlePick(e, 'transactions')}
+            />
+            <input
+              ref={posRef}
+              type="file"
+              accept=".csv"
+              className="hidden"
+              onChange={(e) => handlePick(e, 'positions')}
             />
             <input
               ref={orderRef}
@@ -311,7 +342,15 @@ export default function ImportCsvDialog({
                 onView={onViewViolation}
               />
 
+              {(report.incomplete_history_symbols?.length ?? 0) > 0 && (
+                <IncompleteHistorySection report={report} />
+              )}
+
               <HoldingsSection report={report} />
+
+              {(report.stranded_positions?.length ?? 0) > 0 && (
+                <StrandedSection report={report} />
+              )}
 
               <OpenOrdersSection report={report} />
 
@@ -769,6 +808,72 @@ function MismatchSection({ report }: { report: ImportReport }) {
           </li>
         ))}
       </ul>
+    </div>
+  )
+}
+
+function IncompleteHistorySection({ report }: { report: ImportReport }) {
+  const symbols = report.incomplete_history_symbols ?? []
+  return (
+    <div className="rounded-lg border overflow-hidden">
+      <div className="px-3 py-2 bg-muted/40 border-b flex items-center gap-2">
+        <Info className="h-4 w-4 text-muted-foreground" />
+        <span className="text-sm font-semibold">Incomplete history</span>
+        <span className="ml-auto text-xs text-muted-foreground tabular-nums">{symbols.length}</span>
+      </div>
+      <div className="px-3 py-2 text-xs text-muted-foreground">
+        These positions were sold during the imported window but their original Buy is older than the file's date range. They are <strong>not shorts</strong> — the importer clamped them to zero quantity. Re-export Transactions with a longer date range, or upload a Schwab Positions CSV, to populate accurate cost basis.
+      </div>
+      <div className="px-3 pb-3 flex flex-wrap gap-1.5">
+        {symbols.map((s) => (
+          <span
+            key={s}
+            className="font-mono text-xs px-2 py-0.5 rounded border bg-muted/30 tabular-nums"
+          >
+            {s}
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function StrandedSection({ report }: { report: ImportReport }) {
+  const stranded = report.stranded_positions ?? []
+  return (
+    <div className="rounded-lg border overflow-hidden">
+      <div className="px-3 py-2 bg-muted/40 border-b flex items-center gap-2">
+        <Archive className="h-4 w-4 text-muted-foreground" />
+        <span className="text-sm font-semibold">Stranded / untradable positions</span>
+        <span className="ml-auto text-xs text-muted-foreground tabular-nums">{stranded.length}</span>
+      </div>
+      <div className="px-3 py-2 text-xs text-muted-foreground">
+        Schwab still carries these on the books but they have no live price (delisted, registration revoked, restricted, or escrow). Not compliance violations — just account hygiene.
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b bg-muted/20">
+              <th className="h-9 px-3 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Symbol / CUSIP</th>
+              <th className="h-9 px-3 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Description</th>
+              <th className="h-9 px-3 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Qty</th>
+              <th className="h-9 px-3 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Cost Basis</th>
+              <th className="h-9 px-3 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            {stranded.map((p, i) => (
+              <tr key={`${p.symbol}-${i}`} className="border-b last:border-b-0">
+                <td className="h-10 px-3 font-mono text-xs">{p.symbol}</td>
+                <td className="h-10 px-3 text-xs text-muted-foreground truncate max-w-[260px]" title={p.description}>{p.description}</td>
+                <td className="h-10 px-3 text-right tabular-nums text-xs">{fmtQty(p.quantity)}</td>
+                <td className="h-10 px-3 text-right tabular-nums text-xs">{p.cost_basis != null ? fmtMoney(p.cost_basis) : '—'}</td>
+                <td className="h-10 px-3 text-xs text-muted-foreground">{p.reason}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

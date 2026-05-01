@@ -658,6 +658,29 @@ pub struct ImportReport {
     pub open_orders: Vec<ClientOpenOrder>,
     pub violations: Vec<ComplianceViolation>,
     pub reconciliation_mismatches: Vec<ReconciliationMismatch>,
+    /// Symbols whose net-from-transactions came out negative on a no-shorts
+    /// account but where no Positions baseline was supplied. These are NOT
+    /// real shorts; they're pre-existing positions sold within the imported
+    /// window. Surfaced for transparency, never as compliance violations.
+    #[serde(default)]
+    pub incomplete_history_symbols: Vec<String>,
+    /// Untradable rows from the Positions snapshot (revoked, restricted,
+    /// escrow, CUSIP-only). Schwab still carries these on the books but they
+    /// can't be acted on; they get their own bucket on the report.
+    #[serde(default)]
+    pub stranded_positions: Vec<StrandedPosition>,
+}
+
+/// Untradable position from a Schwab Positions snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrandedPosition {
+    pub symbol: String,
+    pub description: String,
+    pub quantity: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_basis: Option<f64>,
+    pub asset_type: String,
+    pub reason: String,
 }
 
 // ===========================================================================

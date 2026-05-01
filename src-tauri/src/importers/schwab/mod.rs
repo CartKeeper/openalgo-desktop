@@ -14,6 +14,7 @@
 
 pub mod holdings;
 pub mod order_status;
+pub mod positions;
 pub mod reconciler;
 pub mod rules_401k;
 pub mod transactions;
@@ -21,24 +22,58 @@ pub mod transactions;
 use crate::error::AppError;
 use crate::providers::types::{
     ClientHolding, ClientOpenOrder, ComplianceViolation, ImportReport, ImportReportSummary,
+    StrandedPosition,
 };
 
 /// Run a Schwab document import end to end.
 ///
-/// `transactions_content` is required (JSON or CSV string).
-/// `order_status_csv` is optional — when provided it enables open-order detection
-/// and cross-validation against the transaction ledger.
+/// Parameters:
+/// - `transactions_content` — required, JSON or CSV string
+/// - `order_status_csv` — optional, enables open-order detection + reconciliation
+/// - `positions_csv` — optional but **strongly preferred**: when supplied it
+///   becomes the authoritative current-state baseline so we don't have to
+///   reconstruct from a (typically partial) transaction history. Without it,
+///   no-shorts accounts get a clamp-to-zero fallback to suppress false-short
+///   flags from incomplete history.
+/// - `account_disallows_shorts` — drives the clamp behavior in the fallback path
 pub fn run_import(
     client_id: i64,
     transactions_content: &str,
     order_status_csv: Option<&str>,
+    positions_csv: Option<&str>,
+    account_disallows_shorts: bool,
 ) -> Result<ImportReport, AppError> {
     // 1. Parse transactions (auto-detect JSON vs CSV)
     let transactions = transactions::parse(transactions_content)?;
     let transactions_processed = transactions.len() as i64;
 
-    // 2. Reconstruct holdings from transactions
-    let holdings_raw = holdings::reconstruct(client_id, &transactions);
+    // 2. Reconstruct holdings — prefer Positions snapshot when present
+    let parsed_positions = match positions_csv {
+        Some(content) => Some(positions::parse(content)?),
+        None => None,
+    };
+
+    let (holdings_raw, incomplete_history_symbols, stranded_positions) = match &parsed_positions {
+        Some(parsed) => {
+            let stranded: Vec<StrandedPosition> = holdings::extract_stranded(parsed)
+                .into_iter()
+                .map(|p| StrandedPosition {
+                    symbol: p.symbol,
+                    description: p.description,
+                    quantity: p.quantity,
+                    cost_basis: p.cost_basis,
+                    asset_type: p.asset_type,
+                    reason: stranded_reason(&p.is_stranded, &p.price, &p.market_value),
+                })
+                .collect();
+            let h = holdings::reconstruct_from_positions(client_id, parsed, &transactions);
+            (h, Vec::new(), stranded)
+        }
+        None => {
+            let res = holdings::reconstruct(client_id, &transactions, account_disallows_shorts);
+            (res.holdings, res.incomplete_history_symbols, Vec::new())
+        }
+    };
 
     // 3. Parse order status (if provided)
     let (open_orders, filled_orders, order_status_processed) = match order_status_csv {
@@ -74,7 +109,20 @@ pub fn run_import(
         open_orders,
         violations,
         reconciliation_mismatches,
+        incomplete_history_symbols,
+        stranded_positions,
     })
+}
+
+fn stranded_reason(is_stranded: &bool, price: &Option<f64>, market_value: &Option<f64>) -> String {
+    if !is_stranded {
+        return String::new();
+    }
+    if price.is_none() && market_value.is_none() {
+        "No live price (delisted, revoked, restricted, or escrow)".to_string()
+    } else {
+        "CUSIP-only entry without ticker mapping".to_string()
+    }
 }
 
 fn build_summary(

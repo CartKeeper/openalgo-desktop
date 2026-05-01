@@ -247,16 +247,22 @@ pub async fn get_client_trades_by_account(
 // Schwab dual-document import (Transactions + optional Order Status, 401k rules)
 // ---------------------------------------------------------------------------
 
-/// Import a Schwab Transactions file (JSON or CSV) and an optional Order Status CSV.
+/// Import a Schwab Transactions file plus optional Order Status CSV and
+/// Positions CSV. The Positions snapshot, when present, is the authoritative
+/// current-state baseline so we don't have to reconstruct holdings from a
+/// (typically partial) transaction window.
 ///
-/// Always runs the strict 401k rule set. Returns a full `ImportReport` containing
-/// reconstructed holdings, open orders, compliance violations, and reconciliation
-/// mismatches between the two files. On mismatch, **transactions win** (the holdings
-/// reflect the transaction ledger; mismatches are surfaced for review).
+/// Account type is auto-set per file conventions:
+///   - filename starts with "Contributory" → `traditional_ira` (Schwab's IRA)
+///   - otherwise → `401k`
+///
+/// Both account types disallow shorts so the rules engine treats them
+/// identically; only the displayed label differs.
 ///
 /// Persists to: `client_documents`, `client_holdings`, `client_open_orders`,
-/// `client_compliance_violations` (and pre-existing `client_trades` / `import_batches`
-/// for backward compatibility with the existing positions UI).
+/// `client_compliance_violations` (and pre-existing `client_trades` /
+/// `import_batches` for backward compatibility with the existing positions UI).
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn import_schwab_documents(
     state: State<'_, AppState>,
@@ -265,9 +271,27 @@ pub async fn import_schwab_documents(
     transactions_content: String,
     order_status_filename: Option<String>,
     order_status_content: Option<String>,
+    positions_filename: Option<String>,
+    positions_content: Option<String>,
 ) -> Result<ImportReport, AppError> {
+    let detected_type = detect_account_type(&[
+        Some(transactions_filename.as_str()),
+        order_status_filename.as_deref(),
+        positions_filename.as_deref(),
+    ]);
+    // Both 401k and traditional_ira disallow shorts; pass that to the rules
+    // engine so the clamp-on-negative fallback fires when needed.
+    let account_disallows_shorts = matches!(detected_type, "401k" | "traditional_ira");
+
     let order_status_ref = order_status_content.as_deref();
-    let report = schwab::run_import(client_id, &transactions_content, order_status_ref)?;
+    let positions_ref = positions_content.as_deref();
+    let report = schwab::run_import(
+        client_id,
+        &transactions_content,
+        order_status_ref,
+        positions_ref,
+        account_disallows_shorts,
+    )?;
 
     // Persist raw documents for traceability
     state.sqlite.add_client_document(
@@ -281,6 +305,11 @@ pub async fn import_schwab_documents(
             .sqlite
             .add_client_document(client_id, "order_status", name, content)?;
     }
+    if let (Some(name), Some(content)) = (positions_filename.as_deref(), positions_ref) {
+        state
+            .sqlite
+            .add_client_document(client_id, "positions", name, content)?;
+    }
 
     // Replace derived data wholesale
     state
@@ -293,12 +322,32 @@ pub async fn import_schwab_documents(
         .sqlite
         .replace_client_compliance_violations(client_id, &report.violations)?;
 
-    // Auto-set account_type to 401k for the client (per spec — strict 401k rules apply)
-    state
-        .sqlite
-        .update_client(client_id, None, None, None, None, None, Some("401k"), None)?;
+    // Auto-set account_type
+    state.sqlite.update_client(
+        client_id,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(detected_type),
+        None,
+    )?;
 
     Ok(report)
+}
+
+/// Inspect uploaded filenames to decide which no-shorts account type to apply.
+/// Schwab labels Contributory IRAs distinctively; everything else falls back
+/// to `401k`. Both share the same compliance rules.
+fn detect_account_type(filenames: &[Option<&str>]) -> &'static str {
+    for f in filenames.iter().flatten() {
+        let lower = f.to_lowercase();
+        if lower.contains("contributory") {
+            return "traditional_ira";
+        }
+    }
+    "401k"
 }
 
 #[tauri::command]

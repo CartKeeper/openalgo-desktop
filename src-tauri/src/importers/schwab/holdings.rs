@@ -12,9 +12,106 @@
 use crate::providers::types::ClientHolding;
 use std::collections::HashMap;
 
+use super::positions::{ParsedPositions, PositionRow};
 use super::transactions::TransactionRow;
 
-pub fn reconstruct(client_id: i64, transactions: &[TransactionRow]) -> Vec<ClientHolding> {
+/// Result of reconstruct() so callers can surface symbols where transaction
+/// history doesn't go back far enough to fully account for current position.
+pub struct ReconstructResult {
+    pub holdings: Vec<ClientHolding>,
+    /// Symbols whose net-from-transactions came out negative on a no-shorts
+    /// account — i.e. a sell with no matching buy in the import window.
+    /// These are NOT real shorts; they're pre-existing positions sold within
+    /// the imported period. The frontend surfaces them as info, not violations.
+    pub incomplete_history_symbols: Vec<String>,
+}
+
+/// Use a Schwab Positions snapshot as the authoritative current state.
+/// Cost basis comes directly from the file (no inference). Realized P/L is
+/// summed across in-window sells in the transactions ledger using the
+/// position's avg cost as a proxy.
+pub fn reconstruct_from_positions(
+    client_id: i64,
+    parsed: &ParsedPositions,
+    transactions: &[TransactionRow],
+) -> Vec<ClientHolding> {
+    // Realized P/L per symbol: sum of (sell_proceeds - sell_qty * avg_cost) - fees
+    let mut realized: HashMap<String, f64> = HashMap::new();
+    for t in transactions {
+        if t.action != "sell" {
+            continue;
+        }
+        let key = t.symbol.to_uppercase();
+        let pos = parsed.positions.iter().find(|p| p.symbol.eq_ignore_ascii_case(&t.symbol));
+        let avg = pos
+            .and_then(|p| {
+                if p.quantity.abs() > 1e-9 {
+                    p.cost_basis.map(|c| c / p.quantity)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0.0);
+        let qty = t.quantity.abs();
+        let pnl = (t.price - avg) * qty - t.fees;
+        *realized.entry(key).or_insert(0.0) += pnl;
+    }
+
+    // Last activity date per symbol (max date across transactions)
+    let mut last_activity: HashMap<String, String> = HashMap::new();
+    for t in transactions {
+        if t.symbol.is_empty() {
+            continue;
+        }
+        let key = t.symbol.to_uppercase();
+        last_activity
+            .entry(key)
+            .and_modify(|d| {
+                if t.date > *d {
+                    *d = t.date.clone();
+                }
+            })
+            .or_insert_with(|| t.date.clone());
+    }
+
+    let mut out: Vec<ClientHolding> = parsed
+        .positions
+        .iter()
+        .filter(|p| p.quantity.abs() > 1e-9 || p.is_stranded)
+        .map(|p| {
+            let key = p.symbol.to_uppercase();
+            let cost = p.cost_basis.unwrap_or(0.0);
+            let avg = if p.quantity.abs() > 1e-9 { cost / p.quantity } else { 0.0 };
+            ClientHolding {
+                id: None,
+                client_id,
+                symbol: p.symbol.clone(),
+                description: if p.description.is_empty() { None } else { Some(p.description.clone()) },
+                quantity: round2(p.quantity),
+                avg_cost: round4(avg),
+                total_cost: round2(cost),
+                realized_pnl: round2(realized.get(&key).copied().unwrap_or(0.0)),
+                last_activity_date: last_activity.get(&key).cloned(),
+                updated_at: None,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| a.symbol.cmp(&b.symbol));
+    out
+}
+
+/// Stranded positions (revoked, restricted, escrow, CUSIP-only) extracted from
+/// a Positions snapshot. Surfaced separately so they don't pollute the main
+/// holdings table or trigger compliance checks.
+pub fn extract_stranded(parsed: &ParsedPositions) -> Vec<PositionRow> {
+    parsed.positions.iter().filter(|p| p.is_stranded).cloned().collect()
+}
+
+pub fn reconstruct(
+    client_id: i64,
+    transactions: &[TransactionRow],
+    account_disallows_shorts: bool,
+) -> ReconstructResult {
     // Sort ascending by date so cost basis evolves correctly. (Original may be desc.)
     let mut sorted: Vec<&TransactionRow> = transactions.iter().collect();
     sorted.sort_by(|a, b| a.date.cmp(&b.date));
@@ -79,6 +176,25 @@ pub fn reconstruct(client_id: i64, transactions: &[TransactionRow]) -> Vec<Clien
         }
     }
 
+    // Collect symbols whose net came out negative — these are "incomplete history"
+    // (pre-existing position sold during window), NOT real shorts.
+    // On no-shorts accounts we clamp them to zero so the rules engine doesn't
+    // fire `short_position` flags against false positives.
+    let mut incomplete: Vec<String> = Vec::new();
+    if account_disallows_shorts {
+        for (sym, acc) in by_symbol.iter_mut() {
+            if acc.quantity < -1e-6 {
+                incomplete.push(sym.clone());
+                acc.quantity = 0.0;
+                acc.total_cost = 0.0;
+                // Realized P/L is unreliable here too (cost basis was unknown
+                // because the buy was outside the window) — zero it out so we
+                // don't surface phantom gains.
+                acc.realized_pnl = 0.0;
+            }
+        }
+    }
+
     let mut out: Vec<ClientHolding> = by_symbol
         .into_iter()
         .filter(|(_, acc)| acc.quantity.abs() > 1e-9 || acc.realized_pnl.abs() > 0.005)
@@ -103,7 +219,12 @@ pub fn reconstruct(client_id: i64, transactions: &[TransactionRow]) -> Vec<Clien
         })
         .collect();
     out.sort_by(|a, b| a.symbol.cmp(&b.symbol));
-    out
+    incomplete.sort();
+    incomplete.dedup();
+    ReconstructResult {
+        holdings: out,
+        incomplete_history_symbols: incomplete,
+    }
 }
 
 struct Acc {

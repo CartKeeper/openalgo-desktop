@@ -152,6 +152,15 @@ export interface ImportReportSummary {
   is_compliant: boolean
 }
 
+export interface StrandedPosition {
+  symbol: string
+  description: string
+  quantity: number
+  cost_basis?: number | null
+  asset_type: string
+  reason: string
+}
+
 export interface ImportReport {
   client_id: number
   summary: ImportReportSummary
@@ -159,6 +168,12 @@ export interface ImportReport {
   open_orders: ClientOpenOrder[]
   violations: ComplianceViolation[]
   reconciliation_mismatches: ReconciliationMismatch[]
+  /** Symbols whose net-from-transactions came out negative on a no-shorts
+   *  account but where no Positions baseline was supplied. Surfaced for
+   *  transparency, never as compliance violations. */
+  incomplete_history_symbols?: string[]
+  /** Untradable rows from the Positions snapshot (revoked, restricted, escrow). */
+  stranded_positions?: StrandedPosition[]
 }
 
 // Re-export Goldman brief types so callers don't need to dig into /components.
