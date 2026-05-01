@@ -81,6 +81,8 @@ pub fn evaluate(
             message: msg,
             detected_at: None,
             resolved: false,
+            resolved_reason: None,
+            resolved_at: None,
         });
     };
 
@@ -193,6 +195,8 @@ fn check_instrument(
             message: msg,
             detected_at: None,
             resolved: false,
+            resolved_reason: None,
+            resolved_at: None,
         });
     } else {
         // Name-pattern fallback: catches new leveraged/inverse ETFs not yet in the list
@@ -208,6 +212,8 @@ fn check_instrument(
                 message: format!("{} ({}) flagged by name pattern as likely leveraged or inverse fund.", sym, desc),
                 detected_at: None,
                 resolved: false,
+                resolved_reason: None,
+                resolved_at: None,
             });
         }
     }

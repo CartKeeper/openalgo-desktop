@@ -38,6 +38,7 @@ export default function ClientsIndex() {
 
   const [step, setStep] = useState<WizardStep>('profile')
   const [pendingClientId, setPendingClientId] = useState<number | null>(null)
+  const [importCompleted, setImportCompleted] = useState(false)
   const [showDocumentsDialog, setShowDocumentsDialog] = useState(false)
 
   const [form, setForm] = useState({
@@ -68,6 +69,7 @@ export default function ClientsIndex() {
     setForm({ name: '', email: '', phone: '', broker: 'Schwab', account_id: '', notes: '' })
     setStep('profile')
     setPendingClientId(null)
+    setImportCompleted(false)
     setShowDocumentsDialog(false)
     setShowHelp(false)
     setConfirmCancel(false)
@@ -101,37 +103,74 @@ export default function ClientsIndex() {
     }
   }
 
-  /** Documents successfully imported → wizard is complete */
-  const handleDocumentsSuccess = async (report: ImportReport) => {
-    const clientId = report.client_id
-    setShowDocumentsDialog(false)
-    setShowAddDialog(false)
-    resetWizard()
+  /**
+   * Called by ImportDocumentsDialog after a successful import (compliant OR with flags).
+   * The client record is now considered safe — we'll never roll it back from here on.
+   * We do NOT auto-close the dialog; the user clicks Done/Close themselves so they
+   * can review the violations table and resolve flags inline if they want.
+   */
+  const handleDocumentsSuccess = async (_report: ImportReport) => {
+    setImportCompleted(true)
     await loadClients()
-    toast.success('Client created and documents imported.')
-    navigate(`/clients/${clientId}`)
   }
 
-  /** Cancel during Step 2 → roll back the client record so we never leave an empty profile */
+  /**
+   * Cancel during Step 2: only roll back if NO import has been recorded yet.
+   * Once an import has been persisted, the client record is real — closing
+   * just navigates to ClientDetail so the user can keep working on it.
+   */
   const cancelWizard = async () => {
-    if (pendingClientId != null) {
+    if (pendingClientId != null && !importCompleted) {
       try {
         await invoke('delete_client', { id: pendingClientId })
       } catch (err) {
-        // Non-fatal — surface but don't block close
         console.warn('Rollback delete failed:', errMsg(err))
       }
     }
+    const finishedClientId = importCompleted ? pendingClientId : null
     resetWizard()
     setShowAddDialog(false)
     await loadClients()
+    if (finishedClientId != null) {
+      navigate(`/clients/${finishedClientId}`)
+    }
+  }
+
+  /** Triggered by clicking "View" on a violation row — close the dialog and jump
+   *  to ClientDetail with a highlight hint passed via react-router state. */
+  const handleViewViolation = (v: import('@/types/clients').ComplianceViolation) => {
+    if (pendingClientId == null) return
+    const cid = pendingClientId
+    resetWizard()
+    setShowAddDialog(false)
+    void loadClients()
+    navigate(`/clients/${cid}`, {
+      state: {
+        highlight: {
+          kind: 'violation',
+          violationId: v.id,
+          symbol: v.symbol,
+          violationType: v.violation_type,
+        },
+      },
+    })
   }
 
   const handleAddDialogChange = (open: boolean) => {
     if (!open) {
-      // If we're in step 2 with a pending client, require confirmation before close
-      if (step === 'documents' && pendingClientId != null) {
+      // If we're in step 2 with a pending client and haven't completed an import yet,
+      // require confirmation so the user knows the client will be rolled back.
+      if (step === 'documents' && pendingClientId != null && !importCompleted) {
         setConfirmCancel(true)
+        return
+      }
+      // Past the import-completed line: close == done. Navigate if we have a client.
+      if (importCompleted && pendingClientId != null) {
+        const cid = pendingClientId
+        resetWizard()
+        setShowAddDialog(false)
+        void loadClients()
+        navigate(`/clients/${cid}`)
         return
       }
       resetWizard()
@@ -352,13 +391,23 @@ export default function ClientsIndex() {
           open={showDocumentsDialog}
           onOpenChange={(next) => {
             if (!next) {
+              // After a successful import, "close" means "done" — navigate.
+              if (importCompleted) {
+                const cid = pendingClientId
+                resetWizard()
+                setShowAddDialog(false)
+                void loadClients()
+                navigate(`/clients/${cid}`)
+                return
+              }
               setConfirmCancel(true)
-            } else {
-              setShowDocumentsDialog(next)
+              return
             }
+            setShowDocumentsDialog(next)
           }}
           clientId={pendingClientId}
           onSuccess={handleDocumentsSuccess}
+          onViewViolation={handleViewViolation}
           embeddedWizard
         />
       )}

@@ -6,11 +6,12 @@ import {
   GitBranch,
   Loader2,
   Plus,
+  ShieldAlert,
   Trash2,
   Upload,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -35,14 +36,17 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import type {
   Client,
+  ClientHolding,
+  ClientOpenOrder,
   ClientPosition,
   ClientTrade,
+  ComplianceViolation,
   ImportBatch,
 } from '@/types/clients'
 import { ACCOUNT_TYPES } from '@/types/clients'
 import { useAccountStore } from '@/stores/accountStore'
 import { AccountSwitcher } from '@/components/AccountSwitcher'
-import ImportCsvDialog from './ImportCsvDialog'
+import ImportCsvDialog, { ComplianceTable } from './ImportCsvDialog'
 
 function errMsg(err: unknown): string {
   if (err instanceof Error) return err.message
@@ -58,8 +62,19 @@ export default function ClientDetail() {
   const [positions, setPositions] = useState<ClientPosition[]>([])
   const [trades, setTrades] = useState<ClientTrade[]>([])
   const [batches, setBatches] = useState<ImportBatch[]>([])
+  const [holdings, setHoldings] = useState<ClientHolding[]>([])
+  const [openOrders, setOpenOrders] = useState<ClientOpenOrder[]>([])
+  const [violations, setViolations] = useState<ComplianceViolation[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('positions')
+
+  // Highlight target passed via react-router state from the import dialog's
+  // "View" action. Drives the brief amber flash on the target row.
+  const location = useLocation()
+  const navigate = useNavigate()
+  const highlight = (location.state as { highlight?: { kind: string; violationId?: number; symbol?: string | null } } | null)?.highlight ?? null
+  const [pulseSymbol, setPulseSymbol] = useState<string | null>(null)
+  const [pulseViolationId, setPulseViolationId] = useState<number | null>(null)
 
   // Account switcher
   const { selectedAccount, accounts, fetchClientAccounts, reset: resetAccountStore } = useAccountStore()
@@ -171,16 +186,94 @@ export default function ClientDetail() {
     }
   }, [clientId])
 
+  const loadHoldings = useCallback(async () => {
+    try {
+      const data = await invoke<ClientHolding[]>('get_client_holdings', { clientId })
+      setHoldings(data)
+    } catch (err) {
+      console.error('Failed to load holdings:', err)
+    }
+  }, [clientId])
+
+  const loadOpenOrders = useCallback(async () => {
+    try {
+      const data = await invoke<ClientOpenOrder[]>('get_client_open_orders', { clientId })
+      setOpenOrders(data)
+    } catch (err) {
+      console.error('Failed to load open orders:', err)
+    }
+  }, [clientId])
+
+  const loadViolations = useCallback(async () => {
+    try {
+      const data = await invoke<ComplianceViolation[]>('get_client_compliance_violations', { clientId })
+      setViolations(data)
+    } catch (err) {
+      console.error('Failed to load violations:', err)
+    }
+  }, [clientId])
+
+  const handleResolveViolation = useCallback(
+    async (violationId: number, reason: string) => {
+      try {
+        await invoke('resolve_compliance_violation', { violationId, reason })
+        await loadViolations()
+        toast.success('Violation marked resolved.')
+      } catch (err) {
+        toast.error(`Failed to resolve: ${errMsg(err)}`)
+      }
+    },
+    [loadViolations],
+  )
+
   const loadAll = useCallback(async () => {
     setIsLoading(true)
-    await Promise.all([loadClient(), loadPositions(), loadTrades(), loadBatches(), fetchClientAccounts(clientId)])
+    await Promise.all([
+      loadClient(),
+      loadPositions(),
+      loadTrades(),
+      loadBatches(),
+      loadHoldings(),
+      loadOpenOrders(),
+      loadViolations(),
+      fetchClientAccounts(clientId),
+    ])
     setIsLoading(false)
-  }, [loadClient, loadPositions, loadTrades, loadBatches, fetchClientAccounts, clientId])
+  }, [
+    loadClient,
+    loadPositions,
+    loadTrades,
+    loadBatches,
+    loadHoldings,
+    loadOpenOrders,
+    loadViolations,
+    fetchClientAccounts,
+    clientId,
+  ])
 
   useEffect(() => {
     loadAll()
     return () => { resetAccountStore() }
   }, [loadAll, resetAccountStore])
+
+  // When navigated here from a "View violation" click, jump to Compliance,
+  // pulse the matching row, and clear the navigate-state so a refresh doesn't replay it.
+  useEffect(() => {
+    if (!highlight || isLoading) return
+    if (highlight.kind === 'violation') {
+      setActiveTab('compliance')
+      if (highlight.violationId != null) setPulseViolationId(highlight.violationId)
+      if (highlight.symbol) setPulseSymbol(highlight.symbol.toUpperCase())
+      // Auto-clear pulses after a couple seconds
+      const t = setTimeout(() => {
+        setPulseSymbol(null)
+        setPulseViolationId(null)
+      }, 2400)
+      // Strip the location state so a back/forward doesn't re-pulse
+      navigate(location.pathname, { replace: true })
+      return () => clearTimeout(t)
+    }
+  }, [highlight, isLoading, navigate, location.pathname])
 
   // Re-fetch positions and trades when the selected account changes
   useEffect(() => {
@@ -314,10 +407,23 @@ export default function ClientDetail() {
   // After CSV import success
   const handleImportSuccess = async () => {
     setShowImportDialog(false)
-    await Promise.all([loadTrades(), loadPositions(), loadBatches(), fetchClientAccounts(clientId)])
+    await Promise.all([
+      loadTrades(),
+      loadPositions(),
+      loadBatches(),
+      loadHoldings(),
+      loadOpenOrders(),
+      loadViolations(),
+      fetchClientAccounts(clientId),
+    ])
     // Auto-sync baseline scenarios so per-account baselines are created/updated
     invoke('sync_baseline_scenario', { clientId }).catch(() => {})
   }
+
+  const unresolvedViolationCount = useMemo(
+    () => violations.filter((v) => !v.resolved).length,
+    [violations],
+  )
 
   if (isLoading) {
     return (
@@ -414,17 +520,48 @@ export default function ClientDetail() {
         </div>
       )}
 
+      {/* 401(k) compliance banner — only when unresolved flags exist */}
+      {unresolvedViolationCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setActiveTab('compliance')}
+          className="w-full rounded-lg border border-amber-300 bg-amber-50/60 dark:border-amber-900 dark:bg-amber-950/30 px-4 py-3 flex items-center gap-3 hover:bg-amber-100/60 dark:hover:bg-amber-950/50 transition-colors text-left"
+        >
+          <ShieldAlert className="h-5 w-5 text-amber-600 shrink-0" strokeWidth={1.75} />
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold">
+              {unresolvedViolationCount} unresolved 401(k) violation{unresolvedViolationCount === 1 ? '' : 's'}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Review the Compliance tab to resolve or document each flag.
+            </div>
+          </div>
+          <span className="text-xs text-amber-700 dark:text-amber-400 font-semibold uppercase tracking-wider">
+            Review →
+          </span>
+        </button>
+      )}
+
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="positions">
             Positions ({positions.length})
           </TabsTrigger>
+          <TabsTrigger value="holdings">
+            Holdings ({holdings.length})
+          </TabsTrigger>
+          <TabsTrigger value="open_orders">
+            Open Orders ({openOrders.length})
+          </TabsTrigger>
           <TabsTrigger value="trades">
             Trades ({trades.length})
           </TabsTrigger>
           <TabsTrigger value="imports">
             Imports ({batches.length})
+          </TabsTrigger>
+          <TabsTrigger value="compliance">
+            Compliance{unresolvedViolationCount > 0 ? ` (${unresolvedViolationCount})` : ''}
           </TabsTrigger>
         </TabsList>
 
@@ -645,6 +782,153 @@ export default function ClientDetail() {
                   </table>
                 </div>
               )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Holdings Tab — reconstructed from Schwab transactions ledger */}
+        <TabsContent value="holdings">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Holdings (from Schwab transactions ledger)</CardTitle>
+              <CardDescription>
+                Reconstructed via weighted-average cost basis. Replaced wholesale on each Schwab document import.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {holdings.length === 0 ? (
+                <div className="text-center py-12 text-sm text-muted-foreground">
+                  No imported holdings yet. Use Upload to import a Schwab Transactions file.
+                </div>
+              ) : (
+                <div className="rounded-lg border overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b bg-muted/50">
+                        <th className="h-10 px-4 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Symbol</th>
+                        <th className="h-10 px-4 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Description</th>
+                        <th className="h-10 px-4 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Qty</th>
+                        <th className="h-10 px-4 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Avg Cost</th>
+                        <th className="h-10 px-4 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Total Cost</th>
+                        <th className="h-10 px-4 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Realized P&amp;L</th>
+                        <th className="h-10 px-4 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Last Activity</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {holdings.map((h) => {
+                        const isPulse = pulseSymbol === h.symbol.toUpperCase()
+                        return (
+                          <tr
+                            key={h.id ?? h.symbol}
+                            className={`border-b last:border-b-0 ${isPulse ? 'bg-amber-100/60 dark:bg-amber-950/40 transition-colors' : ''}`}
+                          >
+                            <td className="h-12 px-4 font-mono font-semibold">{h.symbol}</td>
+                            <td className="h-12 px-4 text-xs text-muted-foreground truncate max-w-[280px]" title={h.description ?? ''}>{h.description ?? '—'}</td>
+                            <td className="h-12 px-4 text-right font-mono tabular-nums">{h.quantity.toLocaleString('en-US', { maximumFractionDigits: 4 })}</td>
+                            <td className="h-12 px-4 text-right font-mono tabular-nums">{fmt(h.avg_cost)}</td>
+                            <td className="h-12 px-4 text-right font-mono tabular-nums text-muted-foreground">{fmt(h.total_cost)}</td>
+                            <td className={`h-12 px-4 text-right font-mono tabular-nums ${h.realized_pnl > 0 ? 'text-green-500' : h.realized_pnl < 0 ? 'text-red-500' : 'text-muted-foreground'}`}>
+                              {fmt(h.realized_pnl)}
+                            </td>
+                            <td className="h-12 px-4 text-xs text-muted-foreground">{h.last_activity_date ?? '—'}</td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Open Orders Tab — pending GTC / day orders from Order Status export */}
+        <TabsContent value="open_orders">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Open Orders</CardTitle>
+              <CardDescription>
+                Working orders from the most recent Schwab Order Status import.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {openOrders.length === 0 ? (
+                <div className="text-center py-12 text-sm text-muted-foreground">
+                  No open orders on file. Upload a Schwab Order Status CSV to see working GTC stops and limits.
+                </div>
+              ) : (
+                <div className="rounded-lg border overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b bg-muted/50">
+                        <th className="h-10 px-4 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Symbol</th>
+                        <th className="h-10 px-4 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Action</th>
+                        <th className="h-10 px-4 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Qty</th>
+                        <th className="h-10 px-4 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Type</th>
+                        <th className="h-10 px-4 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">Trigger</th>
+                        <th className="h-10 px-4 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">TIF</th>
+                        <th className="h-10 px-4 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">Placed</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {openOrders.map((o, i) => {
+                        const isPulse = pulseSymbol === o.symbol.toUpperCase()
+                        return (
+                          <tr
+                            key={o.id ?? `${o.symbol}-${i}`}
+                            className={`border-b last:border-b-0 ${isPulse ? 'bg-amber-100/60 dark:bg-amber-950/40 transition-colors' : ''}`}
+                          >
+                            <td className="h-12 px-4 font-mono font-semibold">{o.symbol}</td>
+                            <td className={`h-12 px-4 text-xs font-semibold uppercase ${o.action.toLowerCase() === 'buy' ? 'text-green-600' : 'text-red-600'}`}>{o.action}</td>
+                            <td className="h-12 px-4 text-right font-mono tabular-nums">{o.quantity.toLocaleString('en-US', { maximumFractionDigits: 4 })}</td>
+                            <td className="h-12 px-4 text-xs text-muted-foreground">{o.order_type ?? '—'}</td>
+                            <td className="h-12 px-4 text-right font-mono tabular-nums text-xs">
+                              {o.stop_price != null
+                                ? `Stop ${fmt(o.stop_price)}`
+                                : o.limit_price != null
+                                  ? `Limit ${fmt(o.limit_price)}`
+                                  : '—'}
+                            </td>
+                            <td className="h-12 px-4 text-xs">{o.time_in_force ?? '—'}</td>
+                            <td className="h-12 px-4 text-xs text-muted-foreground">{o.placed_at ?? '—'}</td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Compliance Tab — same table as the post-import view */}
+        <TabsContent value="compliance">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">401(k) Compliance</CardTitle>
+              <CardDescription>
+                Strict 401(k) rules are enforced on every import. Resolve flags here when the underlying data is corrected or the issue is acknowledged.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {pulseViolationId != null && (
+                <div className="mb-3 text-xs text-amber-700 dark:text-amber-400">
+                  Highlighted: violation #{pulseViolationId}
+                </div>
+              )}
+              <ComplianceTable
+                violations={violations}
+                onResolve={handleResolveViolation}
+                onView={(v) => {
+                  // From within the Compliance tab "View" jumps to Holdings or Open Orders
+                  // depending on the violation type and pulses the offending row.
+                  if (v.symbol) setPulseSymbol(v.symbol.toUpperCase())
+                  const target = v.violation_type === 'naked_sell' ? 'open_orders' : 'holdings'
+                  setActiveTab(target)
+                  setTimeout(() => setPulseSymbol(null), 2400)
+                }}
+              />
             </CardContent>
           </Card>
         </TabsContent>

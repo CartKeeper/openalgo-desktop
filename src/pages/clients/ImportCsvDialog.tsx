@@ -40,6 +40,12 @@ interface ImportDocumentsDialogProps {
   onSuccess: (report: ImportReport) => void
   /** When true, rendered as part of a wizard — Cancel hidden, success auto-closes upstream */
   embeddedWizard?: boolean
+  /**
+   * Called when the user clicks a "View" action on a violation row. The parent
+   * is expected to navigate to ClientDetail and highlight the offending row
+   * (typically by passing `state.highlight` to react-router navigate()).
+   */
+  onViewViolation?: (violation: import('@/types/clients').ComplianceViolation) => void
 }
 
 interface FilePayload {
@@ -69,6 +75,7 @@ export default function ImportCsvDialog({
   clientId,
   onSuccess,
   embeddedWizard,
+  onViewViolation,
 }: ImportDocumentsDialogProps) {
   const txnRef = useRef<HTMLInputElement>(null)
   const orderRef = useRef<HTMLInputElement>(null)
@@ -114,20 +121,53 @@ export default function ImportCsvDialog({
         orderStatusContent: orderStatus?.content ?? null,
       })
       setReport(result)
-      if (result.summary.is_compliant) {
+      // Soft-fail: import always succeeds. Violations are persisted as flags
+      // so the user can review them on ClientDetail and mark them resolved.
+      const violCount = result.summary.violation_count
+      if (violCount === 0) {
         toast.success(
-          `Imported: ${result.summary.total_holdings} holdings, ${result.open_orders.length} open orders. 401k compliant.`,
+          `Imported: ${result.summary.total_holdings} holdings, ${result.open_orders.length} open orders. 401(k) compliant.`,
         )
-        onSuccess(result)
       } else {
-        toast.error(
-          `Import blocked: ${result.summary.violation_count} 401k violation${result.summary.violation_count === 1 ? '' : 's'} detected.`,
+        toast.warning(
+          `Imported with ${violCount} 401(k) flag${violCount === 1 ? '' : 's'} — review on the client page.`,
         )
       }
+      // Always notify parent so the wizard can finalize. Generate-Brief gating
+      // happens inside the report view (compliant only).
+      onSuccess(result)
     } catch (err) {
       toast.error(`Import failed: ${errMsg(err)}`)
     } finally {
       setIsImporting(false)
+    }
+  }
+
+  const handleResolveViolation = async (violationId: number, reason: string) => {
+    try {
+      await invoke('resolve_compliance_violation', { violationId, reason })
+      // Optimistically update local report state
+      setReport((prev) => {
+        if (!prev) return prev
+        const violations = prev.violations.map((v) =>
+          v.id === violationId
+            ? { ...v, resolved: true, resolved_reason: reason }
+            : v,
+        )
+        const stillUnresolved = violations.filter((v) => !v.resolved).length
+        return {
+          ...prev,
+          violations,
+          summary: {
+            ...prev.summary,
+            violation_count: stillUnresolved,
+            is_compliant: stillUnresolved === 0,
+          },
+        }
+      })
+      toast.success('Violation marked resolved.')
+    } catch (err) {
+      toast.error(`Failed to resolve: ${errMsg(err)}`)
     }
   }
 
@@ -265,7 +305,11 @@ export default function ImportCsvDialog({
                 </div>
               )}
 
-              <ComplianceSection violations={violations} />
+              <ComplianceTable
+                violations={violations}
+                onResolve={handleResolveViolation}
+                onView={onViewViolation}
+              />
 
               <HoldingsSection report={report} />
 
@@ -281,17 +325,21 @@ export default function ImportCsvDialog({
         <DialogFooter className="px-6 py-3 border-t shrink-0">
           {!embeddedWizard && (
             <Button variant="outline" onClick={() => handleClose(false)} disabled={isImporting}>
-              Cancel
+              {report ? 'Close' : 'Cancel'}
             </Button>
           )}
-          <Button onClick={handleImport} disabled={!canImport}>
-            {isImporting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-            {report
-              ? isBlocked
-                ? 'Re-run after fixing'
-                : 'Imported ✓'
-              : 'Validate & Import'}
-          </Button>
+          {!report ? (
+            <Button onClick={handleImport} disabled={!canImport}>
+              {isImporting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Validate &amp; Import
+            </Button>
+          ) : (
+            <Button onClick={() => handleClose(false)}>
+              {isBlocked
+                ? `Continue with ${report.summary.violation_count} flag${report.summary.violation_count === 1 ? '' : 's'}`
+                : 'Done'}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -403,7 +451,27 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
   )
 }
 
-function ComplianceSection({ violations }: { violations: ImportReport['violations'] }) {
+/**
+ * Sortable table of 401(k) violations with View / Mark Resolved actions.
+ * Used inside the import dialog and (re-exported below) on ClientDetail.
+ */
+export function ComplianceTable({
+  violations,
+  onResolve,
+  onView,
+}: {
+  violations: ImportReport['violations']
+  onResolve?: (violationId: number, reason: string) => void | Promise<void>
+  onView?: (v: ImportReport['violations'][number]) => void
+}) {
+  const [resolveTarget, setResolveTarget] = useState<ImportReport['violations'][number] | null>(null)
+  const [reason, setReason] = useState('')
+  const [isResolving, setIsResolving] = useState(false)
+  const [sort, setSort] = useState<{ key: 'symbol' | 'type' | 'qty' | 'status'; dir: 'asc' | 'desc' }>({
+    key: 'status',
+    dir: 'asc',
+  })
+
   if (violations.length === 0) {
     return (
       <div className="rounded-lg border p-3 flex items-center gap-2 text-sm">
@@ -412,30 +480,190 @@ function ComplianceSection({ violations }: { violations: ImportReport['violation
       </div>
     )
   }
+
+  const sorted = [...violations].sort((a, b) => {
+    const dir = sort.dir === 'asc' ? 1 : -1
+    switch (sort.key) {
+      case 'symbol':
+        return ((a.symbol ?? '').localeCompare(b.symbol ?? '')) * dir
+      case 'type':
+        return a.violation_type.localeCompare(b.violation_type) * dir
+      case 'qty':
+        return ((a.quantity ?? 0) - (b.quantity ?? 0)) * dir
+      case 'status':
+        return ((Number(a.resolved) - Number(b.resolved))) * dir
+    }
+  })
+
+  const toggleSort = (key: typeof sort.key) =>
+    setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }))
+
+  const sortIndicator = (key: typeof sort.key) =>
+    sort.key === key ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''
+
+  const unresolvedCount = violations.filter((v) => !v.resolved).length
+
   return (
-    <div className="rounded-lg border border-destructive/30 overflow-hidden">
-      <div className="px-3 py-2 bg-destructive/10 border-b border-destructive/30 flex items-center gap-2">
-        <ShieldAlert className="h-4 w-4 text-destructive" />
-        <span className="text-sm font-semibold">401(k) Violations</span>
-        <span className="ml-auto text-xs text-muted-foreground tabular-nums">{violations.length}</span>
+    <>
+      <div className="rounded-lg border border-amber-300 dark:border-amber-900 overflow-hidden">
+        <div className="px-3 py-2 bg-amber-100/60 dark:bg-amber-950/30 border-b border-amber-300 dark:border-amber-900 flex items-center gap-2">
+          <ShieldAlert className="h-4 w-4 text-amber-600" />
+          <span className="text-sm font-semibold">401(k) Compliance Flags</span>
+          <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+            {unresolvedCount} unresolved · {violations.length} total
+          </span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b bg-muted/20">
+                <th className="h-10 px-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  <button onClick={() => toggleSort('symbol')} className="hover:text-foreground">
+                    Symbol{sortIndicator('symbol')}
+                  </button>
+                </th>
+                <th className="h-10 px-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  <button onClick={() => toggleSort('type')} className="hover:text-foreground">
+                    Type{sortIndicator('type')}
+                  </button>
+                </th>
+                <th className="h-10 px-3 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  <button onClick={() => toggleSort('qty')} className="hover:text-foreground">
+                    Qty{sortIndicator('qty')}
+                  </button>
+                </th>
+                <th className="h-10 px-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Reason
+                </th>
+                <th className="h-10 px-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  <button onClick={() => toggleSort('status')} className="hover:text-foreground">
+                    Status{sortIndicator('status')}
+                  </button>
+                </th>
+                <th className="h-10 px-3 text-right text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Action
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((v, i) => (
+                <tr
+                  key={v.id ?? i}
+                  className={`border-b last:border-b-0 ${v.resolved ? 'opacity-50' : ''}`}
+                >
+                  <td className="h-12 px-3 font-mono font-semibold">{v.symbol ?? '—'}</td>
+                  <td className="h-12 px-3 text-xs uppercase tracking-wider text-muted-foreground">
+                    {v.violation_type.replace(/_/g, ' ')}
+                  </td>
+                  <td className="h-12 px-3 text-right tabular-nums">
+                    {v.quantity != null ? v.quantity.toLocaleString('en-US', { maximumFractionDigits: 4 }) : '—'}
+                  </td>
+                  <td className="h-12 px-3 text-xs text-muted-foreground max-w-md truncate" title={v.message}>
+                    {v.message}
+                  </td>
+                  <td className="h-12 px-3 text-xs">
+                    {v.resolved ? (
+                      <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        Resolved
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-destructive">
+                        <AlertTriangle className="h-3.5 w-3.5" />
+                        Flagged
+                      </span>
+                    )}
+                  </td>
+                  <td className="h-12 px-3 text-right">
+                    <div className="inline-flex items-center gap-1">
+                      {onView && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => onView(v)}
+                        >
+                          View
+                        </Button>
+                      )}
+                      {!v.resolved && onResolve && v.id != null && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => {
+                            setResolveTarget(v)
+                            setReason('')
+                          }}
+                        >
+                          Mark Resolved
+                        </Button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
-      <ul className="divide-y">
-        {violations.map((v, i) => (
-          <li key={i} className="px-3 py-2 text-sm flex items-start gap-3">
-            <AlertTriangle className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
-            <div className="min-w-0 flex-1">
-              <div className="font-semibold flex items-center gap-2">
-                {v.symbol && <span className="font-mono">{v.symbol}</span>}
-                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                  {v.violation_type.replace(/_/g, ' ')}
-                </span>
+
+      {/* Resolve confirmation dialog */}
+      <Dialog open={!!resolveTarget} onOpenChange={(o) => { if (!o) setResolveTarget(null) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Mark violation resolved</DialogTitle>
+            <DialogDescription>
+              Provide a short reason for the audit trail. This is stored with the violation and visible later on the client page.
+            </DialogDescription>
+          </DialogHeader>
+          {resolveTarget && (
+            <div className="space-y-3">
+              <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs space-y-1">
+                <div>
+                  <span className="font-mono font-semibold">{resolveTarget.symbol ?? '—'}</span>
+                  <span className="text-muted-foreground ml-2 uppercase tracking-wider">
+                    {resolveTarget.violation_type.replace(/_/g, ' ')}
+                  </span>
+                </div>
+                <div className="text-muted-foreground">{resolveTarget.message}</div>
               </div>
-              <div className="text-xs text-muted-foreground">{v.message}</div>
+              <textarea
+                className="w-full min-h-[80px] rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                placeholder='e.g. "Sold next trading day" or "Plan permits this fund per 2026 SPD update"'
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+              />
             </div>
-          </li>
-        ))}
-      </ul>
-    </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setResolveTarget(null)} disabled={isResolving}>
+              Cancel
+            </Button>
+            <Button
+              onClick={async () => {
+                if (!resolveTarget?.id || !onResolve) return
+                if (!reason.trim()) {
+                  toast.error('Please enter a reason for the audit trail.')
+                  return
+                }
+                setIsResolving(true)
+                try {
+                  await onResolve(resolveTarget.id, reason.trim())
+                  setResolveTarget(null)
+                } finally {
+                  setIsResolving(false)
+                }
+              }}
+              disabled={isResolving || !reason.trim()}
+            >
+              {isResolving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Confirm Resolve
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }
 

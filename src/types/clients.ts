@@ -125,6 +125,8 @@ export interface ComplianceViolation {
   message: string
   detected_at: string | null
   resolved: boolean
+  resolved_reason?: string | null
+  resolved_at?: string | null
 }
 
 export interface ReconciliationMismatch {

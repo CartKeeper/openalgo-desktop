@@ -325,6 +325,29 @@ pub async fn get_client_compliance_violations(
     state.sqlite.get_client_compliance_violations(client_id)
 }
 
+/// Mark a single 401(k) violation as resolved (or un-resolve when `reason` is None).
+/// `reason` is a free-form audit note explaining the resolution decision.
+#[tauri::command]
+pub async fn resolve_compliance_violation(
+    state: State<'_, AppState>,
+    violation_id: i64,
+    reason: Option<String>,
+) -> Result<ComplianceViolation, AppError> {
+    state
+        .sqlite
+        .resolve_compliance_violation(violation_id, reason.as_deref())
+}
+
+/// Count how many violations are still unresolved for a client. Used by the
+/// ClientDetail header banner so it can update without re-fetching the full list.
+#[tauri::command]
+pub async fn count_unresolved_violations(
+    state: State<'_, AppState>,
+    client_id: i64,
+) -> Result<i64, AppError> {
+    state.sqlite.count_unresolved_violations(client_id)
+}
+
 /// Generate a Goldman Sax & Violins brief for a client using Claude.
 ///
 /// Pulls the client's holdings, open orders, and 401(k) violations from the DB,

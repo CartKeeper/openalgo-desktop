@@ -616,6 +616,10 @@ pub struct ComplianceViolation {
     pub message: String,
     pub detected_at: Option<String>,
     pub resolved: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<String>,
 }
 
 /// Mismatch between Order Status (Filled) and Transactions ledger

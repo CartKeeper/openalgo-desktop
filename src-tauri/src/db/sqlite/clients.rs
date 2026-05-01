@@ -814,8 +814,9 @@ pub fn get_client_compliance_violations(
 ) -> Result<Vec<ComplianceViolation>> {
     let mut stmt = conn.prepare(
         "SELECT id, client_id, rule_set, violation_type, severity, symbol, quantity, message,
-                detected_at, resolved
-         FROM client_compliance_violations WHERE client_id = ?1 ORDER BY detected_at DESC",
+                detected_at, resolved, resolved_reason, resolved_at
+         FROM client_compliance_violations WHERE client_id = ?1
+         ORDER BY resolved ASC, detected_at DESC",
     )?;
     let rows = stmt
         .query_map([client_id], |row| {
@@ -831,8 +832,73 @@ pub fn get_client_compliance_violations(
                 message: row.get(7)?,
                 detected_at: row.get(8)?,
                 resolved: resolved != 0,
+                resolved_reason: row.get(10)?,
+                resolved_at: row.get(11)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+/// Mark a single violation resolved with an audit reason (or unresolve when reason is None).
+pub fn resolve_compliance_violation(
+    conn: &Connection,
+    id: i64,
+    reason: Option<&str>,
+) -> Result<ComplianceViolation> {
+    if let Some(r) = reason {
+        conn.execute(
+            "UPDATE client_compliance_violations
+             SET resolved = 1, resolved_reason = ?1, resolved_at = datetime('now')
+             WHERE id = ?2",
+            rusqlite::params![r, id],
+        )?;
+    } else {
+        conn.execute(
+            "UPDATE client_compliance_violations
+             SET resolved = 0, resolved_reason = NULL, resolved_at = NULL
+             WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
+    }
+    conn.query_row(
+        "SELECT id, client_id, rule_set, violation_type, severity, symbol, quantity, message,
+                detected_at, resolved, resolved_reason, resolved_at
+         FROM client_compliance_violations WHERE id = ?1",
+        [id],
+        |row| {
+            let resolved: i64 = row.get(9)?;
+            Ok(ComplianceViolation {
+                id: Some(row.get(0)?),
+                client_id: row.get(1)?,
+                rule_set: row.get(2)?,
+                violation_type: row.get(3)?,
+                severity: row.get(4)?,
+                symbol: row.get(5)?,
+                quantity: row.get(6)?,
+                message: row.get(7)?,
+                detected_at: row.get(8)?,
+                resolved: resolved != 0,
+                resolved_reason: row.get(10)?,
+                resolved_at: row.get(11)?,
+            })
+        },
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => {
+            AppError::NotFound(format!("Violation {} not found", id))
+        }
+        other => other.into(),
+    })
+}
+
+/// Count violations still flagged (resolved = 0). Used for the ClientDetail banner.
+pub fn count_unresolved_violations(conn: &Connection, client_id: i64) -> Result<i64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM client_compliance_violations
+         WHERE client_id = ?1 AND resolved = 0",
+        [client_id],
+        |row| row.get(0),
+    )?;
+    Ok(count)
 }

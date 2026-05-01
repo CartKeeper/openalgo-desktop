@@ -1418,6 +1418,20 @@ impl SqliteDb {
         clients::get_client_compliance_violations(&conn, client_id)
     }
 
+    pub fn resolve_compliance_violation(
+        &self,
+        id: i64,
+        reason: Option<&str>,
+    ) -> Result<crate::providers::types::ComplianceViolation> {
+        let conn = self.conn.lock();
+        clients::resolve_compliance_violation(&conn, id, reason)
+    }
+
+    pub fn count_unresolved_violations(&self, client_id: i64) -> Result<i64> {
+        let conn = self.conn.lock();
+        clients::count_unresolved_violations(&conn, client_id)
+    }
+
     // ========== Client Scenario Methods ==========
 
     /// Create a new client scenario

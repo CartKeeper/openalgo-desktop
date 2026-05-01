@@ -68,6 +68,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "050_client_holdings", CREATE_CLIENT_HOLDINGS_TABLE)?;
     run_migration(conn, "051_client_open_orders", CREATE_CLIENT_OPEN_ORDERS_TABLE)?;
     run_migration(conn, "052_client_compliance_violations", CREATE_CLIENT_COMPLIANCE_VIOLATIONS_TABLE)?;
+    run_migration(conn, "053_compliance_resolution_meta", ADD_COMPLIANCE_RESOLUTION_META)?;
 
     tracing::info!("Database migrations completed");
     Ok(())
@@ -875,6 +876,13 @@ CREATE TABLE client_open_orders (
 );
 CREATE INDEX IF NOT EXISTS idx_client_open_orders_client ON client_open_orders(client_id);
 CREATE INDEX IF NOT EXISTS idx_client_open_orders_status ON client_open_orders(status);
+"#;
+
+/// Add resolution audit columns so violations can be acknowledged ("Mark Resolved")
+/// without losing the audit trail or queueing duplicate corrective actions.
+const ADD_COMPLIANCE_RESOLUTION_META: &str = r#"
+ALTER TABLE client_compliance_violations ADD COLUMN resolved_reason TEXT;
+ALTER TABLE client_compliance_violations ADD COLUMN resolved_at TEXT;
 "#;
 
 /// 401k compliance violations detected during import
