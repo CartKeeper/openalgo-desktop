@@ -74,22 +74,40 @@ pub fn reconstruct_from_positions(
             .or_insert_with(|| t.date.clone());
     }
 
-    let mut out: Vec<ClientHolding> = parsed
-        .positions
-        .iter()
-        .filter(|p| p.quantity.abs() > 1e-9 || p.is_stranded)
-        .map(|p| {
-            let key = p.symbol.to_uppercase();
-            let cost = p.cost_basis.unwrap_or(0.0);
-            let avg = if p.quantity.abs() > 1e-9 { cost / p.quantity } else { 0.0 };
+    // Schwab sometimes splits one position into multiple rows (different reinvest
+    // settings, mixed lots, etc.). Merge by uppercase symbol so we don't violate
+    // the (client_id, symbol) UNIQUE index in client_holdings.
+    let mut merged: HashMap<String, MergedPos> = HashMap::new();
+    for p in &parsed.positions {
+        if p.quantity.abs() < 1e-9 && !p.is_stranded {
+            continue;
+        }
+        let key = p.symbol.to_uppercase();
+        let entry = merged.entry(key).or_insert_with(|| MergedPos {
+            symbol: p.symbol.clone(),
+            description: p.description.clone(),
+            quantity: 0.0,
+            cost_basis: 0.0,
+        });
+        if entry.description.is_empty() && !p.description.is_empty() {
+            entry.description = p.description.clone();
+        }
+        entry.quantity += p.quantity;
+        entry.cost_basis += p.cost_basis.unwrap_or(0.0);
+    }
+
+    let mut out: Vec<ClientHolding> = merged
+        .into_iter()
+        .map(|(key, m)| {
+            let avg = if m.quantity.abs() > 1e-9 { m.cost_basis / m.quantity } else { 0.0 };
             ClientHolding {
                 id: None,
                 client_id,
-                symbol: p.symbol.clone(),
-                description: if p.description.is_empty() { None } else { Some(p.description.clone()) },
-                quantity: round2(p.quantity),
+                symbol: m.symbol,
+                description: if m.description.is_empty() { None } else { Some(m.description) },
+                quantity: round2(m.quantity),
                 avg_cost: round4(avg),
-                total_cost: round2(cost),
+                total_cost: round2(m.cost_basis),
                 realized_pnl: round2(realized.get(&key).copied().unwrap_or(0.0)),
                 last_activity_date: last_activity.get(&key).cloned(),
                 updated_at: None,
@@ -98,6 +116,13 @@ pub fn reconstruct_from_positions(
         .collect();
     out.sort_by(|a, b| a.symbol.cmp(&b.symbol));
     out
+}
+
+struct MergedPos {
+    symbol: String,
+    description: String,
+    quantity: f64,
+    cost_basis: f64,
 }
 
 /// Stranded positions (revoked, restricted, escrow, CUSIP-only) extracted from
