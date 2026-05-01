@@ -411,6 +411,40 @@ pub async fn generate_client_brief(
     Ok(brief)
 }
 
+/// Generate a Goldman Sax & Violins brief for a **scenario** (what-if portfolio).
+///
+/// Mirrors `generate_client_brief` but feeds Claude the scenario's positions
+/// instead of imported holdings. Used by the "Generate Brief PDF" button on
+/// the scenario / Analyze with Claude flow so scenario exports use the same
+/// reference-quality four-movement template as client briefs.
+#[tauri::command]
+pub async fn generate_scenario_brief(
+    state: State<'_, AppState>,
+    scenario_id: i64,
+) -> Result<GoldmanBrief, AppError> {
+    let brief = ClientBriefService::generate_for_scenario(&state, scenario_id).await?;
+
+    // Persist for traceability — attach to the parent client record so it
+    // shows up alongside any client-level briefs in client_documents.
+    let scenario = state.sqlite.get_client_scenario_by_id(scenario_id)?;
+    let json = serde_json::to_string(&brief).map_err(|e| {
+        AppError::Provider(format!("Failed to serialize scenario brief: {}", e))
+    })?;
+    let filename = format!(
+        "Goldman_Scenario_Brief_{}_{}.json",
+        scenario_id,
+        chrono::Local::now().format("%Y%m%d-%H%M%S"),
+    );
+    state.sqlite.add_client_document(
+        scenario.client_id,
+        "goldman_scenario_brief",
+        &filename,
+        &json,
+    )?;
+
+    Ok(brief)
+}
+
 // ---------------------------------------------------------------------------
 // Export trades as CSV
 // ---------------------------------------------------------------------------

@@ -32,6 +32,8 @@ import type { OrderRecommendation } from '@/types/actionQueue'
 import { useClientScenarioStore } from '@/stores/clientScenarioStore'
 import { useReportsStore } from '@/stores/reportsStore'
 import type { CopilotMessage } from '@/stores/copilotStore'
+import { downloadGoldmanBriefPdf } from '@/components/reports/goldman/generator'
+import type { GoldmanBrief } from '@/components/reports/goldman/types'
 
 interface CopilotResponse {
   response_text: string
@@ -92,6 +94,7 @@ export default function AnalyzeWithClaudeDialog({
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [isGeneratingBrief, setIsGeneratingBrief] = useState(false)
   const [isConfigured, setIsConfigured] = useState<boolean | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -291,6 +294,35 @@ export default function AnalyzeWithClaudeDialog({
     }
   }
 
+  /**
+   * Bypass the chat → save → ReportBuilder → research-template chain and produce
+   * a structured Goldman Sax & Violins brief directly from the scenario data.
+   *
+   * Calls `generate_scenario_brief` (Claude returns four-movement structured
+   * JSON), then renders via `<GoldmanReport>` — same template that produces
+   * client briefs after import. Output matches the reference HTML structurally
+   * (movements, allocation cards, gold-bordered tables, ⚜ flourish).
+   */
+  const handleGenerateBriefPdf = async () => {
+    if (isGeneratingBrief) return
+    setIsGeneratingBrief(true)
+    try {
+      const brief = await invoke<GoldmanBrief>('generate_scenario_brief', {
+        scenarioId,
+      })
+      await downloadGoldmanBriefPdf(brief)
+      toast.success('Goldman brief downloaded.')
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? `Brief generation failed: ${err.message}`
+          : 'Brief generation failed.',
+      )
+    } finally {
+      setIsGeneratingBrief(false)
+    }
+  }
+
   const handleCopyMessageCsv = async (messageContent: string) => {
     const actions = parseActionsFromMarkdown(messageContent, 'copilot')
     if (actions.length === 0) {
@@ -442,8 +474,22 @@ export default function AnalyzeWithClaudeDialog({
 
             {/* Input */}
             <div className="px-6 py-3 border-t shrink-0 space-y-2">
-              {messages.some((m) => m.role === 'assistant') && (
-                <div className="flex items-center justify-end">
+              <div className="flex items-center justify-end gap-2">
+                <Button
+                  variant="default"
+                  size="sm"
+                  className="h-8 gap-2"
+                  onClick={handleGenerateBriefPdf}
+                  disabled={isGeneratingBrief}
+                >
+                  {isGeneratingBrief ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5" />
+                  )}
+                  {isGeneratingBrief ? 'Composing brief…' : 'Generate Brief PDF'}
+                </Button>
+                {messages.some((m) => m.role === 'assistant') && (
                   <Button
                     variant="outline"
                     size="sm"
@@ -456,10 +502,10 @@ export default function AnalyzeWithClaudeDialog({
                     ) : (
                       <FileText className="h-3.5 w-3.5" />
                     )}
-                    {isSaving ? 'Saving...' : 'Save as Report'}
+                    {isSaving ? 'Saving...' : 'Save chat as report'}
                   </Button>
-                </div>
-              )}
+                )}
+              </div>
               <div className="flex gap-2">
                 <Input
                   value={inputValue}

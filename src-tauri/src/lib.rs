@@ -318,6 +318,7 @@ pub fn run() {
             commands::clients::get_client_open_orders,
             commands::clients::get_client_compliance_violations,
             commands::clients::generate_client_brief,
+            commands::clients::generate_scenario_brief,
             commands::clients::resolve_compliance_violation,
             commands::clients::count_unresolved_violations,
             // Client scenario commands

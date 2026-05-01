@@ -9,7 +9,8 @@
 use crate::error::{AppError, Result};
 use crate::providers::anthropic::{AnthropicClient, Message, MessageContent, ResponseContentBlock};
 use crate::providers::types::{
-    Client, ClientHolding, ClientOpenOrder, ComplianceViolation, GoldmanBrief,
+    Client, ClientHolding, ClientOpenOrder, ClientScenario, ComplianceViolation, GoldmanBrief,
+    ScenarioPosition,
 };
 use crate::state::AppState;
 
@@ -126,6 +127,71 @@ impl ClientBriefService {
 
         Ok(brief)
     }
+
+    /// Generate a Goldman Sax & Violins brief for a specific **scenario**.
+    ///
+    /// Same house style, same structured-JSON output as `generate()`, but the
+    /// Claude prompt is fed scenario positions (a what-if portfolio state)
+    /// instead of imported holdings. The brief is scenario-aware: when the
+    /// scenario is non-baseline, Claude is told to frame recommendations
+    /// against the deltas from baseline.
+    pub async fn generate_for_scenario(
+        state: &AppState,
+        scenario_id: i64,
+    ) -> Result<GoldmanBrief> {
+        let api_key = state
+            .sqlite
+            .get_provider_key("anthropic", &state.security)?
+            .ok_or_else(|| {
+                AppError::Provider(
+                    "Anthropic API key not configured. Add it under Settings → Providers."
+                        .to_string(),
+                )
+            })?;
+
+        let scenario = state.sqlite.get_client_scenario_by_id(scenario_id)?;
+        let positions = state.sqlite.get_scenario_positions(scenario_id)?;
+        let client = state.sqlite.get_client_by_id(scenario.client_id)?;
+
+        if positions.is_empty() {
+            return Err(AppError::Validation(
+                "Cannot generate brief: this scenario has no positions yet.".to_string(),
+            ));
+        }
+
+        let user_prompt = build_scenario_prompt(&client, &scenario, &positions);
+
+        let anth = AnthropicClient::new((*state.http_client).clone());
+        let messages = vec![Message {
+            role: "user".to_string(),
+            content: MessageContent::Text(user_prompt),
+        }];
+
+        let response = anth
+            .send_message(&api_key, messages, Some(SYSTEM_PROMPT), None)
+            .await
+            .map_err(|e| AppError::Provider(format!("Anthropic call failed: {}", e)))?;
+
+        let text = response
+            .content
+            .iter()
+            .find_map(|b| match b {
+                ResponseContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| AppError::Provider("Anthropic response had no text block".to_string()))?;
+
+        let json_str = strip_code_fences(&text);
+        let brief: GoldmanBrief = serde_json::from_str(json_str).map_err(|e| {
+            AppError::Provider(format!(
+                "Failed to parse Claude's scenario brief JSON: {}\n\nRaw response (first 800 chars):\n{}",
+                e,
+                &text.chars().take(800).collect::<String>()
+            ))
+        })?;
+
+        Ok(brief)
+    }
 }
 
 /// Strip optional ```json … ``` fences from the model's output so serde can parse it.
@@ -206,4 +272,92 @@ fn build_user_prompt(
     s.push_str("\n# Task\nProduce the four-movement brief for this client. Use the data above as the source of truth — do not invent positions, P/L, or violations. Where you make recommendations (e.g. 'trim 25–50%', 'add MSFT'), tie them to specific holdings or violations from the data. Keep the satirical orchestral voice but be substantively useful.\n");
     s.push_str("\nRespond with JSON only — no markdown fences, no preamble.");
     s
+}
+
+/// Build the scenario-specific user prompt fed to Claude.
+fn build_scenario_prompt(
+    client: &Client,
+    scenario: &ClientScenario,
+    positions: &[ScenarioPosition],
+) -> String {
+    let mut s = String::new();
+
+    s.push_str(&format!("# Client\nName: {}\n", client.name));
+    if let Some(b) = &client.broker {
+        s.push_str(&format!("Broker: {}\n", b));
+    }
+    let at_label = client
+        .account_type
+        .as_deref()
+        .map(account_type_label)
+        .unwrap_or("Unspecified");
+    s.push_str(&format!("Account type: {} ", at_label));
+    if account_disallows_shorts(client.account_type.as_deref()) {
+        s.push_str("(long only — no shorts, no leveraged/inverse, no options/futures/crypto, no MLPs)\n\n");
+    } else {
+        s.push_str("(taxable account — broader instrument set permitted)\n\n");
+    }
+
+    s.push_str("# Scenario\n");
+    s.push_str(&format!("Name: {}\n", scenario.name));
+    if let Some(d) = &scenario.description {
+        s.push_str(&format!("Description: {}\n", d));
+    }
+    s.push_str(&format!(
+        "Type: {}\n",
+        if scenario.is_baseline {
+            "Baseline (current portfolio as imported)"
+        } else {
+            "What-if (a hypothetical variant on the baseline)"
+        }
+    ));
+
+    s.push_str(&format!("\n# Positions ({})\n", positions.len()));
+    s.push_str("symbol | qty | avg_price | side | exchange\n");
+    for p in positions {
+        s.push_str(&format!(
+            "{} | {} | {:.4} | {} | {}\n",
+            p.symbol, p.quantity, p.avg_price, p.side, p.exchange,
+        ));
+    }
+
+    s.push_str("\n# Task\nProduce the four-movement brief analyzing THIS scenario. Use the positions above as the source of truth — do not invent positions or fabricate P/L numbers. ");
+    if scenario.is_baseline {
+        s.push_str("This is the current portfolio as imported; recommend structural improvements and tactical moves grounded in what's actually held.");
+    } else {
+        s.push_str("This is a what-if scenario; analyze whether the proposed structure works and what tactical moves would refine it.");
+    }
+    s.push_str(" Keep the satirical orchestral voice but be substantively useful — every recommendation should reference specific tickers from the positions list.\n");
+    s.push_str("\nRespond with JSON only — no markdown fences, no preamble.");
+    s
+}
+
+fn account_type_label(value: &str) -> &str {
+    match value {
+        "individual" => "Individual Brokerage",
+        "joint" => "Joint Brokerage",
+        "margin" => "Margin Account",
+        "401k" => "401(k)",
+        "roth_401k" => "Roth 401(k)",
+        "traditional_ira" => "Traditional IRA",
+        "roth_ira" => "Roth IRA",
+        "sep_ira" => "SEP IRA",
+        "simple_ira" => "SIMPLE IRA",
+        "529" => "529 Plan",
+        "trust" => "Trust",
+        "custodial" => "Custodial",
+        "other" => "Other",
+        _ => value,
+    }
+}
+
+fn account_disallows_shorts(account_type: Option<&str>) -> bool {
+    match account_type {
+        None => false,
+        Some(at) => matches!(
+            at,
+            "401k" | "roth_401k" | "traditional_ira" | "roth_ira"
+                | "sep_ira" | "simple_ira" | "529" | "custodial"
+        ),
+    }
 }
