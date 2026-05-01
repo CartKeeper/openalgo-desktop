@@ -227,6 +227,19 @@ export function GoldmanResearchReport({
     .split('')
     .join(' ')
 
+  // Long titles like "Scenario Analysis — Current Portfolio — Traditional IRA
+  // (May 1, 2026)" wrap badly at 42pt. Split on em-dash so the first segment
+  // becomes the cover headline and the rest becomes a subtitle context line.
+  const titleParts = title.split(/\s+—\s+/)
+  const coverHeadline = titleParts[0]
+  const coverContext = titleParts.length > 1 ? titleParts.slice(1).join(' · ') : null
+
+  // Cap ticker chips so a runaway list (e.g. when tickers got auto-extracted
+  // from a long conversation) doesn't dominate the cover.
+  const tickerLimit = 12
+  const tickerChips = tickers.slice(0, tickerLimit)
+  const tickerOverflow = tickers.length > tickerLimit ? tickers.length - tickerLimit : 0
+
   return (
     <Document title={title} author="Goldman Sax & Violins" {...docProps}>
       {/* Cover */}
@@ -243,21 +256,23 @@ export function GoldmanResearchReport({
         <Text style={s.confidentialPill}>{confidentialLabel}</Text>
 
         <Text style={s.coverTitle}>
-          <Text style={s.coverTitleAccent}>{title}</Text>
+          <Text style={s.coverTitleAccent}>{coverHeadline}</Text>
         </Text>
 
-        <Text style={s.coverSubtitle}>
-          A research brief in {assistantSections.length || 'several'} movement
-          {assistantSections.length === 1 ? '' : 's'}, with marginalia.
-        </Text>
+        {coverContext && (
+          <Text style={s.coverSubtitle}>{coverContext}</Text>
+        )}
 
-        {tickers.length > 0 && (
+        {tickerChips.length > 0 && (
           <View style={s.tickerRow}>
-            {tickers.map((t) => (
+            {tickerChips.map((t) => (
               <Text key={t} style={s.ticker}>
                 {t}
               </Text>
             ))}
+            {tickerOverflow > 0 && (
+              <Text style={s.ticker}>+{tickerOverflow} more</Text>
+            )}
           </View>
         )}
 
@@ -335,7 +350,7 @@ export function GoldmanResearchReport({
               <Text style={s.noteBody}>{n.content}</Text>
             </View>
           ))}
-          <Text style={s.flourish}>⚜  ♪  ⚜</Text>
+          <Text style={s.flourish}>—   ·   —</Text>
           <Text
             style={s.pageFooter}
             render={({ pageNumber, totalPages }) =>
@@ -345,20 +360,9 @@ export function GoldmanResearchReport({
           />
         </Page>
       )}
-
-      {/* If no notes, still close with a flourish on the last movement */}
-      {(!notes || notes.length === 0) && assistantSections.length > 0 && (
-        <Page size="LETTER" style={s.page}>
-          <Text style={s.flourish}>⚜  ♪  ⚜</Text>
-          <Text
-            style={s.pageFooter}
-            render={({ pageNumber, totalPages }) =>
-              `${title} · ${pageNumber} / ${totalPages}`
-            }
-            fixed
-          />
-        </Page>
-      )}
+      {/* No standalone closing-flourish page — when there are no notes the last
+          movement's natural end is sufficient. The previous behavior emitted
+          an extra page that frequently rendered with just a misencoded glyph. */}
     </Document>
   )
 }

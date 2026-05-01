@@ -67,6 +67,9 @@ const m = StyleSheet.create({
     alignItems: 'flex-start',
   },
   bulletGlyph: {
+    // Times-Roman in PDF (Adobe Standard Encoding) doesn't include the ♪
+    // glyph — it falls back to a substitute char. Use a regular bullet which
+    // IS in the standard font and renders cleanly across PDF readers.
     fontFamily: FONT.serif,
     fontSize: 11,
     color: C.gold,
@@ -284,7 +287,7 @@ export function renderMarkdown(markdown: string): React.ReactNode[] {
       const indent = (liMatch[1].length || 0) * 3
       out.push(
         <View key={`li-${i}`} style={[m.bulletRow, { paddingLeft: indent }]}>
-          <Text style={m.bulletGlyph}>♪</Text>
+          <Text style={m.bulletGlyph}>•</Text>
           <Text style={m.bulletBody}>{renderInline(liMatch[2])}</Text>
         </View>,
       )
@@ -462,7 +465,12 @@ function renderTable(lines: string[], key: number): React.ReactNode {
 
 /**
  * Extract a human title from the start of a markdown blob.
+ *
  * Used to generate Movement section titles from copilot messages.
+ * Only treats a line as a title if it's an explicit heading (`# …`),
+ * bold label (`**…**`), or a short label-like line. Long paragraph
+ * sentences fall through to a generic "Analysis" so we never crop
+ * narrative prose into a 26pt page heading.
  */
 export function extractTitle(content: string): { title: string; body: string } {
   const lines = content.split('\n')
@@ -475,21 +483,19 @@ export function extractTitle(content: string): { title: string; body: string } {
         body: lines.slice(i + 1).join('\n').trim(),
       }
     }
-    if (ln.startsWith('**') && ln.endsWith('**') && ln.length < 120) {
+    if (ln.startsWith('**') && ln.endsWith('**') && ln.length < 80) {
       return {
         title: ln.replace(/^\*\*|\*\*$/g, ''),
         body: lines.slice(i + 1).join('\n').trim(),
       }
     }
-    if (ln.length <= 80) {
+    // Short label-like line: under 60 chars, no terminal sentence punctuation
+    if (ln.length <= 60 && !/[.!?:](\s|$)/.test(ln)) {
       return { title: ln, body: lines.slice(i + 1).join('\n').trim() }
     }
+    // First substantive line is prose — bail to a generic title rather than
+    // turning a paragraph fragment into a 26pt heading.
     break
   }
-  const first = content.split('\n').find((l) => l.trim() !== '') || 'Analysis'
-  const clean = first.replace(/^#+\s*/, '').replace(/^\*\*|\*\*$/g, '')
-  return {
-    title: clean.length > 60 ? `${clean.slice(0, 57)}…` : clean,
-    body: content,
-  }
+  return { title: 'Analysis', body: content }
 }

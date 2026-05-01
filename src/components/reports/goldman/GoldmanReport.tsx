@@ -568,7 +568,7 @@ function CodaView({ m }: { m: CodaMovement }) {
           <Text style={s.closingBody}>{m.closing_note.body}</Text>
         </Text>
       )}
-      <Text style={s.flourish}>⚜  ♪  ⚜</Text>
+      <Text style={s.flourish}>—   ·   —</Text>
     </View>
   )
 }
@@ -612,7 +612,7 @@ function NarrativeView({ m }: { m: NarrativeMovement }) {
 function MusicalBullet({ children }: { children: React.ReactNode }) {
   return (
     <View style={s.bulletRow}>
-      <Text style={s.noteGlyph}>♪</Text>
+      <Text style={s.noteGlyph}>•</Text>
       <Text style={s.bulletBody}>{children}</Text>
     </View>
   )
@@ -623,7 +623,7 @@ function BulletItemView({ item }: { item: BulletItem }) {
   const isTicker = !!item.lead && /^[A-Z0-9.\-]{1,5}$/.test(item.lead)
   return (
     <View style={s.bulletRow}>
-      <Text style={s.noteGlyph}>♪</Text>
+      <Text style={s.noteGlyph}>•</Text>
       <Text style={s.bulletBody}>
         {item.lead && (
           <Text style={isTicker ? s.bulletTickerLead : s.bulletLead}>
