@@ -252,12 +252,9 @@ pub async fn get_client_trades_by_account(
 /// current-state baseline so we don't have to reconstruct holdings from a
 /// (typically partial) transaction window.
 ///
-/// Account type is auto-set per file conventions:
-///   - filename starts with "Contributory" → `traditional_ira` (Schwab's IRA)
-///   - otherwise → `401k`
-///
-/// Both account types disallow shorts so the rules engine treats them
-/// identically; only the displayed label differs.
+/// The client's `account_type` (set when the client is created — picked by
+/// the user in the wizard) drives the compliance ruleset. We do NOT override
+/// it from filename heuristics; the user is the source of truth.
 ///
 /// Persists to: `client_documents`, `client_holdings`, `client_open_orders`,
 /// `client_compliance_violations` (and pre-existing `client_trades` /
@@ -274,14 +271,11 @@ pub async fn import_schwab_documents(
     positions_filename: Option<String>,
     positions_content: Option<String>,
 ) -> Result<ImportReport, AppError> {
-    let detected_type = detect_account_type(&[
-        Some(transactions_filename.as_str()),
-        order_status_filename.as_deref(),
-        positions_filename.as_deref(),
-    ]);
-    // Both 401k and traditional_ira disallow shorts; pass that to the rules
-    // engine so the clamp-on-negative fallback fires when needed.
-    let account_disallows_shorts = matches!(detected_type, "401k" | "traditional_ira");
+    // Look up the user-selected account type and derive whether shorts are
+    // allowed. The clamp-on-negative fallback in the holdings reconstructor
+    // only fires when shorts are disallowed.
+    let client_record = state.sqlite.get_client_by_id(client_id)?;
+    let account_disallows_shorts = account_disallows_shorts(client_record.account_type.as_deref());
 
     let order_status_ref = order_status_content.as_deref();
     let positions_ref = positions_content.as_deref();
@@ -322,32 +316,21 @@ pub async fn import_schwab_documents(
         .sqlite
         .replace_client_compliance_violations(client_id, &report.violations)?;
 
-    // Auto-set account_type
-    state.sqlite.update_client(
-        client_id,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(detected_type),
-        None,
-    )?;
-
     Ok(report)
 }
 
-/// Inspect uploaded filenames to decide which no-shorts account type to apply.
-/// Schwab labels Contributory IRAs distinctively; everything else falls back
-/// to `401k`. Both share the same compliance rules.
-fn detect_account_type(filenames: &[Option<&str>]) -> &'static str {
-    for f in filenames.iter().flatten() {
-        let lower = f.to_lowercase();
-        if lower.contains("contributory") {
-            return "traditional_ira";
-        }
+/// Mirror of `isShortSellingAllowed` from `src/types/clients.ts` — kept in sync
+/// with the frontend so the same account-type → rules mapping applies on both
+/// sides.
+fn account_disallows_shorts(account_type: Option<&str>) -> bool {
+    match account_type {
+        None => false,
+        Some(at) => matches!(
+            at,
+            "401k" | "roth_401k" | "traditional_ira" | "roth_ira"
+                | "sep_ira" | "simple_ira" | "529" | "custodial"
+        ),
     }
-    "401k"
 }
 
 #[tauri::command]

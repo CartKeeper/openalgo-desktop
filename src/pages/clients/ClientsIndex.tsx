@@ -15,7 +15,15 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import type { Client, ImportReport } from '@/types/clients'
+import { ACCOUNT_TYPES, isShortSellingAllowed } from '@/types/clients'
 import ImportDocumentsDialog from './ImportCsvDialog'
 
 function errMsg(err: unknown): string {
@@ -47,6 +55,7 @@ export default function ClientsIndex() {
     phone: '',
     broker: 'Schwab',
     account_id: '',
+    account_type: '401k',
     notes: '',
   })
 
@@ -66,7 +75,7 @@ export default function ClientsIndex() {
   }, [loadClients])
 
   const resetWizard = () => {
-    setForm({ name: '', email: '', phone: '', broker: 'Schwab', account_id: '', notes: '' })
+    setForm({ name: '', email: '', phone: '', broker: 'Schwab', account_id: '', account_type: '401k', notes: '' })
     setStep('profile')
     setPendingClientId(null)
     setImportCompleted(false)
@@ -89,7 +98,7 @@ export default function ClientsIndex() {
         phone: form.phone.trim() || null,
         broker: form.broker.trim() || null,
         accountId: form.account_id.trim() || null,
-        accountType: '401k', // strict 401k rules apply per project spec
+        accountType: form.account_type,
         notes: form.notes.trim() || null,
       })
       if (!created.id) throw new Error('Created client returned no id')
@@ -199,7 +208,7 @@ export default function ClientsIndex() {
             Clients
           </h1>
           <p className="text-sm text-muted-foreground">
-            Strict 401(k) rules are enforced on new client setup.
+            Compliance rules apply automatically based on each client's account type.
           </p>
         </div>
         <Button onClick={() => setShowAddDialog(true)}>
@@ -288,7 +297,7 @@ export default function ClientsIndex() {
               <div className="space-y-1.5">
                 <DialogTitle>New Client — Step 1 of 2</DialogTitle>
                 <DialogDescription>
-                  Enter the client profile. Strict 401(k) rules will apply to imported data.
+                  Enter the client profile and pick the account type — that drives the compliance ruleset.
                 </DialogDescription>
               </div>
               <button
@@ -304,7 +313,7 @@ export default function ClientsIndex() {
           {showHelp && (
             <div className="rounded-lg border bg-muted/40 p-3 text-xs space-y-1">
               <p className="font-semibold text-sm">What happens next</p>
-              <p>Step 2 requires uploading the client's Schwab Transactions file (JSON or CSV) and optionally the Order Status CSV. Strict 401(k) rules block the import if any violation is found.</p>
+              <p>Step 2 requires uploading the client's Schwab Transactions file (JSON or CSV) plus an optional Positions CSV (recommended) and Order Status CSV. The compliance ruleset is determined by the account type you pick above.</p>
               <p className="text-muted-foreground pt-1">Cancel during Step 2 will roll back this client record.</p>
             </div>
           )}
@@ -360,6 +369,30 @@ export default function ClientsIndex() {
               </div>
             </div>
             <div className="space-y-1.5">
+              <Label htmlFor="account_type">Account Type *</Label>
+              <Select
+                value={form.account_type}
+                onValueChange={(v) => setForm({ ...form, account_type: v })}
+              >
+                <SelectTrigger id="account_type">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ACCOUNT_TYPES.map((at) => (
+                    <SelectItem key={at.value} value={at.value}>
+                      {at.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                Drives the compliance ruleset.{' '}
+                {isShortSellingAllowed(form.account_type)
+                  ? 'Short selling and leveraged products are allowed on this account type.'
+                  : 'Short selling, leveraged ETFs, and inverse ETFs will be flagged on this account type.'}
+              </p>
+            </div>
+            <div className="space-y-1.5">
               <Label htmlFor="notes">Notes</Label>
               <Input
                 id="notes"
@@ -370,7 +403,7 @@ export default function ClientsIndex() {
             </div>
             <div className="flex items-center gap-2 text-xs text-muted-foreground rounded-md border bg-muted/30 p-2">
               <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
-              Account type will be set to 401(k). Documents are required to complete setup.
+              Documents are required to complete setup. You can change account type later from the client page.
             </div>
           </div>
           <DialogFooter>
