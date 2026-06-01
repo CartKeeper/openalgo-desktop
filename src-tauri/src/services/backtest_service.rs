@@ -461,6 +461,99 @@ fn compute_tax(trades: &[Trade], tax: &TaxConfig) -> (f64, f64) {
     (st_net.max(0.0) * tax.st_rate, lt_net.max(0.0) * tax.lt_rate)
 }
 
+use crate::services::quant_service;
+
+impl BacktestService {
+    pub fn compute_metrics(
+        equity: &[EquityPoint],
+        trades: &[Trade],
+        cfg: &BacktestConfig,
+    ) -> BacktestMetrics {
+        let values: Vec<f64> = equity.iter().map(|e| e.equity).collect();
+        let start = cfg.starting_capital;
+        let final_eq = *values.last().unwrap_or(&start);
+        let total_return = if start > 0.0 { final_eq / start - 1.0 } else { 0.0 };
+
+        let returns = quant_service::compute_returns(&values);
+        let volatility = quant_service::annualized_volatility(&returns);
+        let sharpe = quant_service::sharpe_ratio(&returns, cfg.risk_free_rate);
+        let sortino = quant_service::sortino_ratio(&returns, cfg.risk_free_rate);
+        let calmar = quant_service::calmar_ratio(&returns, &values);
+        let (dd_depth, peak_idx, trough_idx) = quant_service::max_drawdown(&values);
+        let max_dd_peak = equity.get(peak_idx).map(|e| e.timestamp.clone()).unwrap_or_default();
+        let max_dd_trough = equity.get(trough_idx).map(|e| e.timestamp.clone()).unwrap_or_default();
+
+        // Calendar-time CAGR (interval-agnostic).
+        let days = holding_days_between(&cfg.from_date, &cfg.to_date).max(1) as f64;
+        let years = days / 365.0;
+        let cagr = if start > 0.0 && years > 0.0 { (final_eq / start).powf(1.0 / years) - 1.0 } else { 0.0 };
+
+        // Trade stats.
+        let num_trades = trades.len();
+        let wins: Vec<f64> = trades.iter().filter(|t| t.pnl_after_fees > 0.0).map(|t| t.pnl_after_fees).collect();
+        let losses: Vec<f64> = trades.iter().filter(|t| t.pnl_after_fees < 0.0).map(|t| t.pnl_after_fees).collect();
+        let win_rate = if num_trades > 0 { wins.len() as f64 / num_trades as f64 } else { 0.0 };
+        let avg_win = if !wins.is_empty() { wins.iter().sum::<f64>() / wins.len() as f64 } else { 0.0 };
+        let avg_loss = if !losses.is_empty() { losses.iter().sum::<f64>() / losses.len() as f64 } else { 0.0 };
+        let gross_win: f64 = wins.iter().sum();
+        let gross_loss: f64 = losses.iter().sum::<f64>().abs();
+        let profit_factor = if gross_loss > 0.0 { gross_win / gross_loss } else if gross_win > 0.0 { f64::INFINITY } else { 0.0 };
+        let mut max_consecutive_losses = 0usize;
+        let mut run = 0usize;
+        for t in trades {
+            if t.pnl_after_fees < 0.0 { run += 1; max_consecutive_losses = max_consecutive_losses.max(run); } else { run = 0; }
+        }
+        let avg_holding_days = if num_trades > 0 {
+            trades.iter().map(|t| t.holding_days as f64).sum::<f64>() / num_trades as f64
+        } else { 0.0 };
+        let bars_in_market: usize = trades.iter().map(|t| t.holding_days.max(0) as usize).sum();
+        let time_in_market = if !equity.is_empty() { (bars_in_market as f64 / equity.len() as f64).min(1.0) } else { 0.0 };
+
+        let total_fees: f64 = trades.iter().map(|t| t.fees).sum();
+        let (st_tax, lt_tax) = compute_tax(trades, &cfg.tax);
+        let total_tax = st_tax + lt_tax;
+        let net_final = final_eq - total_tax;
+        let net_total_return = if start > 0.0 { net_final / start - 1.0 } else { 0.0 };
+        let net_cagr = if start > 0.0 && years > 0.0 { (net_final / start).max(0.0).powf(1.0 / years) - 1.0 } else { 0.0 };
+
+        BacktestMetrics {
+            total_return, cagr, volatility, sharpe, sortino, calmar,
+            max_drawdown: dd_depth, max_dd_peak, max_dd_trough,
+            num_trades, win_rate, avg_win, avg_loss, profit_factor,
+            max_consecutive_losses, avg_holding_days, time_in_market,
+            total_fees, st_tax, lt_tax, total_tax, net_total_return, net_cagr,
+        }
+    }
+
+    /// Buy & hold from `start_idx` open to the last bar close, whole shares.
+    pub fn benchmark(bars: &[Bar], start_idx: usize, capital: f64) -> BenchmarkResult {
+        if bars.is_empty() || start_idx >= bars.len() {
+            return BenchmarkResult { total_return: 0.0, cagr: 0.0, max_drawdown: 0.0 };
+        }
+        let entry = bars[start_idx].open;
+        let qty = (capital / entry).floor();
+        let curve: Vec<f64> = bars[start_idx..].iter().map(|b| (capital - qty * entry) + qty * b.close).collect();
+        let final_eq = *curve.last().unwrap();
+        let total_return = if capital > 0.0 { final_eq / capital - 1.0 } else { 0.0 };
+        let days = holding_days_between(&bars[start_idx].timestamp, &bars[bars.len() - 1].timestamp).max(1) as f64;
+        let years = days / 365.0;
+        let cagr = if capital > 0.0 && years > 0.0 { (final_eq / capital).powf(1.0 / years) - 1.0 } else { 0.0 };
+        let (dd, _, _) = quant_service::max_drawdown(&curve);
+        BenchmarkResult { total_return, cagr, max_drawdown: dd }
+    }
+
+    /// Run a full backtest over already-loaded bars (no I/O).
+    pub fn run(bars: &[Bar], cfg: &BacktestConfig, warnings: Vec<String>) -> BacktestResult {
+        let mut generator = build_generator(&cfg.strategy);
+        generator.prepare(bars);
+        let warmup = generator.warmup().max(1).min(bars.len());
+        let (equity_curve, trades) = Self::simulate(bars, generator.as_mut(), cfg);
+        let metrics = Self::compute_metrics(&equity_curve, &trades, cfg);
+        let benchmark = Self::benchmark(bars, warmup.min(bars.len().saturating_sub(1)), cfg.starting_capital);
+        BacktestResult { config: cfg.clone(), equity_curve, trades, metrics, benchmark, warnings }
+    }
+}
+
 /// Build a boxed signal generator from a strategy spec.
 pub fn build_generator(spec: &StrategySpec) -> Box<dyn SignalGenerator> {
     match *spec {
@@ -532,6 +625,39 @@ mod tests {
             holding_days,
             long_term,
         }
+    }
+
+    #[test]
+    fn metrics_and_benchmark_assemble_from_a_run() {
+        let closes = [10.0, 10.0, 20.0, 20.0, 30.0, 30.0];
+        let bars = bars_from_closes(&closes);
+        struct Stub;
+        impl SignalGenerator for Stub {
+            fn prepare(&mut self, _b: &[Bar]) {}
+            fn warmup(&self) -> usize { 1 }
+            fn signal(&self, i: usize) -> Signal { match i { 1 => Signal::Buy, 3 => Signal::Sell, _ => Signal::Hold } }
+        }
+        let cfg = BacktestConfig {
+            symbol: "T".into(), exchange: "NASDAQ".into(), interval: "D".into(),
+            from_date: "2024-01-01".into(), to_date: "2024-01-06".into(),
+            starting_capital: 1000.0, sizing: Sizing::AllIn,
+            costs: Costs { commission_per_trade: 0.0, slippage_bps: 0.0, reg_fees_enabled: false },
+            tax: TaxConfig { st_rate: 0.35, lt_rate: 0.15 }, fractional: false,
+            risk_free_rate: 0.0, strategy: StrategySpec::SmaCrossover { fast: 1, slow: 1 },
+        };
+        let (equity, trades) = BacktestService::simulate(&bars, &mut Stub, &cfg);
+        let m = BacktestService::compute_metrics(&equity, &trades, &cfg);
+        // total return = 1500/1000 - 1 = 0.5
+        assert!((m.total_return - 0.5).abs() < 1e-6);
+        assert_eq!(m.num_trades, 1);
+        assert!((m.win_rate - 1.0).abs() < 1e-9);
+        // ST gain 500 -> tax 175 -> net final 1325 -> net return 0.325
+        assert!((m.total_tax - 175.0).abs() < 1e-6);
+        assert!((m.net_total_return - 0.325).abs() < 1e-6);
+
+        let b = BacktestService::benchmark(&bars, 1, cfg.starting_capital);
+        // Buy&hold from bar 1 open (10) to last close (30): 200% return.
+        assert!((b.total_return - 2.0).abs() < 1e-6);
     }
 
     #[test]
