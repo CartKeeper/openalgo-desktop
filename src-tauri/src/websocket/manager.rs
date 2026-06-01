@@ -7,16 +7,25 @@
 
 use crate::error::{AppError, Result};
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
+use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
+use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, info, warn};
+
+/// Concrete WebSocket stream types (so the connection halves can be passed
+/// between the supervisor loop and reconnection attempts).
+type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type WsWrite = SplitSink<WsStream, Message>;
+type WsRead = SplitStream<WsStream>;
 
 /// Subscription mode for market data
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -112,6 +121,25 @@ enum WebSocketCommand {
     Disconnect,
 }
 
+/// Why a single WebSocket connection's message loop ended.
+enum ConnectionEnd {
+    /// Server closed, network error, or stream ended — the supervisor should
+    /// attempt to reconnect (unless a newer connection has superseded it).
+    Dropped,
+    /// A deliberate `Disconnect` command (or the command channel closing) —
+    /// the supervisor must stop and NOT reconnect.
+    Intentional,
+}
+
+/// Credentials needed to (re)establish a broker WebSocket connection.
+#[derive(Clone)]
+struct ConnectionCredentials {
+    broker_id: String,
+    client_id: String,
+    api_key: String,
+    feed_token: String,
+}
+
 /// Subscription request
 #[derive(Debug, Clone)]
 pub struct SubscriptionRequest {
@@ -131,6 +159,15 @@ pub struct WebSocketManager {
     sender: RwLock<Option<mpsc::Sender<WebSocketCommand>>>,
     token_map: TokenMap,
     broker_id: RwLock<Option<String>>,
+    /// Credentials of the active connection, kept so the supervisor can
+    /// re-establish the socket after an unexpected drop.
+    credentials: RwLock<Option<ConnectionCredentials>>,
+    /// Monotonic connection generation. Each `connect()`/`disconnect()` bumps it;
+    /// a supervisor exits as soon as it sees a generation other than its own.
+    /// This is the single source of truth for "should this supervisor stop?",
+    /// covering both deliberate disconnects and supersede-by-new-connect with no
+    /// separate flag to race against.
+    generation: AtomicU64,
 }
 
 impl WebSocketManager {
@@ -143,33 +180,89 @@ impl WebSocketManager {
             sender: RwLock::new(None),
             token_map: Arc::new(RwLock::new(HashMap::new())),
             broker_id: RwLock::new(None),
+            credentials: RwLock::new(None),
+            generation: AtomicU64::new(0),
         }
     }
 
-    /// Connect to broker WebSocket
+    /// Connect to broker WebSocket.
+    ///
+    /// Establishes the initial connection (returning an error if that first
+    /// attempt fails, so the UI gets immediate feedback) and then hands the
+    /// connection to a supervisor task that auto-reconnects with exponential
+    /// backoff and re-subscribes on any unexpected drop. A deliberate
+    /// `disconnect()` — or a later `connect()` to a different broker — stops the
+    /// supervisor via the generation counter.
     pub async fn connect(
-        &self,
+        self: Arc<Self>,
         broker_id: &str,
         client_id: &str,
         api_key: &str,
         feed_token: &str,
     ) -> Result<()> {
-        // Disconnect existing connection first
+        // Tear down any existing connection first (this bumps the generation,
+        // stopping the previous supervisor).
         if self.is_connected() {
             self.disconnect().await?;
         }
 
-        *self.state.write() = ConnectionState::Connecting;
-        *self.broker_id.write() = Some(broker_id.to_string());
+        let creds = ConnectionCredentials {
+            broker_id: broker_id.to_string(),
+            client_id: client_id.to_string(),
+            api_key: api_key.to_string(),
+            feed_token: feed_token.to_string(),
+        };
 
+        *self.state.write() = ConnectionState::Connecting;
+        *self.broker_id.write() = Some(creds.broker_id.clone());
+        *self.credentials.write() = Some(creds.clone());
+
+        // Claim a generation for this connection. The supervisor exits the moment
+        // it observes a different generation (deliberate disconnect or a newer
+        // connect), so there is no separate "should stop" flag to race on.
+        let my_gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+
+        // First attempt is inline so an initial failure surfaces to the caller.
+        let (write, read) = match self.establish_connection(&creds).await {
+            Ok(halves) => halves,
+            Err(e) => {
+                *self.state.write() = ConnectionState::Disconnected;
+                return Err(e);
+            }
+        };
+
+        // One command channel for the whole supervisor lifetime — its sender stays
+        // valid across reconnects, so subscribe()/unsubscribe() keep working.
+        let (tx, rx) = mpsc::channel::<WebSocketCommand>(100);
+        *self.sender.write() = Some(tx);
+        *self.state.write() = ConnectionState::Connected;
+        info!("{} WebSocket connected", creds.broker_id);
+        let _ = self.app_handle.emit("websocket_connected", &creds.broker_id);
+
+        let manager = Arc::clone(&self);
+        tokio::spawn(async move {
+            manager.supervise(write, read, rx, creds, my_gen).await;
+        });
+
+        Ok(())
+    }
+
+    /// Establish a single broker WebSocket connection and return its split halves.
+    /// Does NOT touch manager connection state — pure connection setup, reused by
+    /// both the initial connect and every reconnect attempt.
+    async fn establish_connection(
+        &self,
+        creds: &ConnectionCredentials,
+    ) -> Result<(WsWrite, WsRead)> {
+        let broker_id = creds.broker_id.as_str();
         let url = match broker_id {
             "angel" => format!(
                 "wss://smartapisocket.angelone.in/smart-stream?clientCode={}&feedToken={}&apiKey={}",
-                client_id, feed_token, api_key
+                creds.client_id, creds.feed_token, creds.api_key
             ),
             "zerodha" => format!(
                 "wss://ws.kite.trade?api_key={}&access_token={}",
-                api_key, feed_token
+                creds.api_key, creds.feed_token
             ),
             "fyers" => "wss://socket.fyers.in/hsm/v1-5/prod".to_string(),
             _ => return Err(AppError::Broker(format!("Unknown broker: {}", broker_id))),
@@ -177,27 +270,24 @@ impl WebSocketManager {
 
         info!("Connecting to {} WebSocket...", broker_id);
 
-        // Build request with headers for Angel
+        use tokio_tungstenite::tungstenite::http::Request;
         let request = if broker_id == "angel" {
-            use tokio_tungstenite::tungstenite::http::Request;
             Request::builder()
                 .uri(&url)
-                .header("Authorization", format!("Bearer {}", feed_token))
-                .header("x-api-key", api_key)
-                .header("x-client-code", client_id)
-                .header("x-feed-token", feed_token)
+                .header("Authorization", format!("Bearer {}", creds.feed_token))
+                .header("x-api-key", &creds.api_key)
+                .header("x-client-code", &creds.client_id)
+                .header("x-feed-token", &creds.feed_token)
                 .body(())
                 .map_err(|e| AppError::Internal(format!("Failed to build request: {}", e)))?
         } else if broker_id == "fyers" {
-            use tokio_tungstenite::tungstenite::http::Request;
             Request::builder()
                 .uri(&url)
-                .header("Authorization", feed_token)
+                .header("Authorization", &creds.feed_token)
                 .header("User-Agent", "openalgo-desktop/1.0")
                 .body(())
                 .map_err(|e| AppError::Internal(format!("Failed to build request: {}", e)))?
         } else {
-            use tokio_tungstenite::tungstenite::http::Request;
             Request::builder()
                 .uri(&url)
                 .body(())
@@ -205,119 +295,143 @@ impl WebSocketManager {
         };
 
         let (ws_stream, _) = connect_async(request).await?;
-        let (mut write, mut read) = ws_stream.split();
+        let (mut write, read) = ws_stream.split();
 
-        // For Fyers, send authentication message
+        // For Fyers, send authentication message before any subscription.
         if broker_id == "fyers" {
-            let auth_msg = create_fyers_auth_message(feed_token, "openalgo-desktop");
+            let auth_msg = create_fyers_auth_message(&creds.feed_token, "openalgo-desktop");
             write.send(Message::Binary(auth_msg)).await?;
             info!("Sent Fyers authentication message");
         }
 
-        let (tx, mut rx) = mpsc::channel::<WebSocketCommand>(100);
-        *self.sender.write() = Some(tx);
-        *self.state.write() = ConnectionState::Connected;
+        Ok((write, read))
+    }
 
+    /// Supervise a connection: run its message loop, and on any unexpected drop,
+    /// reconnect with exponential backoff and re-subscribe — until a deliberate
+    /// disconnect or a newer connection supersedes this generation.
+    async fn supervise(
+        self: Arc<Self>,
+        mut write: WsWrite,
+        mut read: WsRead,
+        mut rx: mpsc::Receiver<WebSocketCommand>,
+        creds: ConnectionCredentials,
+        my_gen: u64,
+    ) {
+        let broker = creds.broker_id.clone();
         let app_handle = self.app_handle.clone();
-        let broker = broker_id.to_string();
         let token_map = self.token_map.clone();
 
-        info!("{} WebSocket connected", broker_id);
+        loop {
+            let end = run_message_loop(
+                &mut write,
+                &mut read,
+                &mut rx,
+                &broker,
+                &app_handle,
+                &token_map,
+            )
+            .await;
 
-        // Spawn WebSocket handler task
-        tokio::spawn(async move {
-            let mut heartbeat_interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+            match end {
+                ConnectionEnd::Intentional => break,
+                ConnectionEnd::Dropped => {
+                    // A newer connect()/disconnect() superseded us — stop quietly.
+                    if self.generation.load(Ordering::SeqCst) != my_gen {
+                        break;
+                    }
 
-            loop {
-                tokio::select! {
-                    // Handle incoming messages
-                    msg = read.next() => {
-                        match msg {
-                            Some(Ok(Message::Binary(data))) => {
-                                // Parse binary data based on broker protocol
-                                let ticks = parse_broker_ticks(&broker, &data, &token_map);
-                                for tick in ticks {
-                                    if let Err(e) = app_handle.emit("market_tick", &tick) {
-                                        warn!("Failed to emit tick: {}", e);
-                                    }
-                                }
+                    *self.state.write() = ConnectionState::Connecting;
+
+                    // Exponential backoff reconnect loop.
+                    let mut attempt: u32 = 0;
+                    let reconnected = loop {
+                        if self.generation.load(Ordering::SeqCst) != my_gen {
+                            break false;
+                        }
+                        attempt += 1;
+                        let delay = reconnect_backoff_secs(attempt);
+                        let _ = app_handle.emit(
+                            "websocket_reconnecting",
+                            serde_json::json!({
+                                "broker": broker,
+                                "attempt": attempt,
+                                "delaySecs": delay,
+                            }),
+                        );
+                        info!("{} reconnecting in {}s (attempt {})", broker, delay, attempt);
+                        tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+
+                        if self.generation.load(Ordering::SeqCst) != my_gen {
+                            break false;
+                        }
+
+                        match self.establish_connection(&creds).await {
+                            Ok((w, r)) => {
+                                write = w;
+                                read = r;
+                                break true;
                             }
-                            Some(Ok(Message::Text(text))) => {
-                                debug!("Received text message: {}", text);
-                                // Handle JSON responses (subscription confirmations, etc.)
+                            Err(e) => {
+                                warn!("{} reconnect attempt {} failed: {}", broker, attempt, e);
+                                continue;
                             }
-                            Some(Ok(Message::Ping(_data))) => {
-                                debug!("Received ping, sending pong");
-                                // Pong is handled automatically by tungstenite
-                            }
-                            Some(Ok(Message::Pong(_))) => {
-                                debug!("Received pong");
-                            }
-                            Some(Ok(Message::Close(_))) => {
-                                info!("WebSocket closed by server");
-                                let _ = app_handle.emit("websocket_disconnected", &broker);
-                                break;
-                            }
-                            Some(Err(e)) => {
-                                error!("WebSocket error: {}", e);
-                                let _ = app_handle.emit("websocket_error", e.to_string());
-                                break;
-                            }
-                            None => {
-                                info!("WebSocket stream ended");
-                                break;
-                            }
-                            _ => {}
+                        }
+                    };
+
+                    if !reconnected {
+                        break;
+                    }
+
+                    *self.state.write() = ConnectionState::Connected;
+
+                    // Replay stored subscriptions so the feed resumes seamlessly.
+                    let reqs = self.collect_subscriptions();
+                    if !reqs.is_empty() {
+                        let msg = create_subscribe_message(&broker, &reqs);
+                        if let Err(e) = write.send(msg).await {
+                            warn!("{} re-subscribe failed: {}", broker, e);
+                        } else {
+                            info!("{} re-subscribed {} symbol(s)", broker, reqs.len());
                         }
                     }
 
-                    // Handle outgoing commands
-                    cmd = rx.recv() => {
-                        match cmd {
-                            Some(WebSocketCommand::Subscribe(requests)) => {
-                                let msg = create_subscribe_message(&broker, &requests);
-                                if let Err(e) = write.send(msg).await {
-                                    error!("Failed to send subscribe: {}", e);
-                                }
-                            }
-                            Some(WebSocketCommand::Unsubscribe(symbols)) => {
-                                let msg = create_unsubscribe_message(&broker, &symbols);
-                                if let Err(e) = write.send(msg).await {
-                                    error!("Failed to send unsubscribe: {}", e);
-                                }
-                            }
-                            Some(WebSocketCommand::Disconnect) => {
-                                let _ = write.close().await;
-                                break;
-                            }
-                            None => break,
-                        }
-                    }
-
-                    // Send heartbeat
-                    _ = heartbeat_interval.tick() => {
-                        match broker.as_str() {
-                            "angel" => {
-                                if let Err(e) = write.send(Message::Text("ping".to_string())).await {
-                                    warn!("Failed to send heartbeat: {}", e);
-                                }
-                            }
-                            "zerodha" => {
-                                // Zerodha uses 1-byte heartbeat
-                                if let Err(e) = write.send(Message::Binary(vec![0])).await {
-                                    warn!("Failed to send heartbeat: {}", e);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+                    // websocket_reconnected for status; websocket_connected so the
+                    // frontend's connection-state listener flips back to connected
+                    // without the frontend having to re-issue a connect command.
+                    let _ = app_handle.emit("websocket_reconnected", &broker);
+                    let _ = app_handle.emit("websocket_connected", &broker);
+                    info!("{} WebSocket reconnected (attempt {})", broker, attempt);
                 }
             }
+        }
 
-            info!("{} WebSocket task ended", broker);
-        });
+        // Only clear shared state if we're still the active generation, so we
+        // don't stomp a newer connection that replaced us.
+        if self.generation.load(Ordering::SeqCst) == my_gen {
+            *self.state.write() = ConnectionState::Disconnected;
+            *self.sender.write() = None;
+        }
+        info!("{} WebSocket supervisor ended", broker);
+    }
 
-        Ok(())
+    /// Rebuild subscription requests from the stored subscription map (used to
+    /// re-subscribe after a reconnect).
+    fn collect_subscriptions(&self) -> Vec<SubscriptionRequest> {
+        self.subscriptions
+            .read()
+            .iter()
+            .filter_map(|(key, mode)| {
+                let mut parts = key.splitn(2, ':');
+                let exchange = parts.next()?.to_string();
+                let token = parts.next()?.to_string();
+                Some(SubscriptionRequest {
+                    exchange,
+                    token,
+                    mode: *mode,
+                })
+            })
+            .collect()
     }
 
     /// Subscribe to symbols
@@ -380,8 +494,16 @@ impl WebSocketManager {
         Ok(())
     }
 
-    /// Disconnect WebSocket
+    /// Disconnect WebSocket.
+    ///
+    /// Bumps the generation first so any supervisor (including one currently
+    /// sleeping in a reconnect backoff) stops and does NOT reconnect, then sends
+    /// a Disconnect command to break an actively-running message loop promptly.
     pub async fn disconnect(&self) -> Result<()> {
+        // Invalidate the active supervisor's generation up front — this is what
+        // guarantees no reconnect happens, even mid-backoff.
+        self.generation.fetch_add(1, Ordering::SeqCst);
+
         // Clone sender before await to avoid holding lock across await point
         let tx = {
             let sender = self.sender.read();
@@ -394,6 +516,7 @@ impl WebSocketManager {
         *self.state.write() = ConnectionState::Disconnected;
         *self.sender.write() = None;
         *self.broker_id.write() = None;
+        *self.credentials.write() = None;
         self.subscriptions.write().clear();
         Ok(())
     }
@@ -413,6 +536,113 @@ impl WebSocketManager {
         let mut map = self.token_map.write();
         map.insert(token.to_string(), (symbol.to_string(), exchange.to_string()));
     }
+}
+
+// ============================================================================
+// Connection message loop
+// ============================================================================
+
+/// Run one connection's read/command/heartbeat loop until it ends, returning
+/// whether the end was an unexpected drop (reconnect) or deliberate (stop).
+async fn run_message_loop(
+    write: &mut WsWrite,
+    read: &mut WsRead,
+    rx: &mut mpsc::Receiver<WebSocketCommand>,
+    broker: &str,
+    app_handle: &AppHandle,
+    token_map: &TokenMap,
+) -> ConnectionEnd {
+    let mut heartbeat_interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+
+    loop {
+        tokio::select! {
+            // Handle incoming messages
+            msg = read.next() => {
+                match msg {
+                    Some(Ok(Message::Binary(data))) => {
+                        let ticks = parse_broker_ticks(broker, &data, token_map);
+                        for tick in ticks {
+                            if let Err(e) = app_handle.emit("market_tick", &tick) {
+                                warn!("Failed to emit tick: {}", e);
+                            }
+                        }
+                    }
+                    Some(Ok(Message::Text(text))) => {
+                        debug!("Received text message: {}", text);
+                    }
+                    Some(Ok(Message::Ping(_data))) => {
+                        debug!("Received ping, sending pong");
+                    }
+                    Some(Ok(Message::Pong(_))) => {
+                        debug!("Received pong");
+                    }
+                    Some(Ok(Message::Close(_))) => {
+                        info!("WebSocket closed by server");
+                        let _ = app_handle.emit("websocket_disconnected", broker);
+                        return ConnectionEnd::Dropped;
+                    }
+                    Some(Err(e)) => {
+                        error!("WebSocket error: {}", e);
+                        let _ = app_handle.emit("websocket_error", e.to_string());
+                        return ConnectionEnd::Dropped;
+                    }
+                    None => {
+                        info!("WebSocket stream ended");
+                        let _ = app_handle.emit("websocket_disconnected", broker);
+                        return ConnectionEnd::Dropped;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Handle outgoing commands
+            cmd = rx.recv() => {
+                match cmd {
+                    Some(WebSocketCommand::Subscribe(requests)) => {
+                        let msg = create_subscribe_message(broker, &requests);
+                        if let Err(e) = write.send(msg).await {
+                            error!("Failed to send subscribe: {}", e);
+                        }
+                    }
+                    Some(WebSocketCommand::Unsubscribe(symbols)) => {
+                        let msg = create_unsubscribe_message(broker, &symbols);
+                        if let Err(e) = write.send(msg).await {
+                            error!("Failed to send unsubscribe: {}", e);
+                        }
+                    }
+                    Some(WebSocketCommand::Disconnect) => {
+                        let _ = write.close().await;
+                        return ConnectionEnd::Intentional;
+                    }
+                    None => return ConnectionEnd::Intentional,
+                }
+            }
+
+            // Send heartbeat
+            _ = heartbeat_interval.tick() => {
+                match broker {
+                    "angel" => {
+                        if let Err(e) = write.send(Message::Text("ping".to_string())).await {
+                            warn!("Failed to send heartbeat: {}", e);
+                        }
+                    }
+                    "zerodha" => {
+                        // Zerodha uses 1-byte heartbeat
+                        if let Err(e) = write.send(Message::Binary(vec![0])).await {
+                            warn!("Failed to send heartbeat: {}", e);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// Exponential backoff schedule for reconnection: 1, 2, 4, 8, 16, then 30s cap.
+fn reconnect_backoff_secs(attempt: u32) -> u64 {
+    let shift = attempt.saturating_sub(1).min(5);
+    (1u64 << shift).min(30)
 }
 
 // ============================================================================
@@ -1126,4 +1356,28 @@ fn create_fyers_unsubscribe(symbols: &[(String, String)]) -> Message {
     buffer.push(channel);
 
     Message::Binary(buffer)
+}
+
+#[cfg(test)]
+mod reconnect_tests {
+    use super::reconnect_backoff_secs;
+
+    #[test]
+    fn backoff_follows_exponential_schedule_with_cap() {
+        // 1, 2, 4, 8, 16, then capped at 30s for all further attempts.
+        assert_eq!(reconnect_backoff_secs(1), 1);
+        assert_eq!(reconnect_backoff_secs(2), 2);
+        assert_eq!(reconnect_backoff_secs(3), 4);
+        assert_eq!(reconnect_backoff_secs(4), 8);
+        assert_eq!(reconnect_backoff_secs(5), 16);
+        assert_eq!(reconnect_backoff_secs(6), 30);
+        assert_eq!(reconnect_backoff_secs(7), 30);
+        assert_eq!(reconnect_backoff_secs(100), 30);
+    }
+
+    #[test]
+    fn backoff_attempt_zero_is_safe() {
+        // attempt is always >= 1 in practice, but guard against underflow.
+        assert_eq!(reconnect_backoff_secs(0), 1);
+    }
 }

@@ -629,6 +629,8 @@ export default function WebSocketTest() {
   useEffect(() => {
     let unlistenTick: (() => void) | null = null
     let unlistenDisconnect: (() => void) | null = null
+    let unlistenReconnecting: (() => void) | null = null
+    let unlistenConnected: (() => void) | null = null
     let unlistenError: (() => void) | null = null
 
     const setupListeners = async () => {
@@ -637,14 +639,27 @@ export default function WebSocketTest() {
       })
 
       unlistenDisconnect = await listen<string>('websocket_disconnected', (event) => {
+        // Backend supervisor owns reconnection (exponential backoff +
+        // re-subscribe). Reflect status only — no competing frontend timer.
         setIsConnected(false)
-        setBrokerName(null)
         logEvent(`Disconnected: ${event.payload}`, 'warn')
+      })
 
-        if (autoReconnect) {
-          logEvent('Auto-reconnect in 3s...', 'warn')
-          reconnectTimeoutRef.current = setTimeout(connectWebSocket, 3000)
+      unlistenReconnecting = await listen<{ broker: string; attempt: number; delaySecs: number }>(
+        'websocket_reconnecting',
+        (event) => {
+          setIsConnected(false)
+          logEvent(
+            `Reconnecting (attempt ${event.payload.attempt}, next in ${event.payload.delaySecs}s)...`,
+            'warn'
+          )
         }
+      )
+
+      unlistenConnected = await listen<string>('websocket_connected', (event) => {
+        setIsConnected(true)
+        setBrokerName(event.payload)
+        logEvent(`Connected: ${event.payload}`, 'success')
       })
 
       unlistenError = await listen<string>('websocket_error', (event) => {
@@ -660,9 +675,11 @@ export default function WebSocketTest() {
     return () => {
       unlistenTick?.()
       unlistenDisconnect?.()
+      unlistenReconnecting?.()
+      unlistenConnected?.()
       unlistenError?.()
     }
-  }, [handleMarketTick, logEvent, autoReconnect, checkStatus])
+  }, [handleMarketTick, logEvent, checkStatus])
 
   // Computed values
   const connectionStatus = isConnected ? 'success' : isConnecting ? 'warning' : 'idle'

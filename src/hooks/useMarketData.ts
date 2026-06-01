@@ -65,6 +65,8 @@ interface UseMarketDataReturn {
   isConnected: boolean
   isAuthenticated: boolean
   isConnecting: boolean
+  /** True while the backend supervisor is retrying after an unexpected drop. */
+  isReconnecting: boolean
   error: string | null
   connect: () => Promise<void>
   disconnect: () => void
@@ -94,6 +96,7 @@ export function useMarketData({
   const [isConnected, setIsConnected] = useState(false)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isConnecting, setIsConnecting] = useState(false)
+  const [isReconnecting, setIsReconnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const unlistenersRef = useRef<UnlistenFn[]>([])
@@ -239,23 +242,38 @@ export function useMarketData({
       unlistenersRef.current.push(unlisten)
     })
 
-    // Listen to connection status events
+    // Listen to connection status events. The BACKEND owns reconnection (it
+    // retries with exponential backoff and re-subscribes stored symbols on any
+    // unexpected drop), so the frontend only reflects status here — it never
+    // re-issues a connect command on a drop, which would fight the supervisor.
     listen<string>('websocket_connected', () => {
       setIsConnected(true)
       setIsAuthenticated(true)
+      setIsReconnecting(false)
+      setError(null)
     }).then((unlisten) => {
       unlistenersRef.current.push(unlisten)
     })
 
+    // Emitted at the start of each backend reconnect attempt after a drop.
+    listen<{ broker: string; attempt: number; delaySecs: number }>(
+      'websocket_reconnecting',
+      (event) => {
+        setIsConnected(false)
+        setIsReconnecting(true)
+        setError(
+          `Connection lost — reconnecting (attempt ${event.payload.attempt})…`
+        )
+      }
+    ).then((unlisten) => {
+      unlistenersRef.current.push(unlisten)
+    })
+
     listen<string>('websocket_disconnected', () => {
+      // Reflect the drop; do NOT reconnect here — the backend supervisor does,
+      // and keeps the subscription set so we leave subscribedSymbolsRef intact.
       setIsConnected(false)
       setIsAuthenticated(false)
-      subscribedSymbolsRef.current.clear()
-
-      // Auto-reconnect
-      if (autoReconnect && enabled) {
-        reconnectTimeoutRef.current = setTimeout(connect, 3000)
-      }
     }).then((unlisten) => {
       unlistenersRef.current.push(unlisten)
     })
@@ -270,7 +288,7 @@ export function useMarketData({
       unlistenersRef.current.forEach((unlisten) => unlisten())
       unlistenersRef.current = []
     }
-  }, [enabled, autoReconnect, connect, handleMarketTick])
+  }, [enabled, handleMarketTick])
 
   // Auto-connect when enabled and symbols provided
   useEffect(() => {
@@ -325,6 +343,7 @@ export function useMarketData({
     isConnected,
     isAuthenticated,
     isConnecting,
+    isReconnecting,
     error,
     connect,
     disconnect,

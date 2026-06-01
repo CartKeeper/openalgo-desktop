@@ -58,9 +58,11 @@ pub async fn websocket_connect(state: State<'_, AppState>) -> Result<bool> {
     // creds = (api_key_enc, api_key_nonce, api_secret_enc, api_secret_nonce, client_id)
     let api_key = state.security.decrypt(&creds.0, &creds.1)?;
 
-    // Connect
+    // Connect (clone the Arc — connect takes `self: Arc<Self>` so it can hand the
+    // connection to a supervisor task that owns a reference for auto-reconnect).
     state
         .websocket
+        .clone()
         .connect(&broker_id, &client_id, &api_key, &feed_token)
         .await?;
 
