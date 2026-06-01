@@ -119,6 +119,80 @@ pub struct Funds {
     pub collateral: f64,
 }
 
+/// Account activity — trade fills and non-trade events (cash deposits/
+/// withdrawals, ACH transfers, dividends, fees).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountActivity {
+    pub id: String,
+    /// Activity type code (e.g. FILL, CSD, CSW, DIV, FEE, TRANS, JNLC)
+    pub activity_type: String,
+    /// ISO timestamp (trade `transaction_time`) or date (non-trade `date`)
+    pub date: Option<String>,
+    pub symbol: Option<String>,
+    pub side: Option<String>,
+    pub qty: Option<f64>,
+    pub price: Option<f64>,
+    /// Net cash amount for non-trade activities (deposits, dividends, fees)
+    pub net_amount: Option<f64>,
+    pub per_share_amount: Option<f64>,
+    pub order_id: Option<String>,
+    pub status: Option<String>,
+}
+
+/// Account portfolio equity history (aligned time series of equity and P&L).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortfolioHistory {
+    /// Unix epoch seconds for each data point.
+    pub timestamp: Vec<i64>,
+    /// Account equity at each point.
+    pub equity: Vec<f64>,
+    /// Profit/loss vs base value at each point.
+    pub profit_loss: Vec<f64>,
+    /// Profit/loss percent (as a fraction) at each point.
+    pub profit_loss_pct: Vec<f64>,
+    /// Equity at the start of the window.
+    pub base_value: f64,
+    /// Bar resolution (e.g. "1D", "1H").
+    pub timeframe: String,
+}
+
+/// Real-time market clock (open/closed status and next session boundaries).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketClock {
+    /// Current server timestamp (ISO 8601).
+    pub timestamp: String,
+    pub is_open: bool,
+    /// Next market open (ISO 8601).
+    pub next_open: String,
+    /// Next market close (ISO 8601).
+    pub next_close: String,
+}
+
+/// A single trading day from the market calendar.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketCalendarDay {
+    /// Calendar date "YYYY-MM-DD".
+    pub date: String,
+    /// Regular session open "HH:MM".
+    pub open: String,
+    /// Regular session close "HH:MM".
+    pub close: String,
+    /// Extended-hours session open, if provided.
+    pub session_open: Option<String>,
+    /// Extended-hours session close, if provided.
+    pub session_close: Option<String>,
+}
+
+/// A broker-hosted (cloud) watchlist. `symbols` is populated when fetching a
+/// single watchlist; the list endpoint may return it empty.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerWatchlist {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub symbols: Vec<String>,
+}
+
 /// Quote
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Quote {

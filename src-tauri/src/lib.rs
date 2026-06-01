@@ -334,6 +334,20 @@ pub fn run() {
             commands::client_scenarios::update_scenario_position,
             commands::client_scenarios::delete_scenario_position,
             commands::client_scenarios::apply_scenario_trade,
+            // File export
+            commands::export::save_export_file,
+            // Account activities
+            commands::activities::get_account_activities,
+            // Portfolio history
+            commands::funds::get_portfolio_history,
+            // Market status (live clock + calendar)
+            commands::market_status::get_market_clock,
+            commands::market_status::get_market_calendar,
+            // Broker-hosted watchlists
+            commands::broker_watchlist::get_broker_watchlists,
+            commands::broker_watchlist::get_broker_watchlist,
+            commands::broker_watchlist::create_broker_watchlist,
+            commands::broker_watchlist::delete_broker_watchlist,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

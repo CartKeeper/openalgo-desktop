@@ -3,7 +3,7 @@
 //! Handles funds/margin retrieval.
 //! Called by both Tauri commands and REST API.
 
-use crate::brokers::types::Funds;
+use crate::brokers::types::{Funds, PortfolioHistory};
 use crate::error::{AppError, Result};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
@@ -52,6 +52,40 @@ impl FundsService {
             funds,
             mode: "live".to_string(),
         })
+    }
+
+    /// Get account equity history (time series) from the connected broker.
+    ///
+    /// Returns empty series in analyze (sandbox) mode.
+    pub async fn get_portfolio_history(
+        state: &AppState,
+        api_key: Option<&str>,
+        period: &str,
+        timeframe: &str,
+    ) -> Result<PortfolioHistory> {
+        info!("FundsService::get_portfolio_history - {} {}", period, timeframe);
+
+        if state.sqlite.get_analyze_mode().unwrap_or(false) {
+            return Ok(PortfolioHistory {
+                timestamp: Vec::new(),
+                equity: Vec::new(),
+                profit_loss: Vec::new(),
+                profit_loss_pct: Vec::new(),
+                base_value: 0.0,
+                timeframe: timeframe.to_string(),
+            });
+        }
+
+        let (auth_token, broker_id) = Self::get_auth(state, api_key)?;
+
+        let broker = state
+            .brokers
+            .get(&broker_id)
+            .ok_or_else(|| AppError::Broker(format!("Broker '{}' not found", broker_id)))?;
+
+        broker
+            .get_portfolio_history(&auth_token, period, timeframe)
+            .await
     }
 
     // ========================================================================

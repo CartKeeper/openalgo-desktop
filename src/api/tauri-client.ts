@@ -583,8 +583,84 @@ export const holdingsCommands = {
 // Funds Commands
 // ============================================================================
 
+/** Account equity history (aligned time series of equity and P&L). */
+export interface PortfolioHistory {
+  timestamp: number[]
+  equity: number[]
+  profit_loss: number[]
+  profit_loss_pct: number[]
+  base_value: number
+  timeframe: string
+}
+
 export const fundsCommands = {
   getFunds: () => tauriInvoke<Funds>('get_funds'),
+  /** period e.g. "1M"/"1A"; timeframe e.g. "1D"/"1H". */
+  getPortfolioHistory: (period?: string, timeframe?: string) =>
+    tauriInvoke<PortfolioHistory>('get_portfolio_history', { period, timeframe }),
+}
+
+/** Account activity — trade fills and non-trade events (deposits, transfers, dividends, fees). */
+export interface AccountActivity {
+  id: string
+  /** Activity type code (e.g. FILL, CSD, CSW, DIV, FEE, TRANS, JNLC) */
+  activity_type: string
+  /** ISO timestamp (trade) or date (non-trade) */
+  date: string | null
+  symbol: string | null
+  side: string | null
+  qty: number | null
+  price: number | null
+  /** Net cash amount for non-trade activities */
+  net_amount: number | null
+  per_share_amount: number | null
+  order_id: string | null
+  status: string | null
+}
+
+export const activitiesCommands = {
+  getAccountActivities: (pageSize?: number) =>
+    tauriInvoke<AccountActivity[]>('get_account_activities', { pageSize }),
+}
+
+/** Real-time market clock. */
+export interface MarketClock {
+  timestamp: string
+  is_open: boolean
+  next_open: string
+  next_close: string
+}
+
+/** A single trading day from the market calendar. */
+export interface MarketCalendarDay {
+  date: string
+  open: string
+  close: string
+  session_open: string | null
+  session_close: string | null
+}
+
+export const marketStatusCommands = {
+  getMarketClock: () => tauriInvoke<MarketClock>('get_market_clock'),
+  getMarketCalendar: (start?: string, end?: string) =>
+    tauriInvoke<MarketCalendarDay[]>('get_market_calendar', { start, end }),
+}
+
+/** A broker-hosted (cloud) watchlist. */
+export interface BrokerWatchlist {
+  id: string
+  name: string
+  symbols: string[]
+}
+
+export const brokerWatchlistCommands = {
+  getBrokerWatchlists: () => tauriInvoke<BrokerWatchlist[]>('get_broker_watchlists'),
+  getBrokerWatchlist: (id: string) =>
+    tauriInvoke<BrokerWatchlist>('get_broker_watchlist', { id }),
+  createBrokerWatchlist: (name: string, symbols: string[]) =>
+    tauriInvoke<BrokerWatchlist>('create_broker_watchlist', { name, symbols }),
+  deleteBrokerWatchlist: (id: string) =>
+    tauriInvoke<void>('delete_broker_watchlist', { id }),
 }
 
 // ============================================================================
