@@ -324,6 +324,134 @@ fn exit_fees(costs: &Costs, notional: f64, shares: f64) -> f64 {
     f
 }
 
+/// Build a completed Trade, computing pnl_after_fees, fees, and holding period.
+fn close_position(
+    costs: &Costs,
+    shares: f64,
+    entry_price: f64,
+    entry_time: &str,
+    exit_price: f64,
+    exit_time: &str,
+) -> Trade {
+    let entry_cost = shares * entry_price + entry_fees(costs);
+    let exit_value = shares * exit_price - exit_fees(costs, shares * exit_price, shares);
+    let fees = entry_fees(costs) + exit_fees(costs, shares * exit_price, shares);
+    let holding_days = holding_days_between(entry_time, exit_time);
+    Trade {
+        entry_time: entry_time.to_string(),
+        exit_time: exit_time.to_string(),
+        entry_price,
+        exit_price,
+        shares,
+        pnl_after_fees: exit_value - entry_cost,
+        fees,
+        holding_days,
+        long_term: holding_days >= 365,
+    }
+}
+
+/// Whole days between two `YYYY-MM-DD` (or RFC3339-prefixed) timestamps.
+fn holding_days_between(entry: &str, exit: &str) -> i64 {
+    use chrono::NaiveDate;
+    let parse = |s: &str| NaiveDate::parse_from_str(&s[..s.len().min(10)], "%Y-%m-%d").ok();
+    match (parse(entry), parse(exit)) {
+        (Some(a), Some(b)) => (b - a).num_days(),
+        _ => 0,
+    }
+}
+
+impl BacktestService {
+    /// Run the deterministic simulation. Returns the gross equity curve and the
+    /// list of completed (round-trip) trades. Long-only. See module semantics.
+    pub fn simulate(
+        bars: &[Bar],
+        generator: &mut dyn SignalGenerator,
+        cfg: &BacktestConfig,
+    ) -> (Vec<EquityPoint>, Vec<Trade>) {
+        let n = bars.len();
+        let warmup = generator.warmup().max(1).min(n);
+
+        let mut cash = cfg.starting_capital;
+        let mut shares = 0.0f64;
+        let mut entry_price = 0.0f64;
+        let mut entry_time = String::new();
+        let mut pending: Option<Signal> = None;
+
+        let mut trades: Vec<Trade> = Vec::new();
+        let mut equity: Vec<EquityPoint> = Vec::with_capacity(n);
+        let mut peak = cfg.starting_capital;
+
+        let mut push_equity = |ts: &str, eq: f64, peak: &mut f64, out: &mut Vec<EquityPoint>| {
+            if eq > *peak { *peak = eq; }
+            let dd = if *peak > 0.0 { (eq - *peak) / *peak } else { 0.0 };
+            out.push(EquityPoint { timestamp: ts.to_string(), equity: eq, drawdown: dd });
+        };
+
+        for i in warmup..n {
+            // 1) Execute pending order from previous bar at THIS bar's open.
+            if let Some(sig) = pending.take() {
+                let open = bars[i].open;
+                match sig {
+                    Signal::Buy if shares == 0.0 => {
+                        let px = fill_price(open, cfg.costs.slippage_bps, Signal::Buy);
+                        let budget = match cfg.sizing {
+                            Sizing::AllIn => cash,
+                            Sizing::FixedFraction(p) => (cash + shares * open) * p,
+                            Sizing::FixedShares(s) => (s * px).min(cash),
+                        };
+                        let mut qty = budget / px;
+                        if !cfg.fractional { qty = qty.floor(); }
+                        if qty > 0.0 {
+                            let cost = qty * px + entry_fees(&cfg.costs);
+                            if cost <= cash {
+                                cash -= cost;
+                                shares = qty;
+                                entry_price = px;
+                                entry_time = bars[i].timestamp.clone();
+                            }
+                        }
+                    }
+                    Signal::Sell if shares > 0.0 => {
+                        let px = fill_price(open, cfg.costs.slippage_bps, Signal::Sell);
+                        trades.push(close_position(
+                            &cfg.costs, shares, entry_price, &entry_time, px, &bars[i].timestamp,
+                        ));
+                        cash += shares * px - exit_fees(&cfg.costs, shares * px, shares);
+                        shares = 0.0;
+                    }
+                    _ => {}
+                }
+            }
+
+            // 2) Compute this bar's signal; queue actionable ones.
+            match generator.signal(i) {
+                s @ (Signal::Buy | Signal::Sell) => pending = Some(s),
+                Signal::Hold => {}
+            }
+
+            // 3) Record gross mark-to-market equity at close.
+            let eq = cash + shares * bars[i].close;
+            push_equity(&bars[i].timestamp, eq, &mut peak, &mut equity);
+        }
+
+        // Force-close any open position at the final bar's close.
+        if shares > 0.0 && n > 0 {
+            let last = &bars[n - 1];
+            let px = fill_price(last.close, cfg.costs.slippage_bps, Signal::Sell);
+            trades.push(close_position(
+                &cfg.costs, shares, entry_price, &entry_time, px, &last.timestamp,
+            ));
+            cash += shares * px - exit_fees(&cfg.costs, shares * px, shares);
+            shares = 0.0;
+            if let Some(p) = equity.last_mut() {
+                p.equity = cash; // realized; reflect final cash
+            }
+        }
+
+        (equity, trades)
+    }
+}
+
 /// Capital-gains tax via per-bucket netting (losses offset gains within the
 /// same holding bucket; no cross-bucket offset, no carryforward). Returns
 /// (short_term_tax, long_term_tax).
@@ -404,6 +532,46 @@ mod tests {
             holding_days,
             long_term,
         }
+    }
+
+    #[test]
+    fn simulate_executes_at_next_open_and_realizes_pnl() {
+        // 6 bars. Force a deterministic buy then sell using a stub generator.
+        // open == close == value here, slippage 0, no fees, AllIn, whole shares.
+        let closes = [10.0, 10.0, 20.0, 20.0, 30.0, 30.0];
+        let bars = bars_from_closes(&closes);
+
+        struct Stub; // Buy at i=1 (fills at open of i=2 = 20), Sell at i=3 (fills at open i=4 = 30)
+        impl SignalGenerator for Stub {
+            fn prepare(&mut self, _b: &[Bar]) {}
+            fn warmup(&self) -> usize { 1 }
+            fn signal(&self, i: usize) -> Signal {
+                match i { 1 => Signal::Buy, 3 => Signal::Sell, _ => Signal::Hold }
+            }
+        }
+
+        let cfg = BacktestConfig {
+            symbol: "T".into(), exchange: "NASDAQ".into(), interval: "D".into(),
+            from_date: "2024-01-01".into(), to_date: "2024-01-06".into(),
+            starting_capital: 1000.0,
+            sizing: Sizing::AllIn,
+            costs: Costs { commission_per_trade: 0.0, slippage_bps: 0.0, reg_fees_enabled: false },
+            tax: TaxConfig { st_rate: 0.0, lt_rate: 0.0 },
+            fractional: false,
+            risk_free_rate: 0.0,
+            strategy: StrategySpec::SmaCrossover { fast: 1, slow: 1 }, // unused; Stub drives it
+        };
+
+        let (equity, trades) = BacktestService::simulate(&bars, &mut Stub, &cfg);
+        assert_eq!(trades.len(), 1);
+        let t = &trades[0];
+        // $1000 / $20 = 50 shares (whole). Sell at 30 -> pnl 50*(30-20)=500.
+        assert!((t.entry_price - 20.0).abs() < 1e-9);
+        assert!((t.exit_price - 30.0).abs() < 1e-9);
+        assert!((t.shares - 50.0).abs() < 1e-9);
+        assert!((t.pnl_after_fees - 500.0).abs() < 1e-9);
+        // Final equity = 1000 + 500 = 1500 (last point).
+        assert!((equity.last().unwrap().equity - 1500.0).abs() < 1e-6);
     }
 
     #[test]
