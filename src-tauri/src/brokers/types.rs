@@ -24,6 +24,18 @@ pub struct OrderRequest {
     /// market-day notional order instead of a share-quantity order.
     #[serde(default)]
     pub notional: Option<f64>,
+    /// Order class: "simple" (default), "bracket", "oco", "oto".
+    #[serde(default)]
+    pub order_class: Option<String>,
+    /// Take-profit limit price (bracket / oto exit).
+    #[serde(default)]
+    pub take_profit_price: Option<f64>,
+    /// Stop-loss stop price (bracket / oco / oto exit).
+    #[serde(default)]
+    pub stop_loss_price: Option<f64>,
+    /// Optional stop-loss limit price (turns the stop-loss into a stop-limit).
+    #[serde(default)]
+    pub stop_loss_limit_price: Option<f64>,
     /// Broker-specific symbol format (e.g., "NSE:RELIANCE-EQ" for Fyers)
     /// Set by OrderService after looking up from symbol cache
     #[serde(skip_deserializing)]

@@ -119,6 +119,10 @@ impl SmartOrderService {
             trail_price: None,
             trail_percent: None,
             notional: None,
+            order_class: None,
+            take_profit_price: None,
+            stop_loss_price: None,
+            stop_loss_limit_price: None,
             broker_symbol: None,  // Set by OrderService from symbol cache
             symbol_token: None,   // Set by OrderService from symbol cache
         };
@@ -172,6 +176,10 @@ impl SmartOrderService {
                 trail_price: None,
                 trail_percent: None,
                 notional: None,
+                order_class: None,
+                take_profit_price: None,
+                stop_loss_price: None,
+                stop_loss_limit_price: None,
                 broker_symbol: None,  // Set by OrderService from symbol cache
                 symbol_token: None,   // Set by OrderService from symbol cache
             };

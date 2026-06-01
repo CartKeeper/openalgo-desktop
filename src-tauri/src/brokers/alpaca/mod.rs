@@ -87,6 +87,29 @@ impl AlpacaBroker {
             "time_in_force".into(),
             serde_json::json!(map_validity(&order.validity)),
         );
+
+        // Bracket / OCO / OTO exit legs.
+        if let Some(class) = order.order_class.as_deref() {
+            if class != "simple" {
+                body.insert("order_class".into(), serde_json::json!(class));
+            }
+        }
+        if let Some(tp) = order.take_profit_price {
+            body.insert(
+                "take_profit".into(),
+                serde_json::json!({ "limit_price": tp.to_string() }),
+            );
+        }
+        if order.stop_loss_price.is_some() || order.stop_loss_limit_price.is_some() {
+            let mut sl = serde_json::Map::new();
+            if let Some(sp) = order.stop_loss_price {
+                sl.insert("stop_price".into(), serde_json::json!(sp.to_string()));
+            }
+            if let Some(lp) = order.stop_loss_limit_price {
+                sl.insert("limit_price".into(), serde_json::json!(lp.to_string()));
+            }
+            body.insert("stop_loss".into(), serde_json::Value::Object(sl));
+        }
         body
     }
 }
@@ -1274,9 +1297,35 @@ mod order_body_tests {
             trail_price: None,
             trail_percent: None,
             notional,
+            order_class: None,
+            take_profit_price: None,
+            stop_loss_price: None,
+            stop_loss_limit_price: None,
             broker_symbol: None,
             symbol_token: None,
         }
+    }
+
+    #[test]
+    fn bracket_order_includes_tp_and_sl() {
+        let mut r = req(None, 1.0);
+        r.order_class = Some("bracket".into());
+        r.take_profit_price = Some(110.0);
+        r.stop_loss_price = Some(90.0);
+        let body = AlpacaBroker::build_order_body(&r);
+        assert_eq!(body.get("order_class").and_then(|v| v.as_str()), Some("bracket"));
+        assert_eq!(
+            body.get("take_profit")
+                .and_then(|v| v.get("limit_price"))
+                .and_then(|v| v.as_str()),
+            Some("110")
+        );
+        assert_eq!(
+            body.get("stop_loss")
+                .and_then(|v| v.get("stop_price"))
+                .and_then(|v| v.as_str()),
+            Some("90")
+        );
     }
 
     #[test]
