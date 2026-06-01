@@ -222,6 +222,88 @@ impl SignalGenerator for SmaCrossover {
     }
 }
 
+use crate::services::indicators_service::{
+    compute_bollinger, compute_ema, compute_macd, compute_rsi,
+};
+
+pub struct EmaCrossover { fast: usize, slow: usize, fast_v: Vec<f64>, slow_v: Vec<f64> }
+impl EmaCrossover { pub fn new(fast: usize, slow: usize) -> Self { Self { fast, slow, fast_v: vec![], slow_v: vec![] } } }
+impl SignalGenerator for EmaCrossover {
+    fn prepare(&mut self, bars: &[Bar]) {
+        let o = to_ohlcv(bars);
+        self.fast_v = compute_ema(&o, self.fast).values.iter().map(|p| p.value).collect();
+        self.slow_v = compute_ema(&o, self.slow).values.iter().map(|p| p.value).collect();
+    }
+    fn warmup(&self) -> usize { self.slow.max(self.fast) }
+    fn signal(&self, i: usize) -> Signal {
+        if crossed_above(&self.fast_v, &self.slow_v, i) { Signal::Buy }
+        else if crossed_below(&self.fast_v, &self.slow_v, i) { Signal::Sell }
+        else { Signal::Hold }
+    }
+}
+
+pub struct RsiThreshold { period: usize, oversold: f64, overbought: f64, rsi_v: Vec<f64> }
+impl RsiThreshold { pub fn new(period: usize, oversold: f64, overbought: f64) -> Self { Self { period, oversold, overbought, rsi_v: vec![] } } }
+impl SignalGenerator for RsiThreshold {
+    fn prepare(&mut self, bars: &[Bar]) {
+        let o = to_ohlcv(bars);
+        self.rsi_v = compute_rsi(&o, self.period).values.iter().map(|p| p.value).collect();
+    }
+    fn warmup(&self) -> usize { self.period + 1 }
+    fn signal(&self, i: usize) -> Signal {
+        if crossed_above_scalar(&self.rsi_v, self.oversold, i) { Signal::Buy }
+        else if crossed_below_scalar(&self.rsi_v, self.overbought, i) { Signal::Sell }
+        else { Signal::Hold }
+    }
+}
+
+pub struct MacdCross { fast: usize, slow: usize, signal_p: usize, macd_v: Vec<f64>, sig_v: Vec<f64> }
+impl MacdCross { pub fn new(fast: usize, slow: usize, signal: usize) -> Self { Self { fast, slow, signal_p: signal, macd_v: vec![], sig_v: vec![] } } }
+impl SignalGenerator for MacdCross {
+    fn prepare(&mut self, bars: &[Bar]) {
+        let o = to_ohlcv(bars);
+        let r = compute_macd(&o, self.fast, self.slow, self.signal_p);
+        self.macd_v = r.values.iter().map(|p| p.value).collect();
+        self.sig_v = r.values.iter().map(|p| p.secondary_value.unwrap_or(0.0)).collect();
+    }
+    fn warmup(&self) -> usize { self.slow + self.signal_p }
+    fn signal(&self, i: usize) -> Signal {
+        if crossed_above(&self.macd_v, &self.sig_v, i) { Signal::Buy }
+        else if crossed_below(&self.macd_v, &self.sig_v, i) { Signal::Sell }
+        else { Signal::Hold }
+    }
+}
+
+pub struct BollingerReversion { period: usize, std_dev: f64, close_v: Vec<f64>, upper_v: Vec<f64>, lower_v: Vec<f64> }
+impl BollingerReversion { pub fn new(period: usize, std_dev: f64) -> Self { Self { period, std_dev, close_v: vec![], upper_v: vec![], lower_v: vec![] } } }
+impl SignalGenerator for BollingerReversion {
+    fn prepare(&mut self, bars: &[Bar]) {
+        let o = to_ohlcv(bars);
+        let r = compute_bollinger(&o, self.period, self.std_dev);
+        self.close_v = bars.iter().map(|b| b.close).collect();
+        self.upper_v = r.values.iter().map(|p| p.secondary_value.unwrap_or(f64::INFINITY)).collect();
+        self.lower_v = r.values.iter().map(|p| p.tertiary_value.unwrap_or(f64::NEG_INFINITY)).collect();
+    }
+    fn warmup(&self) -> usize { self.period }
+    fn signal(&self, i: usize) -> Signal {
+        // Reversion: price dipping below lower band = Buy; popping above upper = Sell.
+        if crossed_below(&self.close_v, &self.lower_v, i) { Signal::Buy }
+        else if crossed_above(&self.close_v, &self.upper_v, i) { Signal::Sell }
+        else { Signal::Hold }
+    }
+}
+
+/// Build a boxed signal generator from a strategy spec.
+pub fn build_generator(spec: &StrategySpec) -> Box<dyn SignalGenerator> {
+    match *spec {
+        StrategySpec::SmaCrossover { fast, slow } => Box::new(SmaCrossover::new(fast, slow)),
+        StrategySpec::EmaCrossover { fast, slow } => Box::new(EmaCrossover::new(fast, slow)),
+        StrategySpec::RsiThreshold { period, oversold, overbought } => Box::new(RsiThreshold::new(period, oversold, overbought)),
+        StrategySpec::MacdCross { fast, slow, signal } => Box::new(MacdCross::new(fast, slow, signal)),
+        StrategySpec::BollingerReversion { period, std_dev } => Box::new(BollingerReversion::new(period, std_dev)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +339,33 @@ mod tests {
         let buy = signals.iter().position(|s| *s == Signal::Buy).unwrap();
         let sell = signals.iter().position(|s| *s == Signal::Sell).unwrap();
         assert!(buy < sell);
+    }
+
+    #[test]
+    fn rsi_threshold_buys_crossing_up_through_oversold() {
+        // Falling then rising sharply -> RSI dips low then crosses up through 30.
+        let closes = [50.0, 46.0, 42.0, 39.0, 37.0, 36.0, 44.0, 52.0, 60.0];
+        let bars = bars_from_closes(&closes);
+        let mut gen = RsiThreshold::new(3, 30.0, 70.0);
+        gen.prepare(&bars);
+        let signals: Vec<Signal> = (0..bars.len()).map(|i| gen.signal(i)).collect();
+        assert!(signals.contains(&Signal::Buy), "{signals:?}");
+    }
+
+    #[test]
+    fn ema_macd_bollinger_construct_and_produce_signals() {
+        let closes: Vec<f64> = (0..60).map(|i| 100.0 + (i as f64 * 0.3).sin() * 10.0).collect();
+        let bars = bars_from_closes(&closes);
+        for mut g in [
+            Box::new(EmaCrossover::new(5, 13)) as Box<dyn SignalGenerator>,
+            Box::new(MacdCross::new(12, 26, 9)),
+            Box::new(BollingerReversion::new(20, 2.0)),
+        ] {
+            g.prepare(&bars);
+            // Must not panic and must return a valid signal for every index.
+            for i in 0..bars.len() {
+                let _ = g.signal(i);
+            }
+        }
     }
 }
