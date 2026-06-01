@@ -324,6 +324,15 @@ fn exit_fees(costs: &Costs, notional: f64, shares: f64) -> f64 {
     f
 }
 
+/// Capital-gains tax via per-bucket netting (losses offset gains within the
+/// same holding bucket; no cross-bucket offset, no carryforward). Returns
+/// (short_term_tax, long_term_tax).
+fn compute_tax(trades: &[Trade], tax: &TaxConfig) -> (f64, f64) {
+    let st_net: f64 = trades.iter().filter(|t| !t.long_term).map(|t| t.pnl_after_fees).sum();
+    let lt_net: f64 = trades.iter().filter(|t| t.long_term).map(|t| t.pnl_after_fees).sum();
+    (st_net.max(0.0) * tax.st_rate, lt_net.max(0.0) * tax.lt_rate)
+}
+
 /// Build a boxed signal generator from a strategy spec.
 pub fn build_generator(spec: &StrategySpec) -> Box<dyn SignalGenerator> {
     match *spec {
@@ -381,6 +390,42 @@ mod tests {
         gen.prepare(&bars);
         let signals: Vec<Signal> = (0..bars.len()).map(|i| gen.signal(i)).collect();
         assert!(signals.contains(&Signal::Buy), "{signals:?}");
+    }
+
+    fn mk_trade(pnl: f64, holding_days: i64, long_term: bool) -> Trade {
+        Trade {
+            entry_time: "2024-01-01".into(),
+            exit_time: "2024-01-02".into(),
+            entry_price: 0.0,
+            exit_price: 0.0,
+            shares: 0.0,
+            pnl_after_fees: pnl,
+            fees: 0.0,
+            holding_days,
+            long_term,
+        }
+    }
+
+    #[test]
+    fn tax_nets_losses_within_holding_buckets() {
+        let tax = TaxConfig { st_rate: 0.35, lt_rate: 0.15 };
+        let trades = vec![
+            mk_trade(1000.0, 100, false), // ST +1000
+            mk_trade(-400.0, 50, false),  // ST -400  -> ST net 600
+            mk_trade(2000.0, 400, true),  // LT +2000 -> LT net 2000
+        ];
+        let (st, lt) = compute_tax(&trades, &tax);
+        assert!((st - 600.0 * 0.35).abs() < 1e-6, "st {st}");
+        assert!((lt - 2000.0 * 0.15).abs() < 1e-6, "lt {lt}");
+    }
+
+    #[test]
+    fn tax_is_zero_when_bucket_net_is_a_loss() {
+        let tax = TaxConfig { st_rate: 0.35, lt_rate: 0.15 };
+        let trades = vec![mk_trade(-1000.0, 30, false), mk_trade(200.0, 30, false)];
+        let (st, lt) = compute_tax(&trades, &tax);
+        assert_eq!(st, 0.0);
+        assert_eq!(lt, 0.0);
     }
 
     #[test]
