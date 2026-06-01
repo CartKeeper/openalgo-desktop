@@ -333,9 +333,11 @@ fn close_position(
     exit_price: f64,
     exit_time: &str,
 ) -> Trade {
-    let entry_cost = shares * entry_price + entry_fees(costs);
-    let exit_value = shares * exit_price - exit_fees(costs, shares * exit_price, shares);
-    let fees = entry_fees(costs) + exit_fees(costs, shares * exit_price, shares);
+    let ef = entry_fees(costs);
+    let xf = exit_fees(costs, shares * exit_price, shares);
+    let entry_cost = shares * entry_price + ef;
+    let exit_value = shares * exit_price - xf;
+    let fees = ef + xf;
     let holding_days = holding_days_between(entry_time, exit_time);
     Trade {
         entry_time: entry_time.to_string(),
@@ -361,13 +363,15 @@ fn holding_days_between(entry: &str, exit: &str) -> i64 {
 }
 
 impl BacktestService {
-    /// Run the deterministic simulation. Returns the gross equity curve and the
-    /// list of completed (round-trip) trades. Long-only. See module semantics.
+    /// Run the deterministic simulation. Returns the gross equity curve, the
+    /// list of completed (round-trip) trades, and the count of bars during which
+    /// a position was open (used to compute true time_in_market fraction).
+    /// Long-only. See module semantics.
     pub fn simulate(
         bars: &[Bar],
         generator: &mut dyn SignalGenerator,
         cfg: &BacktestConfig,
-    ) -> (Vec<EquityPoint>, Vec<Trade>) {
+    ) -> (Vec<EquityPoint>, Vec<Trade>, usize) {
         let n = bars.len();
         let warmup = generator.warmup().max(1).min(n);
 
@@ -380,6 +384,7 @@ impl BacktestService {
         let mut trades: Vec<Trade> = Vec::new();
         let mut equity: Vec<EquityPoint> = Vec::with_capacity(n);
         let mut peak = cfg.starting_capital;
+        let mut bars_in_position: usize = 0;
 
         let mut push_equity = |ts: &str, eq: f64, peak: &mut f64, out: &mut Vec<EquityPoint>| {
             if eq > *peak { *peak = eq; }
@@ -430,6 +435,8 @@ impl BacktestService {
             }
 
             // 3) Record gross mark-to-market equity at close.
+            //    Count bars where a position is held (used for time_in_market).
+            if shares > 0.0 { bars_in_position += 1; }
             let eq = cash + shares * bars[i].close;
             push_equity(&bars[i].timestamp, eq, &mut peak, &mut equity);
         }
@@ -445,10 +452,12 @@ impl BacktestService {
             shares = 0.0;
             if let Some(p) = equity.last_mut() {
                 p.equity = cash; // realized; reflect final cash
+                if cash > peak { peak = cash; }
+                p.drawdown = if peak > 0.0 { (cash - peak) / peak } else { 0.0 };
             }
         }
 
-        (equity, trades)
+        (equity, trades, bars_in_position)
     }
 }
 
@@ -471,6 +480,7 @@ impl BacktestService {
         equity: &[EquityPoint],
         trades: &[Trade],
         cfg: &BacktestConfig,
+        bars_in_position: usize,
     ) -> BacktestMetrics {
         let values: Vec<f64> = equity.iter().map(|e| e.equity).collect();
         let start = cfg.starting_capital;
@@ -509,8 +519,7 @@ impl BacktestService {
         let avg_holding_days = if num_trades > 0 {
             trades.iter().map(|t| t.holding_days as f64).sum::<f64>() / num_trades as f64
         } else { 0.0 };
-        let bars_in_market: usize = trades.iter().map(|t| t.holding_days.max(0) as usize).sum();
-        let time_in_market = if !equity.is_empty() { (bars_in_market as f64 / equity.len() as f64).min(1.0) } else { 0.0 };
+        let time_in_market = if equity.is_empty() { 0.0 } else { bars_in_position as f64 / equity.len() as f64 };
 
         let total_fees: f64 = trades.iter().map(|t| t.fees).sum();
         let (st_tax, lt_tax) = compute_tax(trades, &cfg.tax);
@@ -546,12 +555,15 @@ impl BacktestService {
     }
 
     /// Run a full backtest over already-loaded bars (no I/O).
-    pub fn run(bars: &[Bar], cfg: &BacktestConfig, warnings: Vec<String>) -> BacktestResult {
+    pub fn run(bars: &[Bar], cfg: &BacktestConfig, mut warnings: Vec<String>) -> BacktestResult {
         let mut generator = build_generator(&cfg.strategy);
         generator.prepare(bars);
         let warmup = generator.warmup().max(1).min(bars.len());
-        let (equity_curve, trades) = Self::simulate(bars, generator.as_mut(), cfg);
-        let metrics = Self::compute_metrics(&equity_curve, &trades, cfg);
+        warnings.push(format!(
+            "Equity curve starts after {warmup}-bar indicator warmup; earlier history is used only to seed indicators."
+        ));
+        let (equity_curve, trades, bars_in_position) = Self::simulate(bars, generator.as_mut(), cfg);
+        let metrics = Self::compute_metrics(&equity_curve, &trades, cfg, bars_in_position);
         let benchmark = Self::benchmark(bars, warmup.min(bars.len().saturating_sub(1)), cfg.starting_capital);
         BacktestResult { config: cfg.clone(), equity_curve, trades, metrics, benchmark, warnings }
     }
@@ -682,8 +694,8 @@ mod tests {
             tax: TaxConfig { st_rate: 0.35, lt_rate: 0.15 }, fractional: false,
             risk_free_rate: 0.0, strategy: StrategySpec::SmaCrossover { fast: 1, slow: 1 },
         };
-        let (equity, trades) = BacktestService::simulate(&bars, &mut Stub, &cfg);
-        let m = BacktestService::compute_metrics(&equity, &trades, &cfg);
+        let (equity, trades, bars_in_position) = BacktestService::simulate(&bars, &mut Stub, &cfg);
+        let m = BacktestService::compute_metrics(&equity, &trades, &cfg, bars_in_position);
         // total return = 1500/1000 - 1 = 0.5
         assert!((m.total_return - 0.5).abs() < 1e-6);
         assert_eq!(m.num_trades, 1);
@@ -725,7 +737,8 @@ mod tests {
             strategy: StrategySpec::SmaCrossover { fast: 1, slow: 1 }, // unused; Stub drives it
         };
 
-        let (equity, trades) = BacktestService::simulate(&bars, &mut Stub, &cfg);
+        let (equity, trades, bars_in_position) = BacktestService::simulate(&bars, &mut Stub, &cfg);
+        assert!(bars_in_position > 0, "expected bars_in_position > 0, got {bars_in_position}");
         assert_eq!(trades.len(), 1);
         let t = &trades[0];
         // $1000 / $20 = 50 shares (whole). Sell at 30 -> pnl 50*(30-20)=500.
