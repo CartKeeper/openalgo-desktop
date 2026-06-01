@@ -1,4 +1,4 @@
-import { AreaSeries, ColorType, CrosshairMode, LineSeries, createChart, type IChartApi, type ISeriesApi } from 'lightweight-charts'
+import { AreaSeries, ColorType, CrosshairMode, LineSeries, createChart, type IChartApi } from 'lightweight-charts'
 import { useEffect, useRef } from 'react'
 import { useThemeStore } from '@/stores/themeStore'
 import type { EquityPoint } from '@/api/backtest'
@@ -12,8 +12,6 @@ export function EquityChart({ equityCurve }: EquityChartProps) {
   const isDark = mode === 'dark'
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
-  const equitySeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
-
   useEffect(() => {
     if (!containerRef.current || equityCurve.length === 0) return
 
@@ -72,7 +70,6 @@ export function EquityChart({ equityCurve }: EquityChartProps) {
     })
 
     equitySeries.setData(data)
-    equitySeriesRef.current = equitySeries
     chartRef.current = chart
     chart.timeScale().fitContent()
 

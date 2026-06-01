@@ -6,6 +6,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core'
+import { backtestApi } from './backtest'
 
 // ============================================================================
 // Types
@@ -1077,6 +1078,7 @@ export const tauri = {
   websocket: websocketCommands,
   providers: providerCommands,
   portfolio: portfolioCommands,
+  backtest: backtestApi,
 }
 
 export default tauri

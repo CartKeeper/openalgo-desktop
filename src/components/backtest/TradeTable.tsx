@@ -22,39 +22,80 @@ function fmtNum(v: number, digits = 4) {
   return v.toFixed(digits)
 }
 
+interface ContextMenu {
+  x: number
+  y: number
+  rowId: string
+}
+
 export function TradeTable({ trades }: TradeTableProps) {
   // Selection state — Set of trade index strings (trades have no unique id, so use index)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const anchorRef = useRef<string | null>(null)
+  // Track the set of IDs added by the last shift-range so we can replace it
+  const lastShiftRangeRef = useRef<Set<string>>(new Set())
+  // Focused row for keyboard navigation
+  const [focusedIdx, setFocusedIdx] = useState<number | null>(null)
+  // aria-live announcement
+  const [announcement, setAnnouncement] = useState('')
+  // Context menu state
+  const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
 
   const tradeIds = trades.map((_, i) => String(i))
 
   const allSelected = selected.size === tradeIds.length && tradeIds.length > 0
   const someSelected = selected.size > 0 && !allSelected
 
-  // Keyboard handler: Escape clears selection
+  // Announce selection count changes
+  useEffect(() => {
+    if (selected.size > 0) {
+      setAnnouncement(`${selected.size} trade${selected.size !== 1 ? 's' : ''} selected`)
+    } else {
+      setAnnouncement('')
+    }
+  }, [selected.size])
+
+  // Close context menu on outside click, Escape, or scroll
+  useEffect(() => {
+    if (!contextMenu) return
+    const handleClick = () => setContextMenu(null)
+    const handleScroll = () => setContextMenu(null)
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setContextMenu(null)
+    }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('scroll', handleScroll, true)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('scroll', handleScroll, true)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [contextMenu])
+
+  // Global Escape clears selection; handled in table keydown below for table focus,
+  // but keep global handler for safety when focus is elsewhere
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setSelected(new Set())
+      if (e.key === 'Escape') {
+        setSelected(new Set())
+        lastShiftRangeRef.current = new Set()
+        anchorRef.current = null
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [])
 
-  // Ctrl+A selects all when table has focus
-  const handleTableKeyDown = (e: React.KeyboardEvent) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
-      e.preventDefault()
-      setSelected(new Set(tradeIds))
-    }
-  }
-
   const toggleAll = () => {
     if (allSelected || someSelected) {
       setSelected(new Set())
+      lastShiftRangeRef.current = new Set()
       anchorRef.current = null
     } else {
       setSelected(new Set(tradeIds))
+      lastShiftRangeRef.current = new Set()
       anchorRef.current = null
     }
   }
@@ -67,18 +108,30 @@ export function TradeTable({ trades }: TradeTableProps) {
         const next = new Set(prev)
 
         if (e.shiftKey && anchorRef.current !== null) {
-          // Shift+click: range select from anchor to id
+          // Shift+click: REPLACE last shift-range with new anchor→target range
+          // Remove the previously shift-selected IDs first
+          for (const prevId of lastShiftRangeRef.current) {
+            next.delete(prevId)
+          }
+
           const anchorIdx = tradeIds.indexOf(anchorRef.current)
           const targetIdx = tradeIds.indexOf(id)
           const [lo, hi] = anchorIdx < targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx]
+          const newRange = new Set<string>()
           for (let i = lo; i <= hi; i++) {
-            next.add(tradeIds[i])
+            newRange.add(tradeIds[i])
           }
+          // Add new range
+          for (const rangeId of newRange) {
+            next.add(rangeId)
+          }
+          lastShiftRangeRef.current = newRange
           return next
         }
 
         if (e.ctrlKey || e.metaKey) {
-          // Ctrl+click: additive toggle
+          // Ctrl+click: additive toggle — clears shift range tracking
+          lastShiftRangeRef.current = new Set()
           if (next.has(id)) {
             next.delete(id)
           } else {
@@ -89,6 +142,7 @@ export function TradeTable({ trades }: TradeTableProps) {
         }
 
         // Plain click: select only this row
+        lastShiftRangeRef.current = new Set()
         if (next.size === 1 && next.has(id)) {
           next.clear()
           anchorRef.current = null
@@ -100,15 +154,112 @@ export function TradeTable({ trades }: TradeTableProps) {
         return next
       })
 
-      if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
-        anchorRef.current = id
+      if (!e.shiftKey) {
+        if (!e.ctrlKey && !e.metaKey) {
+          anchorRef.current = id
+        }
+        setFocusedIdx(tradeIds.indexOf(id))
       }
     },
     [tradeIds]
   )
 
-  const copySelected = async () => {
-    const rows = Array.from(selected)
+  // Keyboard navigation handler on table container
+  const handleTableKeyDown = (e: React.KeyboardEvent) => {
+    // Ctrl/Cmd+A: select all
+    if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+      e.preventDefault()
+      setSelected(new Set(tradeIds))
+      lastShiftRangeRef.current = new Set()
+      return
+    }
+
+    // Escape: clear selection
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      setSelected(new Set())
+      lastShiftRangeRef.current = new Set()
+      anchorRef.current = null
+      return
+    }
+
+    const currentIdx = focusedIdx ?? -1
+
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      const delta = e.key === 'ArrowDown' ? 1 : -1
+      const nextIdx = Math.max(0, Math.min(tradeIds.length - 1, currentIdx + delta))
+
+      if (e.shiftKey && anchorRef.current !== null) {
+        // Shift+Arrow: extend selection from anchor to nextIdx (replace last shift range)
+        setSelected((prev) => {
+          const next = new Set(prev)
+          for (const prevId of lastShiftRangeRef.current) {
+            next.delete(prevId)
+          }
+          const anchorIdx = tradeIds.indexOf(anchorRef.current!)
+          const [lo, hi] = anchorIdx < nextIdx ? [anchorIdx, nextIdx] : [nextIdx, anchorIdx]
+          const newRange = new Set<string>()
+          for (let i = lo; i <= hi; i++) {
+            newRange.add(tradeIds[i])
+          }
+          for (const rangeId of newRange) {
+            next.add(rangeId)
+          }
+          lastShiftRangeRef.current = newRange
+          return next
+        })
+      }
+
+      setFocusedIdx(nextIdx)
+      return
+    }
+
+    if ((e.key === 'Home' || e.key === 'End') && e.shiftKey && anchorRef.current !== null) {
+      e.preventDefault()
+      const targetIdx = e.key === 'Home' ? 0 : tradeIds.length - 1
+      setSelected((prev) => {
+        const next = new Set(prev)
+        for (const prevId of lastShiftRangeRef.current) {
+          next.delete(prevId)
+        }
+        const anchorIdx = tradeIds.indexOf(anchorRef.current!)
+        const [lo, hi] = anchorIdx < targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx]
+        const newRange = new Set<string>()
+        for (let i = lo; i <= hi; i++) {
+          newRange.add(tradeIds[i])
+        }
+        for (const rangeId of newRange) {
+          next.add(rangeId)
+        }
+        lastShiftRangeRef.current = newRange
+        return next
+      })
+      setFocusedIdx(targetIdx)
+      return
+    }
+
+    // Space: toggle focused row
+    if (e.key === ' ' && currentIdx >= 0) {
+      e.preventDefault()
+      const id = tradeIds[currentIdx]
+      lastShiftRangeRef.current = new Set()
+      setSelected((prev) => {
+        const next = new Set(prev)
+        if (next.has(id)) {
+          next.delete(id)
+        } else {
+          next.add(id)
+          anchorRef.current = id
+        }
+        return next
+      })
+    }
+  }
+
+  const copySelected = async (idsToUse?: Set<string>) => {
+    const ids = idsToUse ?? selected
+    const rows = Array.from(ids)
       .map(Number)
       .sort((a, b) => a - b)
       .map((i) => {
@@ -148,6 +299,40 @@ export function TradeTable({ trades }: TradeTableProps) {
     await saveTextFile('backtest-trades.csv', [header, ...rows].join('\n'))
   }
 
+  const handleContextMenu = (e: React.MouseEvent, id: string) => {
+    e.preventDefault()
+    // OS behavior: right-clicking an unselected row selects only it
+    if (!selected.has(id)) {
+      setSelected(new Set([id]))
+      lastShiftRangeRef.current = new Set()
+      anchorRef.current = id
+    }
+    setContextMenu({ x: e.clientX, y: e.clientY, rowId: id })
+  }
+
+  const handleContextCopy = async () => {
+    setContextMenu(null)
+    await copySelected()
+  }
+
+  const handleContextExport = async () => {
+    setContextMenu(null)
+    await exportCsv()
+  }
+
+  const handleContextSelectAll = () => {
+    setContextMenu(null)
+    setSelected(new Set(tradeIds))
+    lastShiftRangeRef.current = new Set()
+  }
+
+  const handleContextClearSelection = () => {
+    setContextMenu(null)
+    setSelected(new Set())
+    lastShiftRangeRef.current = new Set()
+    anchorRef.current = null
+  }
+
   if (trades.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -159,6 +344,15 @@ export function TradeTable({ trades }: TradeTableProps) {
 
   return (
     <div>
+      {/* aria-live region for screen reader announcements */}
+      <span
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
+      >
+        {announcement}
+      </span>
+
       {/* Action bar — appears when ≥1 selected */}
       {selected.size > 0 && (
         <div
@@ -172,7 +366,7 @@ export function TradeTable({ trades }: TradeTableProps) {
             <button
               type="button"
               className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
-              onClick={() => { setSelected(new Set()); anchorRef.current = null }}
+              onClick={() => { setSelected(new Set()); lastShiftRangeRef.current = new Set(); anchorRef.current = null }}
             >
               <X className="w-3 h-3" /> Clear
             </button>
@@ -182,7 +376,7 @@ export function TradeTable({ trades }: TradeTableProps) {
               size="sm"
               variant="outline"
               className="h-8 gap-1.5 text-xs"
-              onClick={copySelected}
+              onClick={() => copySelected()}
             >
               <Clipboard className="w-3.5 h-3.5" />
               Copy
@@ -201,9 +395,14 @@ export function TradeTable({ trades }: TradeTableProps) {
       )}
 
       <div
-        className="overflow-x-auto rounded-lg border border-border"
+        ref={containerRef}
+        className="overflow-x-auto rounded-lg border border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         onKeyDown={handleTableKeyDown}
         tabIndex={0}
+        role="grid"
+        aria-label="Trade results"
+        aria-multiselectable="true"
+        aria-rowcount={trades.length}
       >
         <table className="w-full text-sm">
           <thead>
@@ -237,6 +436,7 @@ export function TradeTable({ trades }: TradeTableProps) {
             {trades.map((trade, i) => {
               const id = String(i)
               const isSelected = selected.has(id)
+              const isFocused = focusedIdx === i
               const isWin = trade.pnl_after_fees >= 0
 
               return (
@@ -246,12 +446,15 @@ export function TradeTable({ trades }: TradeTableProps) {
                   data-selected={isSelected}
                   data-item-id={id}
                   aria-selected={isSelected}
+                  aria-rowindex={i + 1}
                   onClick={(e) => handleRowClick(id, e)}
+                  onContextMenu={(e) => handleContextMenu(e, id)}
                   className={cn(
                     'border-b border-border/60 last:border-0 cursor-pointer transition-colors',
                     isSelected
                       ? 'bg-accent/8 border-l-[3px] border-l-accent'
-                      : 'hover:bg-muted/30'
+                      : 'hover:bg-muted/30',
+                    isFocused && 'ring-2 ring-inset ring-accent'
                   )}
                   style={{ height: 48 }}
                 >
@@ -312,6 +515,53 @@ export function TradeTable({ trades }: TradeTableProps) {
           </Button>
         )}
       </div>
+
+      {/* Right-click context menu */}
+      {contextMenu && (
+        <div
+          role="menu"
+          aria-label="Trade actions"
+          className="fixed z-50 min-w-40 rounded-lg border border-border bg-popover shadow-lg py-1 text-sm"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            role="menuitem"
+            type="button"
+            className="flex items-center gap-2 w-full px-3 py-1.5 text-left hover:bg-muted/60 transition-colors"
+            onClick={handleContextCopy}
+          >
+            <Clipboard className="w-3.5 h-3.5 text-muted-foreground" />
+            Copy
+          </button>
+          <button
+            role="menuitem"
+            type="button"
+            className="flex items-center gap-2 w-full px-3 py-1.5 text-left hover:bg-muted/60 transition-colors"
+            onClick={handleContextExport}
+          >
+            <Download className="w-3.5 h-3.5 text-muted-foreground" />
+            Export CSV
+          </button>
+          <div className="my-1 border-t border-border/60" />
+          <button
+            role="menuitem"
+            type="button"
+            className="flex items-center gap-2 w-full px-3 py-1.5 text-left hover:bg-muted/60 transition-colors"
+            onClick={handleContextSelectAll}
+          >
+            Select All
+          </button>
+          <button
+            role="menuitem"
+            type="button"
+            className="flex items-center gap-2 w-full px-3 py-1.5 text-left hover:bg-muted/60 transition-colors text-muted-foreground"
+            onClick={handleContextClearSelection}
+          >
+            Clear Selection
+          </button>
+        </div>
+      )}
     </div>
   )
 }

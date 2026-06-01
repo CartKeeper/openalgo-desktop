@@ -73,7 +73,7 @@ function StrategyParams({ kind, params, onChange }: StrategyParamsProps) {
         value={params[key] ?? ''}
         onChange={(e) => onChange(key, e.target.value)}
         placeholder={placeholder}
-        className="h-9 text-sm"
+        className="h-10 text-sm"
       />
     </div>
   )
@@ -133,7 +133,7 @@ export default function Backtest() {
   })
   const [symbol, setSymbol] = useState('AAPL')
   const [exchange, setExchange] = useState('NASDAQ')
-  const [interval, setInterval] = useState('D')
+  const [barInterval, setBarInterval] = useState('D')
   const [fromDate, setFromDate] = useState('2020-01-01')
   const [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10))
   const [startingCapital, setStartingCapital] = useState('100000')
@@ -174,7 +174,7 @@ export default function Backtest() {
     return {
       symbol: symbol.trim().toUpperCase(),
       exchange: exchange.trim().toUpperCase(),
-      interval,
+      interval: barInterval,
       from_date: fromDate,
       to_date: toDate,
       starting_capital: Number(startingCapital),
@@ -232,7 +232,7 @@ export default function Backtest() {
       // Populate form from config
       setSymbol(cfg.symbol)
       setExchange(cfg.exchange)
-      setInterval(cfg.interval)
+      setBarInterval(cfg.interval)
       setFromDate(cfg.from_date)
       setToDate(cfg.to_date)
       setStartingCapital(String(cfg.starting_capital))
@@ -422,7 +422,7 @@ export default function Backtest() {
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <Label className="text-xs">Interval</Label>
-                  <Select value={interval} onValueChange={setInterval}>
+                  <Select value={barInterval} onValueChange={setBarInterval}>
                     <SelectTrigger className="h-10">
                       <SelectValue />
                     </SelectTrigger>
@@ -532,7 +532,7 @@ export default function Backtest() {
                 disabled={pageState.status === 'loading'}
               >
                 {pageState.status === 'loading' ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" />
                 ) : (
                   <Play className="w-4 h-4" />
                 )}
