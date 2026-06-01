@@ -47,6 +47,7 @@ pub mod alert_service;
 pub mod activities_service;
 pub mod market_status_service;
 pub mod broker_watchlist_service;
+pub mod backtest_service;
 
 // Re-export commonly used types and services
 pub use activities_service::ActivitiesService;
