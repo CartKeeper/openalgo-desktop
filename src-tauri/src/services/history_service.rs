@@ -121,7 +121,7 @@ impl HistoryService {
 
     /// Download and cache historical data
     pub async fn download_history(
-        _state: &AppState,
+        state: &AppState,
         symbol: &str,
         exchange: &str,
         interval: &str,
@@ -134,10 +134,38 @@ impl HistoryService {
             symbol, exchange, interval, from_date, to_date
         );
 
-        // TODO: Implement broker-specific historical data download
-        // For now, return 0 as placeholder
+        // Resolve the active broker session.
+        let session = state
+            .get_broker_session()
+            .ok_or_else(|| crate::error::AppError::Auth("Broker not connected".to_string()))?;
+        let broker = state
+            .brokers
+            .get(&session.broker_id)
+            .ok_or_else(|| {
+                crate::error::AppError::Broker(format!(
+                    "Broker '{}' not found",
+                    session.broker_id
+                ))
+            })?;
 
-        Ok(0)
+        let bars = broker
+            .get_history(&session.auth_token, symbol, exchange, interval, from_date, to_date)
+            .await?;
+        if bars.is_empty() {
+            return Ok(0);
+        }
+        let candles: Vec<CandleData> = bars
+            .into_iter()
+            .map(|b| CandleData {
+                timestamp: b.timestamp,
+                open: b.open,
+                high: b.high,
+                low: b.low,
+                close: b.close,
+                volume: b.volume,
+            })
+            .collect();
+        Self::store_market_data(state, symbol, exchange, interval, candles)
     }
 
     /// Store market data in DuckDB
