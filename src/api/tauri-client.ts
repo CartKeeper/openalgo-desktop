@@ -1039,6 +1039,25 @@ export const portfolioCommands = {
 }
 
 // ============================================================================
+// Backtest API (re-export)
+// ============================================================================
+
+export { backtestApi } from './backtest'
+export type {
+  BacktestConfig,
+  BacktestResult,
+  BacktestMetrics,
+  BacktestRunRecord,
+  BenchmarkResult,
+  EquityPoint,
+  Trade,
+  StrategySpec,
+  Sizing,
+  Costs,
+  TaxConfig,
+} from './backtest'
+
+// ============================================================================
 // Convenience exports
 // ============================================================================
 
