@@ -348,6 +348,11 @@ pub fn run() {
             commands::broker_watchlist::get_broker_watchlist,
             commands::broker_watchlist::create_broker_watchlist,
             commands::broker_watchlist::delete_broker_watchlist,
+            // Backtest commands
+            commands::backtest::run_backtest,
+            commands::backtest::save_backtest_run,
+            commands::backtest::list_backtest_runs,
+            commands::backtest::get_backtest_run,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

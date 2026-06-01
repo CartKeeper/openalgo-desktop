@@ -33,3 +33,4 @@ pub mod export;
 pub mod activities;
 pub mod market_status;
 pub mod broker_watchlist;
+pub mod backtest;
