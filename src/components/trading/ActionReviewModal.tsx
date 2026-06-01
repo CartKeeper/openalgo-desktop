@@ -1,7 +1,8 @@
 import { Check, Copy, Loader2, ShoppingCart, X } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { emit } from '@tauri-apps/api/event'
+import { settingsCommands } from '@/api/tauri-client'
 import { tradingApi } from '@/api/trading'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -190,6 +191,33 @@ export function ActionReviewModal({
   const [cloneName, setCloneName] = useState('')
   // Gate B (pre-execution acknowledgment) — required before any LIVE order.
   const [acknowledged, setAcknowledged] = useState(false)
+  // Execution mode read from the SAME authority the order routes on
+  // (get_analyze_mode). null = not yet read → treated as LIVE (fail safe).
+  const [liveMode, setLiveMode] = useState<boolean | null>(null)
+
+  // Read the authoritative mode when the modal opens on the live path. We do NOT
+  // trust any cached/themeStore value — only get_analyze_mode, the same flag the
+  // order router checks at place time. Failure to read => assume LIVE.
+  useEffect(() => {
+    if (!isReviewOpen || onApply) return
+    let cancelled = false
+    settingsCommands
+      .getAnalyzeMode()
+      .then((s) => {
+        if (!cancelled) setLiveMode(!s.analyze_mode)
+      })
+      .catch(() => {
+        if (!cancelled) setLiveMode(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isReviewOpen, onApply])
+
+  // Any change in the authoritative mode invalidates a prior acknowledgment.
+  useEffect(() => {
+    setAcknowledged(false)
+  }, [liveMode])
 
   const handlePlaceAll = async () => {
     if (items.length === 0) return
@@ -211,6 +239,33 @@ export function ActionReviewModal({
 
     // Default path: live basket order.
     setSubmitting(true)
+
+    // Gate B single-source-of-truth check: re-read the SAME authority the order
+    // routes on (get_analyze_mode), at submit time. If it disagrees with what the
+    // user saw and acknowledged, abort and force re-confirmation — so a LIVE order
+    // can never execute under a "paper" acknowledgment, and vice versa.
+    let freshLive = true
+    try {
+      const status = await settingsCommands.getAnalyzeMode()
+      freshLive = !status.analyze_mode
+    } catch {
+      freshLive = true // cannot confirm => assume LIVE (fail safe)
+    }
+    if (freshLive !== liveMode) {
+      setLiveMode(freshLive) // resets the acknowledgment via effect
+      setSubmitting(false)
+      toast.warning(
+        freshLive
+          ? 'Mode changed to LIVE (real money) — review and re-confirm before placing.'
+          : 'Mode changed to paper (sandbox) — review and re-confirm.'
+      )
+      return
+    }
+    if (freshLive && !acknowledged) {
+      setSubmitting(false)
+      return
+    }
+
     try {
       const response = await tradingApi.placeBasketOrder(
         items.map((item) => ({
@@ -289,6 +344,8 @@ export function ActionReviewModal({
   const usd = (n: number) =>
     n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
   const showGateB = isLivePath && !showResults && items.length > 0
+  // null (unread) or true => treat as LIVE; only an authoritative `false` is paper.
+  const isLive = liveMode !== false
 
   return (
     <Dialog open={isReviewOpen} onOpenChange={(open) => !open && handleClose()}>
@@ -385,10 +442,10 @@ export function ActionReviewModal({
           )}
         </div>
 
-        {showGateB && (
-          <div className="shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 space-y-2">
-            <p className="text-sm font-semibold text-amber-600 dark:text-amber-400">
-              Real money — confirm before placing
+        {showGateB && isLive && (
+          <div className="shrink-0 rounded-lg border border-red-500/40 bg-red-500/5 p-3 space-y-2">
+            <p className="text-sm font-semibold text-red-600 dark:text-red-400">
+              LIVE — real money. Confirm before placing.
             </p>
             <p className="text-xs text-muted-foreground leading-relaxed">
               These place <strong>real orders</strong> on your live account
@@ -419,8 +476,16 @@ export function ActionReviewModal({
                 onChange={(e) => setAcknowledged(e.target.checked)}
                 className="mt-0.5 h-4 w-4"
               />
-              <span>I understand these are real orders and I accept the risk.</span>
+              <span>I understand these are real, live orders and I accept the risk.</span>
             </label>
+          </div>
+        )}
+        {showGateB && !isLive && (
+          <div className="shrink-0 rounded-lg border border-border bg-muted/40 p-3">
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              <strong className="text-foreground">Paper (sandbox) mode.</strong> These are simulated orders
+              with virtual money — no real funds are used. Switch to Live mode to trade for real.
+            </p>
           </div>
         )}
 
@@ -438,7 +503,7 @@ export function ActionReviewModal({
                   isSubmitting ||
                   items.length === 0 ||
                   (cloneNameRequired && cloneName.trim().length === 0) ||
-                  (showGateB && !acknowledged)
+                  (showGateB && isLive && !acknowledged)
                 }
                 className="bg-primary"
               >
