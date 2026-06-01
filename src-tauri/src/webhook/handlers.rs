@@ -323,6 +323,7 @@ pub async fn place_order(
         amo: false,
         trail_price: None,
         trail_percent: None,
+        notional: None,
         broker_symbol: None,  // Set by OrderService from symbol cache
         symbol_token: None,   // Set by OrderService from symbol cache
     };
@@ -921,6 +922,7 @@ pub async fn place_basket_order(
         amo: false,
         trail_price: None,
         trail_percent: None,
+        notional: None,
         broker_symbol: None,  // Set by OrderService from symbol cache
         symbol_token: None,   // Set by OrderService from symbol cache
     }).collect();

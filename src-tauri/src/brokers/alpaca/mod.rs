@@ -63,6 +63,32 @@ impl AlpacaBroker {
             symbols: w.assets.into_iter().map(|a| a.symbol).collect(),
         }
     }
+
+    /// Build the Alpaca /v2/orders request body. A notional (dollar) order
+    /// takes precedence over share quantity; both are sent as strings. The
+    /// caller appends limit/stop/trailing/bracket params after this.
+    fn build_order_body(order: &OrderRequest) -> serde_json::Map<String, serde_json::Value> {
+        let mut body = serde_json::Map::new();
+        body.insert(
+            "symbol".into(),
+            serde_json::json!(order.broker_symbol.as_deref().unwrap_or(&order.symbol)),
+        );
+        match order.notional {
+            Some(n) if n > 0.0 => {
+                body.insert("notional".into(), serde_json::json!(n.to_string()));
+            }
+            _ => {
+                body.insert("qty".into(), serde_json::json!(order.quantity.to_string()));
+            }
+        }
+        body.insert("side".into(), serde_json::json!(order.side.to_lowercase()));
+        body.insert("type".into(), serde_json::json!(map_order_type(&order.order_type)));
+        body.insert(
+            "time_in_force".into(),
+            serde_json::json!(map_validity(&order.validity)),
+        );
+        body
+    }
 }
 
 impl Default for AlpacaBroker {
@@ -393,13 +419,7 @@ impl Broker for AlpacaBroker {
         let (api_key, api_secret) = parse_auth_token(auth_token)?;
         let base_url = Self::get_base_url(&api_key);
 
-        let mut body = serde_json::json!({
-            "symbol": order.broker_symbol.as_deref().unwrap_or(&order.symbol),
-            "qty": order.quantity.to_string(),
-            "side": order.side.to_lowercase(),
-            "type": map_order_type(&order.order_type),
-            "time_in_force": map_validity(&order.validity),
-        });
+        let mut body = serde_json::Value::Object(Self::build_order_body(&order));
 
         if order.order_type == "LIMIT" || order.order_type == "SL" {
             body["limit_price"] = serde_json::json!(order.price.to_string());
@@ -1230,5 +1250,45 @@ fn map_alpaca_exchange(exchange: &str) -> String {
     match exchange {
         "NASDAQ" | "NYSE" | "ARCA" | "BATS" | "OTC" | "AMEX" => exchange.to_string(),
         _ => "US".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod order_body_tests {
+    use super::*;
+
+    fn req(notional: Option<f64>, quantity: f64) -> OrderRequest {
+        OrderRequest {
+            symbol: "AAPL".into(),
+            exchange: "NASDAQ".into(),
+            side: "BUY".into(),
+            quantity,
+            price: 0.0,
+            order_type: "MARKET".into(),
+            product: "CNC".into(),
+            validity: "DAY".into(),
+            trigger_price: None,
+            disclosed_quantity: None,
+            amo: false,
+            trail_price: None,
+            trail_percent: None,
+            notional,
+            broker_symbol: None,
+            symbol_token: None,
+        }
+    }
+
+    #[test]
+    fn notional_order_sends_notional_not_qty() {
+        let body = AlpacaBroker::build_order_body(&req(Some(50.0), 0.0));
+        assert_eq!(body.get("notional").and_then(|v| v.as_str()), Some("50"));
+        assert!(body.get("qty").is_none());
+    }
+
+    #[test]
+    fn fractional_qty_order_sends_qty() {
+        let body = AlpacaBroker::build_order_body(&req(None, 0.5));
+        assert_eq!(body.get("qty").and_then(|v| v.as_str()), Some("0.5"));
+        assert!(body.get("notional").is_none());
     }
 }

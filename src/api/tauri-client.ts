@@ -83,6 +83,8 @@ export interface OrderRequest {
   amo: boolean
   trail_price?: number
   trail_percent?: number
+  /** Dollar-amount (notional) order. When set, a market-day notional order is placed. */
+  notional?: number
 }
 
 export interface ModifyOrderRequest {

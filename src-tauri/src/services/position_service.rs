@@ -152,6 +152,7 @@ impl PositionService {
             amo: false,
             trail_price: None,
             trail_percent: None,
+            notional: None,
             broker_symbol: None,  // Set by OrderService from symbol cache
             symbol_token: None,   // Set by OrderService from symbol cache
         };

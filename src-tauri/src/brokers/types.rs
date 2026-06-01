@@ -20,6 +20,10 @@ pub struct OrderRequest {
     pub trail_price: Option<f64>,
     #[serde(default)]
     pub trail_percent: Option<f64>,
+    /// Dollar-amount (notional) order. When set (and > 0), the broker places a
+    /// market-day notional order instead of a share-quantity order.
+    #[serde(default)]
+    pub notional: Option<f64>,
     /// Broker-specific symbol format (e.g., "NSE:RELIANCE-EQ" for Fyers)
     /// Set by OrderService after looking up from symbol cache
     #[serde(skip_deserializing)]
