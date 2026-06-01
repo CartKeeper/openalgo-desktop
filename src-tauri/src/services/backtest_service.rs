@@ -461,6 +461,9 @@ fn compute_tax(trades: &[Trade], tax: &TaxConfig) -> (f64, f64) {
     (st_net.max(0.0) * tax.st_rate, lt_net.max(0.0) * tax.lt_rate)
 }
 
+use crate::error::{AppError, Result};
+use crate::services::history_service::HistoryService;
+use crate::state::AppState;
 use crate::services::quant_service;
 
 impl BacktestService {
@@ -551,6 +554,40 @@ impl BacktestService {
         let metrics = Self::compute_metrics(&equity_curve, &trades, cfg);
         let benchmark = Self::benchmark(bars, warmup.min(bars.len().saturating_sub(1)), cfg.starting_capital);
         BacktestResult { config: cfg.clone(), equity_curve, trades, metrics, benchmark, warnings }
+    }
+
+    /// Load candles from DuckDB, validate, and run. Returns a validation error
+    /// if there is not enough history for the strategy warmup.
+    pub async fn run_for_config(state: &AppState, cfg: BacktestConfig) -> Result<BacktestResult> {
+        let hist = HistoryService::get_history(
+            state, &cfg.symbol, &cfg.exchange, &cfg.interval, &cfg.from_date, &cfg.to_date, None,
+        )
+        .await?;
+
+        if hist.candles.is_empty() {
+            return Err(AppError::Validation(format!(
+                "No historical data for {}:{} ({}). Download history first (Historify).",
+                cfg.exchange, cfg.symbol, cfg.interval
+            )));
+        }
+
+        let bars: Vec<Bar> = hist.candles.iter().map(|c| Bar {
+            timestamp: c.timestamp.clone(),
+            open: c.open, high: c.high, low: c.low, close: c.close,
+            volume: c.volume as f64,
+        }).collect();
+
+        let probe = build_generator(&cfg.strategy);
+        let warmup = probe.warmup();
+        if bars.len() <= warmup + 1 {
+            return Err(AppError::Validation(format!(
+                "Not enough bars ({}) for this strategy's warmup ({}). Use a longer date range.",
+                bars.len(), warmup
+            )));
+        }
+
+        let warnings = Vec::new();
+        Ok(Self::run(&bars, &cfg, warnings))
     }
 }
 
