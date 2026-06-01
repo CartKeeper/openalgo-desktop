@@ -533,9 +533,9 @@ impl Broker for ZerodhaBroker {
                 symbol: o.tradingsymbol,
                 exchange: o.exchange,
                 side: o.transaction_type,
-                quantity: o.quantity,
-                filled_quantity: o.filled_quantity,
-                pending_quantity: o.pending_quantity,
+                quantity: o.quantity as f64,
+                filled_quantity: o.filled_quantity as f64,
+                pending_quantity: o.pending_quantity as f64,
                 price: o.price,
                 trigger_price: o.trigger_price,
                 average_price: o.average_price,
@@ -576,9 +576,9 @@ impl Broker for ZerodhaBroker {
                 symbol: o.tradingsymbol,
                 exchange: o.exchange,
                 side: o.transaction_type,
-                quantity: o.quantity,
-                filled_quantity: o.filled_quantity,
-                pending_quantity: o.pending_quantity,
+                quantity: o.quantity as f64,
+                filled_quantity: o.filled_quantity as f64,
+                pending_quantity: o.pending_quantity as f64,
                 price: o.price,
                 trigger_price: o.trigger_price,
                 average_price: o.average_price,
@@ -622,16 +622,16 @@ impl Broker for ZerodhaBroker {
                 symbol: p.tradingsymbol,
                 exchange: p.exchange,
                 product: p.product,
-                quantity: p.quantity,
-                overnight_quantity: p.overnight_quantity,
+                quantity: p.quantity as f64,
+                overnight_quantity: p.overnight_quantity as f64,
                 average_price: p.average_price,
                 ltp: p.last_price,
                 pnl: p.pnl,
                 realized_pnl: p.realised,
                 unrealized_pnl: p.unrealised,
-                buy_quantity: p.buy_quantity,
+                buy_quantity: p.buy_quantity as f64,
                 buy_value: p.buy_value,
-                sell_quantity: p.sell_quantity,
+                sell_quantity: p.sell_quantity as f64,
                 sell_value: p.sell_value,
             })
             .collect())
@@ -658,10 +658,10 @@ impl Broker for ZerodhaBroker {
         Ok(holdings
             .into_iter()
             .map(|h| {
-                let quantity = h.quantity;
+                let quantity = h.quantity as f64;
                 let ltp = h.last_price;
                 let avg_price = h.average_price;
-                let current_value = quantity as f64 * ltp;
+                let current_value = quantity * ltp;
                 let pnl_percentage = if avg_price > 0.0 {
                     ((ltp - avg_price) / avg_price) * 100.0
                 } else {
@@ -673,7 +673,7 @@ impl Broker for ZerodhaBroker {
                     exchange: h.exchange,
                     isin: h.isin,
                     quantity,
-                    t1_quantity: h.t1_quantity,
+                    t1_quantity: h.t1_quantity as f64,
                     average_price: avg_price,
                     ltp,
                     close_price: h.close_price,
@@ -982,6 +982,7 @@ impl Broker for ZerodhaBroker {
                     option_type,
                     brsymbol: Some(brsymbol),
                     brexchange: Some(brexchange),
+                    fractionable: false,
                 });
             }
         }

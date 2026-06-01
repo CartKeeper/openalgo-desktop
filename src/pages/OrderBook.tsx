@@ -46,7 +46,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { cn, sanitizeCSV } from '@/lib/utils'
+import { cn, formatQty, sanitizeCSV } from '@/lib/utils'
 // Note: AlertDialog still used for Cancel All Orders
 import { useOrderEventRefresh } from '@/hooks/useOrderEventRefresh'
 import { useAuthStore } from '@/stores/authStore'
@@ -529,7 +529,7 @@ export default function OrderBook() {
                             {order.action}
                           </Badge>
                         </TableCell>
-                        <TableCell className="text-right font-mono">{order.quantity}</TableCell>
+                        <TableCell className="text-right font-mono">{formatQty(order.quantity)}</TableCell>
                         <TableCell className="text-right font-mono">
                           {formatCurrency(order.price)}
                         </TableCell>

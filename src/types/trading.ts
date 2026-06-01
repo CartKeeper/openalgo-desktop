@@ -84,6 +84,11 @@ export interface PlaceOrderRequest {
   price?: number
   trigger_price?: number
   disclosed_quantity?: number
+  notional?: number
+  order_class?: string
+  take_profit_price?: number
+  stop_loss_price?: number
+  stop_loss_limit_price?: number
 }
 
 export interface ApiResponse<T> {

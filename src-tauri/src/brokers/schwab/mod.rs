@@ -570,9 +570,9 @@ impl Broker for SchwabBroker {
                     symbol,
                     exchange: "US".to_string(),
                     side: side.to_uppercase(),
-                    quantity: o.quantity as i32,
-                    filled_quantity: o.filled_quantity as i32,
-                    pending_quantity: o.remaining_quantity as i32,
+                    quantity: o.quantity as f64,
+                    filled_quantity: o.filled_quantity as f64,
+                    pending_quantity: o.remaining_quantity as f64,
                     price: o.price,
                     trigger_price: o.stop_price,
                     average_price: if o.filled_quantity > 0.0 {
@@ -629,12 +629,12 @@ impl Broker for SchwabBroker {
             .into_iter()
             .filter_map(|p| {
                 let instrument = p.instrument?;
-                let long_qty = p.long_quantity as i32;
-                let short_qty = p.short_quantity as i32;
+                let long_qty = p.long_quantity as f64;
+                let short_qty = p.short_quantity as f64;
                 let qty = long_qty - short_qty;
                 let avg_price = p.average_price;
-                let ltp = if qty != 0 {
-                    p.market_value / (qty as f64)
+                let ltp = if qty != 0.0 {
+                    p.market_value / qty
                 } else {
                     avg_price
                 };
@@ -677,7 +677,7 @@ impl Broker for SchwabBroker {
                     exchange: p.exchange,
                     isin: None,
                     quantity: p.quantity,
-                    t1_quantity: 0,
+                    t1_quantity: 0.0,
                     average_price: p.average_price,
                     ltp: p.ltp,
                     close_price: p.ltp,
@@ -862,6 +862,7 @@ impl Broker for SchwabBroker {
                 option_type: None,
                 brsymbol: Some(inst.symbol),
                 brexchange: Some("US".to_string()),
+                fractionable: false,
             })
             .collect())
     }

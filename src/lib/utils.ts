@@ -6,6 +6,15 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 /**
+ * Format a share quantity for display: whole numbers render plainly, fractional
+ * quantities show up to 4 decimals (trailing zeros trimmed).
+ */
+export function formatQty(q: number): string {
+  if (!Number.isFinite(q)) return '0'
+  return Number.isInteger(q) ? q.toString() : parseFloat(q.toFixed(4)).toString()
+}
+
+/**
  * Sanitize a value for CSV export to prevent formula injection.
  * Prefixes dangerous characters (=, +, -, @) with a single quote.
  */

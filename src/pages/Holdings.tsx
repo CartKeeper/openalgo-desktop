@@ -17,7 +17,7 @@ import {
 import { calculateLiveStats, useLivePrice } from '@/hooks/useLivePrice'
 import { useOrderEventRefresh } from '@/hooks/useOrderEventRefresh'
 import { saveTextFile } from '@/lib/exportFile'
-import { cn, sanitizeCSV } from '@/lib/utils'
+import { cn, formatQty, sanitizeCSV } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { onModeChange } from '@/stores/themeStore'
 import type { Holding, HoldingsStats } from '@/types/trading'
@@ -273,7 +273,7 @@ export default function Holdings() {
                       <TableCell>
                         <Badge variant="outline">{holding.exchange}</Badge>
                       </TableCell>
-                      <TableCell className="text-right font-mono">{holding.quantity}</TableCell>
+                      <TableCell className="text-right font-mono">{formatQty(holding.quantity)}</TableCell>
                       <TableCell className="text-right font-mono">
                         {holding.average_price !== undefined
                           ? formatCurrency(holding.average_price)

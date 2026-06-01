@@ -70,6 +70,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "052_client_compliance_violations", CREATE_CLIENT_COMPLIANCE_VIOLATIONS_TABLE)?;
     run_migration(conn, "053_compliance_resolution_meta", ADD_COMPLIANCE_RESOLUTION_META)?;
     run_migration(conn, "054_holdings_market_value", ADD_HOLDINGS_MARKET_VALUE)?;
+    run_migration(conn, "055_symtoken_fractionable", ADD_SYMTOKEN_FRACTIONABLE)?;
 
     tracing::info!("Database migrations completed");
     Ok(())
@@ -895,6 +896,10 @@ ALTER TABLE client_holdings ADD COLUMN current_price REAL;
 ALTER TABLE client_holdings ADD COLUMN market_value REAL;
 ALTER TABLE client_holdings ADD COLUMN gain_percent REAL;
 "#;
+
+/// Whether a symbol supports fractional/notional orders (Alpaca).
+const ADD_SYMTOKEN_FRACTIONABLE: &str =
+    "ALTER TABLE symtoken ADD COLUMN fractionable INTEGER NOT NULL DEFAULT 0;";
 
 /// 401k compliance violations detected during import
 const CREATE_CLIENT_COMPLIANCE_VIOLATIONS_TABLE: &str = r#"

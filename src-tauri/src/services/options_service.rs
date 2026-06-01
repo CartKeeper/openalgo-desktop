@@ -253,7 +253,7 @@ impl OptionsService {
             symbol: option_symbol.symbol,
             exchange: req.exchange,
             side: req.action,
-            quantity: req.quantity,
+            quantity: req.quantity as f64,
             order_type: req.pricetype.unwrap_or_else(|| "MARKET".to_string()),
             product: req.product,
             price: 0.0,
@@ -263,6 +263,11 @@ impl OptionsService {
             amo: false,
             trail_price: None,
             trail_percent: None,
+            notional: None,
+            order_class: None,
+            take_profit_price: None,
+            stop_loss_price: None,
+            stop_loss_limit_price: None,
             broker_symbol: None,  // Set by OrderService from symbol cache
             symbol_token: None,   // Set by OrderService from symbol cache
         };
@@ -302,7 +307,7 @@ impl OptionsService {
                 symbol: option_symbol.symbol,
                 exchange: exchange.to_string(),
                 side: leg.action,
-                quantity: leg.quantity,
+                quantity: leg.quantity as f64,
                 order_type: "MARKET".to_string(),
                 product: product.to_string(),
                 price: 0.0,
@@ -312,6 +317,11 @@ impl OptionsService {
                 amo: false,
                 trail_price: None,
                 trail_percent: None,
+                notional: None,
+                order_class: None,
+                take_profit_price: None,
+                stop_loss_price: None,
+                stop_loss_limit_price: None,
                 broker_symbol: None,  // Set by OrderService from symbol cache
                 symbol_token: None,   // Set by OrderService from symbol cache
             };

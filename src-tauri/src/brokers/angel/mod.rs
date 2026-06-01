@@ -686,9 +686,9 @@ impl Broker for AngelBroker {
                     symbol: o.tradingsymbol,
                     exchange: o.exchange,
                     side: o.transactiontype,
-                    quantity: o.quantity.to_i32(),
-                    filled_quantity: o.filledshares.to_i32(),
-                    pending_quantity: o.unfilledshares.to_i32(),
+                    quantity: o.quantity.to_i32() as f64,
+                    filled_quantity: o.filledshares.to_i32() as f64,
+                    pending_quantity: o.unfilledshares.to_i32() as f64,
                     price: o.price.to_f64(),
                     trigger_price: o.triggerprice.to_f64(),
                     average_price: o.averageprice.to_f64(),
@@ -739,9 +739,9 @@ impl Broker for AngelBroker {
                     symbol: o.tradingsymbol,
                     exchange: o.exchange,
                     side: o.transactiontype,
-                    quantity: o.quantity.to_i32(),
-                    filled_quantity: o.filledshares.to_i32(),
-                    pending_quantity: o.unfilledshares.to_i32(),
+                    quantity: o.quantity.to_i32() as f64,
+                    filled_quantity: o.filledshares.to_i32() as f64,
+                    pending_quantity: o.unfilledshares.to_i32() as f64,
                     price: o.price.to_f64(),
                     trigger_price: o.triggerprice.to_f64(),
                     average_price: o.averageprice.to_f64(),
@@ -790,16 +790,16 @@ impl Broker for AngelBroker {
                     symbol: p.tradingsymbol,
                     exchange: p.exchange,
                     product,
-                    quantity: p.netqty.to_i32(),
-                    overnight_quantity: p.cfbuyqty.to_i32(),
+                    quantity: p.netqty.to_i32() as f64,
+                    overnight_quantity: p.cfbuyqty.to_i32() as f64,
                     average_price: p.avgnetprice.to_f64(),
                     ltp: p.ltp.to_f64(),
                     pnl: p.pnl.to_f64(),
                     realized_pnl: p.realised.to_f64(),
                     unrealized_pnl: p.unrealised.to_f64(),
-                    buy_quantity: p.buyqty.to_i32(),
+                    buy_quantity: p.buyqty.to_i32() as f64,
                     buy_value: p.buyvalue.to_f64(),
-                    sell_quantity: p.sellqty.to_i32(),
+                    sell_quantity: p.sellqty.to_i32() as f64,
                     sell_value: p.sellvalue.to_f64(),
                 }
             })
@@ -833,16 +833,16 @@ impl Broker for AngelBroker {
         Ok(holdings
             .into_iter()
             .map(|h| {
-                let quantity = h.quantity.to_i32();
+                let quantity = h.quantity.to_i32() as f64;
                 let ltp = h.ltp.to_f64();
-                let current_value = quantity as f64 * ltp;
+                let current_value = quantity * ltp;
 
                 Holding {
                     symbol: h.tradingsymbol,
                     exchange: h.exchange,
                     isin: h.isin,
                     quantity,
-                    t1_quantity: h.t1quantity.to_i32(),
+                    t1_quantity: h.t1quantity.to_i32() as f64,
                     average_price: h.averageprice.to_f64(),
                     ltp,
                     close_price: h.close.to_f64(),
@@ -1236,6 +1236,7 @@ impl AngelBroker {
             option_type,
             brsymbol: Some(brsymbol),
             brexchange: Some(brexchange),
+            fractionable: false,
         }
     }
 

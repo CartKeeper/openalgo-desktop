@@ -26,8 +26,8 @@ pub fn store_symbols(conn: &mut Connection, symbols: &[SymbolInfo]) -> Result<()
     // Use INSERT OR REPLACE to handle duplicate (exchange, symbol) combinations in source data
     {
         let mut stmt = tx.prepare(
-            "INSERT OR REPLACE INTO symtoken (symbol, token, exchange, name, lot_size, tick_size, instrument_type, brsymbol, brexchange)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT OR REPLACE INTO symtoken (symbol, token, exchange, name, lot_size, tick_size, instrument_type, brsymbol, brexchange, fractionable)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )?;
 
         for (idx, symbol) in symbols.iter().enumerate() {
@@ -45,6 +45,7 @@ pub fn store_symbols(conn: &mut Connection, symbols: &[SymbolInfo]) -> Result<()
                 &symbol.instrument_type,
                 &symbol.brsymbol,
                 &symbol.brexchange,
+                symbol.fractionable,
             ]) {
                 tracing::error!("Failed to insert symbol {}: {:?} - Error: {}", idx, symbol.symbol, e);
                 return Err(e.into());
@@ -63,7 +64,7 @@ pub fn store_symbols(conn: &mut Connection, symbols: &[SymbolInfo]) -> Result<()
 /// Load all symbols from database (used to populate cache on startup)
 pub fn load_symbols(conn: &Connection) -> Result<Vec<SymbolInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT symbol, token, exchange, name, lot_size, tick_size, instrument_type, brsymbol, brexchange FROM symtoken",
+        "SELECT symbol, token, exchange, name, lot_size, tick_size, instrument_type, brsymbol, brexchange, fractionable FROM symtoken",
     )?;
 
     let symbols = stmt
@@ -78,6 +79,7 @@ pub fn load_symbols(conn: &Connection) -> Result<Vec<SymbolInfo>> {
                 instrument_type: row.get(6)?,
                 brsymbol: row.get(7)?,
                 brexchange: row.get(8)?,
+                fractionable: row.get::<_, i64>(9)? != 0,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -101,7 +103,7 @@ pub fn count_symbols(conn: &Connection) -> Result<i64> {
 #[allow(dead_code)]
 pub fn get_symbols_by_exchange(conn: &Connection, exchange: &str) -> Result<Vec<SymbolInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT symbol, token, exchange, name, lot_size, tick_size, instrument_type, brsymbol, brexchange
+        "SELECT symbol, token, exchange, name, lot_size, tick_size, instrument_type, brsymbol, brexchange, fractionable
          FROM symtoken
          WHERE exchange = ?1",
     )?;
@@ -118,6 +120,7 @@ pub fn get_symbols_by_exchange(conn: &Connection, exchange: &str) -> Result<Vec<
                 instrument_type: row.get(6)?,
                 brsymbol: row.get(7)?,
                 brexchange: row.get(8)?,
+                fractionable: row.get::<_, i64>(9)? != 0,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -138,7 +141,7 @@ pub fn search_symbols(
 
     if let Some(exch) = exchange {
         let mut stmt = conn.prepare(
-            "SELECT symbol, token, exchange, name, lot_size, tick_size, instrument_type, brsymbol, brexchange
+            "SELECT symbol, token, exchange, name, lot_size, tick_size, instrument_type, brsymbol, brexchange, fractionable
              FROM symtoken
              WHERE (symbol LIKE ?1 OR name LIKE ?1) AND exchange = ?2
              LIMIT ?3",
@@ -154,13 +157,14 @@ pub fn search_symbols(
                 instrument_type: row.get(6)?,
                 brsymbol: row.get(7)?,
                 brexchange: row.get(8)?,
+                fractionable: row.get::<_, i64>(9)? != 0,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(symbols)
     } else {
         let mut stmt = conn.prepare(
-            "SELECT symbol, token, exchange, name, lot_size, tick_size, instrument_type, brsymbol, brexchange
+            "SELECT symbol, token, exchange, name, lot_size, tick_size, instrument_type, brsymbol, brexchange, fractionable
              FROM symtoken
              WHERE symbol LIKE ?1 OR name LIKE ?1
              LIMIT ?2",
@@ -176,6 +180,7 @@ pub fn search_symbols(
                 instrument_type: row.get(6)?,
                 brsymbol: row.get(7)?,
                 brexchange: row.get(8)?,
+                fractionable: row.get::<_, i64>(9)? != 0,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;

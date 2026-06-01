@@ -63,6 +63,55 @@ impl AlpacaBroker {
             symbols: w.assets.into_iter().map(|a| a.symbol).collect(),
         }
     }
+
+    /// Build the Alpaca /v2/orders request body. A notional (dollar) order
+    /// takes precedence over share quantity; both are sent as strings. The
+    /// caller appends limit/stop/trailing/bracket params after this.
+    fn build_order_body(order: &OrderRequest) -> serde_json::Map<String, serde_json::Value> {
+        let mut body = serde_json::Map::new();
+        body.insert(
+            "symbol".into(),
+            serde_json::json!(order.broker_symbol.as_deref().unwrap_or(&order.symbol)),
+        );
+        match order.notional {
+            Some(n) if n > 0.0 => {
+                body.insert("notional".into(), serde_json::json!(n.to_string()));
+            }
+            _ => {
+                body.insert("qty".into(), serde_json::json!(order.quantity.to_string()));
+            }
+        }
+        body.insert("side".into(), serde_json::json!(order.side.to_lowercase()));
+        body.insert("type".into(), serde_json::json!(map_order_type(&order.order_type)));
+        body.insert(
+            "time_in_force".into(),
+            serde_json::json!(map_validity(&order.validity)),
+        );
+
+        // Bracket / OCO / OTO exit legs.
+        if let Some(class) = order.order_class.as_deref() {
+            if class != "simple" {
+                body.insert("order_class".into(), serde_json::json!(class));
+            }
+        }
+        if let Some(tp) = order.take_profit_price {
+            body.insert(
+                "take_profit".into(),
+                serde_json::json!({ "limit_price": tp.to_string() }),
+            );
+        }
+        if order.stop_loss_price.is_some() || order.stop_loss_limit_price.is_some() {
+            let mut sl = serde_json::Map::new();
+            if let Some(sp) = order.stop_loss_price {
+                sl.insert("stop_price".into(), serde_json::json!(sp.to_string()));
+            }
+            if let Some(lp) = order.stop_loss_limit_price {
+                sl.insert("limit_price".into(), serde_json::json!(lp.to_string()));
+            }
+            body.insert("stop_loss".into(), serde_json::Value::Object(sl));
+        }
+        body
+    }
 }
 
 impl Default for AlpacaBroker {
@@ -393,13 +442,7 @@ impl Broker for AlpacaBroker {
         let (api_key, api_secret) = parse_auth_token(auth_token)?;
         let base_url = Self::get_base_url(&api_key);
 
-        let mut body = serde_json::json!({
-            "symbol": order.broker_symbol.as_deref().unwrap_or(&order.symbol),
-            "qty": order.quantity.to_string(),
-            "side": order.side.to_lowercase(),
-            "type": map_order_type(&order.order_type),
-            "time_in_force": map_validity(&order.validity),
-        });
+        let mut body = serde_json::Value::Object(Self::build_order_body(&order));
 
         if order.order_type == "LIMIT" || order.order_type == "SL" {
             body["limit_price"] = serde_json::json!(order.price.to_string());
@@ -554,9 +597,9 @@ impl Broker for AlpacaBroker {
                 symbol: o.symbol,
                 exchange: "US".to_string(),
                 side: o.side.to_uppercase(),
-                quantity: qty as i32,
-                filled_quantity: filled as i32,
-                pending_quantity: pending as i32,
+                quantity: qty as f64,
+                filled_quantity: filled as f64,
+                pending_quantity: pending as f64,
                 price: parse_f64_or_zero(o.limit_price.as_deref()),
                 trigger_price: parse_f64_or_zero(o.stop_price.as_deref()),
                 average_price: parse_f64_or_zero(o.filled_avg_price.as_deref()),
@@ -603,9 +646,9 @@ impl Broker for AlpacaBroker {
                     symbol: o.symbol,
                     exchange: "US".to_string(),
                     side: o.side.to_uppercase(),
-                    quantity: qty as i32,
-                    filled_quantity: filled as i32,
-                    pending_quantity: 0,
+                    quantity: qty as f64,
+                    filled_quantity: filled as f64,
+                    pending_quantity: 0.0,
                     price: parse_f64_or_zero(o.limit_price.as_deref()),
                     trigger_price: parse_f64_or_zero(o.stop_price.as_deref()),
                     average_price: parse_f64_or_zero(o.filled_avg_price.as_deref()),
@@ -641,7 +684,7 @@ impl Broker for AlpacaBroker {
 
         Ok(positions.into_iter().map(|p| {
             let qty: f64 = p.qty.parse().unwrap_or(0.0);
-            let qty_i32 = qty as i32;
+            let _qty_i32 = qty as i32;
             let avg_price: f64 = p.avg_entry_price.parse().unwrap_or(0.0);
             let current_price: f64 = p.current_price.parse().unwrap_or(0.0);
             let cost_basis: f64 = p.cost_basis.parse().unwrap_or(0.0);
@@ -649,17 +692,17 @@ impl Broker for AlpacaBroker {
             let unrealized: f64 = p.unrealized_pl.parse().unwrap_or(0.0);
 
             let (buy_qty, buy_val, sell_qty, sell_val) = if p.side == "long" {
-                (qty_i32.abs(), cost_basis, 0, 0.0)
+                (qty.abs(), cost_basis, 0.0, 0.0)
             } else {
-                (0, 0.0, qty_i32.abs(), cost_basis)
+                (0.0, 0.0, qty.abs(), cost_basis)
             };
 
             Position {
                 symbol: p.symbol,
                 exchange: if p.exchange.is_empty() { "US".to_string() } else { p.exchange },
                 product: "CNC".to_string(),
-                quantity: qty_i32,
-                overnight_quantity: qty_i32,
+                quantity: qty,
+                overnight_quantity: qty,
                 average_price: avg_price,
                 ltp: current_price,
                 pnl: unrealized,
@@ -691,7 +734,7 @@ impl Broker for AlpacaBroker {
                 exchange: p.exchange,
                 isin: None,
                 quantity: p.quantity,
-                t1_quantity: 0,
+                t1_quantity: 0.0,
                 average_price: p.average_price,
                 ltp: p.ltp,
                 close_price: p.ltp,
@@ -1156,6 +1199,7 @@ impl Broker for AlpacaBroker {
                 expiry: None,
                 strike: None,
                 option_type: None,
+                fractionable: a.fractionable,
                 brsymbol: Some(a.symbol),
                 brexchange: Some("US".to_string()),
             })
@@ -1230,5 +1274,71 @@ fn map_alpaca_exchange(exchange: &str) -> String {
     match exchange {
         "NASDAQ" | "NYSE" | "ARCA" | "BATS" | "OTC" | "AMEX" => exchange.to_string(),
         _ => "US".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod order_body_tests {
+    use super::*;
+
+    fn req(notional: Option<f64>, quantity: f64) -> OrderRequest {
+        OrderRequest {
+            symbol: "AAPL".into(),
+            exchange: "NASDAQ".into(),
+            side: "BUY".into(),
+            quantity,
+            price: 0.0,
+            order_type: "MARKET".into(),
+            product: "CNC".into(),
+            validity: "DAY".into(),
+            trigger_price: None,
+            disclosed_quantity: None,
+            amo: false,
+            trail_price: None,
+            trail_percent: None,
+            notional,
+            order_class: None,
+            take_profit_price: None,
+            stop_loss_price: None,
+            stop_loss_limit_price: None,
+            broker_symbol: None,
+            symbol_token: None,
+        }
+    }
+
+    #[test]
+    fn bracket_order_includes_tp_and_sl() {
+        let mut r = req(None, 1.0);
+        r.order_class = Some("bracket".into());
+        r.take_profit_price = Some(110.0);
+        r.stop_loss_price = Some(90.0);
+        let body = AlpacaBroker::build_order_body(&r);
+        assert_eq!(body.get("order_class").and_then(|v| v.as_str()), Some("bracket"));
+        assert_eq!(
+            body.get("take_profit")
+                .and_then(|v| v.get("limit_price"))
+                .and_then(|v| v.as_str()),
+            Some("110")
+        );
+        assert_eq!(
+            body.get("stop_loss")
+                .and_then(|v| v.get("stop_price"))
+                .and_then(|v| v.as_str()),
+            Some("90")
+        );
+    }
+
+    #[test]
+    fn notional_order_sends_notional_not_qty() {
+        let body = AlpacaBroker::build_order_body(&req(Some(50.0), 0.0));
+        assert_eq!(body.get("notional").and_then(|v| v.as_str()), Some("50"));
+        assert!(body.get("qty").is_none());
+    }
+
+    #[test]
+    fn fractional_qty_order_sends_qty() {
+        let body = AlpacaBroker::build_order_body(&req(None, 0.5));
+        assert_eq!(body.get("qty").and_then(|v| v.as_str()), Some("0.5"));
+        assert!(body.get("notional").is_none());
     }
 }

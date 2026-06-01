@@ -83,6 +83,16 @@ export interface OrderRequest {
   amo: boolean
   trail_price?: number
   trail_percent?: number
+  /** Dollar-amount (notional) order. When set, a market-day notional order is placed. */
+  notional?: number
+  /** Order class: "simple" (default), "bracket", "oco", "oto". */
+  order_class?: string
+  /** Take-profit limit price (bracket). */
+  take_profit_price?: number
+  /** Stop-loss stop price (bracket). */
+  stop_loss_price?: number
+  /** Optional stop-loss limit price (stop-limit exit). */
+  stop_loss_limit_price?: number
 }
 
 export interface ModifyOrderRequest {

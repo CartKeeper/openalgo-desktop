@@ -46,6 +46,8 @@ pub struct SymbolInfo {
     pub brsymbol: Option<String>,
     /// Broker's exchange code
     pub brexchange: Option<String>,
+    /// Whether the symbol supports fractional/notional orders (Alpaca).
+    pub fractionable: bool,
 }
 
 /// Application state shared across all commands

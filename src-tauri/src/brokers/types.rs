@@ -8,7 +8,7 @@ pub struct OrderRequest {
     pub symbol: String,
     pub exchange: String,
     pub side: String,         // BUY or SELL
-    pub quantity: i32,
+    pub quantity: f64,
     pub price: f64,
     pub order_type: String,   // MARKET, LIMIT, SL, SL-M
     pub product: String,      // CNC, MIS, NRML
@@ -20,6 +20,22 @@ pub struct OrderRequest {
     pub trail_price: Option<f64>,
     #[serde(default)]
     pub trail_percent: Option<f64>,
+    /// Dollar-amount (notional) order. When set (and > 0), the broker places a
+    /// market-day notional order instead of a share-quantity order.
+    #[serde(default)]
+    pub notional: Option<f64>,
+    /// Order class: "simple" (default), "bracket", "oco", "oto".
+    #[serde(default)]
+    pub order_class: Option<String>,
+    /// Take-profit limit price (bracket / oto exit).
+    #[serde(default)]
+    pub take_profit_price: Option<f64>,
+    /// Stop-loss stop price (bracket / oco / oto exit).
+    #[serde(default)]
+    pub stop_loss_price: Option<f64>,
+    /// Optional stop-loss limit price (turns the stop-loss into a stop-limit).
+    #[serde(default)]
+    pub stop_loss_limit_price: Option<f64>,
     /// Broker-specific symbol format (e.g., "NSE:RELIANCE-EQ" for Fyers)
     /// Set by OrderService after looking up from symbol cache
     #[serde(skip_deserializing)]
@@ -55,9 +71,9 @@ pub struct Order {
     pub symbol: String,
     pub exchange: String,
     pub side: String,
-    pub quantity: i32,
-    pub filled_quantity: i32,
-    pub pending_quantity: i32,
+    pub quantity: f64,
+    pub filled_quantity: f64,
+    pub pending_quantity: f64,
     pub price: f64,
     pub trigger_price: f64,
     pub average_price: f64,
@@ -76,16 +92,16 @@ pub struct Position {
     pub symbol: String,
     pub exchange: String,
     pub product: String,
-    pub quantity: i32,
-    pub overnight_quantity: i32,
+    pub quantity: f64,
+    pub overnight_quantity: f64,
     pub average_price: f64,
     pub ltp: f64,
     pub pnl: f64,
     pub realized_pnl: f64,
     pub unrealized_pnl: f64,
-    pub buy_quantity: i32,
+    pub buy_quantity: f64,
     pub buy_value: f64,
-    pub sell_quantity: i32,
+    pub sell_quantity: f64,
     pub sell_value: f64,
 }
 
@@ -95,8 +111,8 @@ pub struct Holding {
     pub symbol: String,
     pub exchange: String,
     pub isin: Option<String>,
-    pub quantity: i32,
-    pub t1_quantity: i32,
+    pub quantity: f64,
+    pub t1_quantity: f64,
     pub average_price: f64,
     pub ltp: f64,
     pub close_price: f64,
@@ -248,4 +264,7 @@ pub struct SymbolData {
     pub brsymbol: Option<String>,
     /// Broker's exchange code (e.g., "NSE" for the broker's API)
     pub brexchange: Option<String>,
+    /// Whether the symbol supports fractional/notional orders (Alpaca). Other
+    /// brokers default to false.
+    pub fractionable: bool,
 }

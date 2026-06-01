@@ -123,3 +123,6 @@ playwright-report/
 *.AppImage
 *.rpm
 *.snap
+
+# Claude Code agent worktrees
+.claude/worktrees/
