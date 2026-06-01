@@ -44,8 +44,14 @@ pub mod client_brief_service;
 pub mod greeks;
 pub mod indicators_service;
 pub mod alert_service;
+pub mod activities_service;
+pub mod market_status_service;
+pub mod broker_watchlist_service;
 
 // Re-export commonly used types and services
+pub use activities_service::ActivitiesService;
+pub use market_status_service::MarketStatusService;
+pub use broker_watchlist_service::BrokerWatchlistService;
 pub use order_service::{OrderService, PlaceOrderResult, ModifyOrderResult, CancelOrderResult};
 pub use position_service::{PositionService, PositionResult, ClosePositionResult};
 pub use holdings_service::{HoldingsService, HoldingsResult};

@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/table'
 import { calculateLiveStats, useLivePrice } from '@/hooks/useLivePrice'
 import { useOrderEventRefresh } from '@/hooks/useOrderEventRefresh'
+import { saveTextFile } from '@/lib/exportFile'
 import { cn, sanitizeCSV } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { onModeChange } from '@/stores/themeStore'
@@ -111,7 +112,7 @@ export default function Holdings() {
     delay: 500,
   })
 
-  const exportToCSV = () => {
+  const exportToCSV = async () => {
     const headers = [
       'Symbol',
       'Exchange',
@@ -134,12 +135,7 @@ export default function Holdings() {
     ])
 
     const csv = [headers, ...rows].map((row) => row.join(',')).join('\n')
-    const blob = new Blob([csv], { type: 'text/csv' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `holdings_${new Date().toISOString().split('T')[0]}.csv`
-    a.click()
+    await saveTextFile(`holdings_${new Date().toISOString().split('T')[0]}.csv`, csv)
   }
 
   const isProfit = (value: number) => value >= 0

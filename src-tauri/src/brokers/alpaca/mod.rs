@@ -55,6 +55,14 @@ impl AlpacaBroker {
         headers.insert("Accept", "application/json".parse().unwrap());
         headers
     }
+
+    fn map_watchlist(w: AlpacaWatchlist) -> BrokerWatchlist {
+        BrokerWatchlist {
+            id: w.id,
+            name: w.name,
+            symbols: w.assets.into_iter().map(|a| a.symbol).collect(),
+        }
+    }
 }
 
 impl Default for AlpacaBroker {
@@ -95,6 +103,99 @@ struct AlpacaAccount {
     daytrading_buying_power: String,
     #[serde(default)]
     regt_buying_power: String,
+}
+
+/// Account activity entry. The /v2/account/activities endpoint returns a mixed
+/// array of trade (FILL) and non-trade (CSD, CSW, DIV, FEE, TRANS, …) objects,
+/// so every type-specific field is optional.
+#[derive(Deserialize)]
+struct AlpacaActivity {
+    id: String,
+    activity_type: String,
+    /// Trade activities carry `transaction_time`; non-trade carry `date`.
+    #[serde(default)]
+    transaction_time: Option<String>,
+    #[serde(default)]
+    date: Option<String>,
+    #[serde(default)]
+    symbol: Option<String>,
+    #[serde(default)]
+    side: Option<String>,
+    #[serde(default)]
+    qty: Option<String>,
+    #[serde(default)]
+    price: Option<String>,
+    #[serde(default)]
+    net_amount: Option<String>,
+    #[serde(default)]
+    per_share_amount: Option<String>,
+    #[serde(default)]
+    order_id: Option<String>,
+    #[serde(default)]
+    order_status: Option<String>,
+}
+
+/// Portfolio history time series. Alpaca returns aligned arrays; some values
+/// (e.g. the first profit_loss_pct) can be null, so element types are optional.
+#[derive(Deserialize)]
+struct AlpacaPortfolioHistory {
+    #[serde(default)]
+    timestamp: Vec<i64>,
+    #[serde(default)]
+    equity: Vec<Option<f64>>,
+    #[serde(default)]
+    profit_loss: Vec<Option<f64>>,
+    #[serde(default)]
+    profit_loss_pct: Vec<Option<f64>>,
+    #[serde(default)]
+    base_value: Option<f64>,
+    #[serde(default)]
+    timeframe: Option<String>,
+}
+
+/// Market clock response.
+#[derive(Deserialize)]
+struct AlpacaClock {
+    #[serde(default)]
+    timestamp: String,
+    #[serde(default)]
+    is_open: bool,
+    #[serde(default)]
+    next_open: String,
+    #[serde(default)]
+    next_close: String,
+}
+
+/// Single calendar day from /v2/calendar.
+#[derive(Deserialize)]
+struct AlpacaCalendarDay {
+    #[serde(default)]
+    date: String,
+    #[serde(default)]
+    open: String,
+    #[serde(default)]
+    close: String,
+    #[serde(default)]
+    session_open: Option<String>,
+    #[serde(default)]
+    session_close: Option<String>,
+}
+
+/// Watchlist object. The list endpoint omits `assets`; the detail/create
+/// endpoints include them.
+#[derive(Deserialize)]
+struct AlpacaWatchlist {
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    assets: Vec<AlpacaWatchlistAsset>,
+}
+
+#[derive(Deserialize)]
+struct AlpacaWatchlistAsset {
+    #[serde(default)]
+    symbol: String,
 }
 
 #[derive(Deserialize)]
@@ -639,6 +740,273 @@ impl Broker for AlpacaBroker {
             exposure: long_mv + short_mv,
             collateral: 0.0,
         })
+    }
+
+    async fn get_activities(
+        &self,
+        auth_token: &str,
+        page_size: u32,
+    ) -> Result<Vec<AccountActivity>> {
+        let (api_key, api_secret) = parse_auth_token(auth_token)?;
+        let base_url = Self::get_base_url(&api_key);
+        let ps = page_size.clamp(1, 100);
+
+        let response = self
+            .client
+            .get(format!(
+                "{}/v2/account/activities?page_size={}&direction=desc",
+                base_url, ps
+            ))
+            .headers(self.get_headers(&api_key, &api_secret))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_body = response.text().await.unwrap_or_default();
+            return Err(AppError::Broker(format!(
+                "Failed to get account activities: {}",
+                error_body
+            )));
+        }
+
+        let raw: Vec<AlpacaActivity> = response.json().await?;
+
+        Ok(raw
+            .into_iter()
+            .map(|a| AccountActivity {
+                id: a.id,
+                activity_type: a.activity_type,
+                date: a.transaction_time.or(a.date),
+                symbol: a.symbol,
+                side: a.side,
+                qty: a.qty.as_deref().and_then(|s| s.parse().ok()),
+                price: a.price.as_deref().and_then(|s| s.parse().ok()),
+                net_amount: a.net_amount.as_deref().and_then(|s| s.parse().ok()),
+                per_share_amount: a.per_share_amount.as_deref().and_then(|s| s.parse().ok()),
+                order_id: a.order_id,
+                status: a.order_status,
+            })
+            .collect())
+    }
+
+    async fn get_portfolio_history(
+        &self,
+        auth_token: &str,
+        period: &str,
+        timeframe: &str,
+    ) -> Result<PortfolioHistory> {
+        let (api_key, api_secret) = parse_auth_token(auth_token)?;
+        let base_url = Self::get_base_url(&api_key);
+
+        let response = self
+            .client
+            .get(format!(
+                "{}/v2/account/portfolio/history?period={}&timeframe={}",
+                base_url, period, timeframe
+            ))
+            .headers(self.get_headers(&api_key, &api_secret))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_body = response.text().await.unwrap_or_default();
+            return Err(AppError::Broker(format!(
+                "Failed to get portfolio history: {}",
+                error_body
+            )));
+        }
+
+        let h: AlpacaPortfolioHistory = response.json().await?;
+
+        Ok(PortfolioHistory {
+            timestamp: h.timestamp,
+            equity: h.equity.into_iter().map(|v| v.unwrap_or(0.0)).collect(),
+            profit_loss: h.profit_loss.into_iter().map(|v| v.unwrap_or(0.0)).collect(),
+            profit_loss_pct: h
+                .profit_loss_pct
+                .into_iter()
+                .map(|v| v.unwrap_or(0.0))
+                .collect(),
+            base_value: h.base_value.unwrap_or(0.0),
+            timeframe: h.timeframe.unwrap_or_default(),
+        })
+    }
+
+    async fn get_market_clock(&self, auth_token: &str) -> Result<MarketClock> {
+        let (api_key, api_secret) = parse_auth_token(auth_token)?;
+        let base_url = Self::get_base_url(&api_key);
+
+        let response = self
+            .client
+            .get(format!("{}/v2/clock", base_url))
+            .headers(self.get_headers(&api_key, &api_secret))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_body = response.text().await.unwrap_or_default();
+            return Err(AppError::Broker(format!(
+                "Failed to get market clock: {}",
+                error_body
+            )));
+        }
+
+        let c: AlpacaClock = response.json().await?;
+        Ok(MarketClock {
+            timestamp: c.timestamp,
+            is_open: c.is_open,
+            next_open: c.next_open,
+            next_close: c.next_close,
+        })
+    }
+
+    async fn get_market_calendar(
+        &self,
+        auth_token: &str,
+        start: Option<&str>,
+        end: Option<&str>,
+    ) -> Result<Vec<MarketCalendarDay>> {
+        let (api_key, api_secret) = parse_auth_token(auth_token)?;
+        let base_url = Self::get_base_url(&api_key);
+
+        let mut url = format!("{}/v2/calendar", base_url);
+        let mut params: Vec<String> = Vec::new();
+        if let Some(s) = start {
+            params.push(format!("start={}", s));
+        }
+        if let Some(e) = end {
+            params.push(format!("end={}", e));
+        }
+        if !params.is_empty() {
+            url.push('?');
+            url.push_str(&params.join("&"));
+        }
+
+        let response = self
+            .client
+            .get(url)
+            .headers(self.get_headers(&api_key, &api_secret))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_body = response.text().await.unwrap_or_default();
+            return Err(AppError::Broker(format!(
+                "Failed to get market calendar: {}",
+                error_body
+            )));
+        }
+
+        let days: Vec<AlpacaCalendarDay> = response.json().await?;
+        Ok(days
+            .into_iter()
+            .map(|d| MarketCalendarDay {
+                date: d.date,
+                open: d.open,
+                close: d.close,
+                session_open: d.session_open,
+                session_close: d.session_close,
+            })
+            .collect())
+    }
+
+    async fn get_watchlists(&self, auth_token: &str) -> Result<Vec<BrokerWatchlist>> {
+        let (api_key, api_secret) = parse_auth_token(auth_token)?;
+        let base_url = Self::get_base_url(&api_key);
+
+        let response = self
+            .client
+            .get(format!("{}/v2/watchlists", base_url))
+            .headers(self.get_headers(&api_key, &api_secret))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_body = response.text().await.unwrap_or_default();
+            return Err(AppError::Broker(format!(
+                "Failed to get watchlists: {}",
+                error_body
+            )));
+        }
+
+        let raw: Vec<AlpacaWatchlist> = response.json().await?;
+        Ok(raw.into_iter().map(Self::map_watchlist).collect())
+    }
+
+    async fn get_watchlist(&self, auth_token: &str, id: &str) -> Result<BrokerWatchlist> {
+        let (api_key, api_secret) = parse_auth_token(auth_token)?;
+        let base_url = Self::get_base_url(&api_key);
+
+        let response = self
+            .client
+            .get(format!("{}/v2/watchlists/{}", base_url, id))
+            .headers(self.get_headers(&api_key, &api_secret))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_body = response.text().await.unwrap_or_default();
+            return Err(AppError::Broker(format!(
+                "Failed to get watchlist: {}",
+                error_body
+            )));
+        }
+
+        let raw: AlpacaWatchlist = response.json().await?;
+        Ok(Self::map_watchlist(raw))
+    }
+
+    async fn create_watchlist(
+        &self,
+        auth_token: &str,
+        name: &str,
+        symbols: Vec<String>,
+    ) -> Result<BrokerWatchlist> {
+        let (api_key, api_secret) = parse_auth_token(auth_token)?;
+        let base_url = Self::get_base_url(&api_key);
+
+        let body = serde_json::json!({ "name": name, "symbols": symbols });
+
+        let response = self
+            .client
+            .post(format!("{}/v2/watchlists", base_url))
+            .headers(self.get_headers(&api_key, &api_secret))
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_body = response.text().await.unwrap_or_default();
+            return Err(AppError::Broker(format!(
+                "Failed to create watchlist: {}",
+                error_body
+            )));
+        }
+
+        let raw: AlpacaWatchlist = response.json().await?;
+        Ok(Self::map_watchlist(raw))
+    }
+
+    async fn delete_watchlist(&self, auth_token: &str, id: &str) -> Result<()> {
+        let (api_key, api_secret) = parse_auth_token(auth_token)?;
+        let base_url = Self::get_base_url(&api_key);
+
+        let response = self
+            .client
+            .delete(format!("{}/v2/watchlists/{}", base_url, id))
+            .headers(self.get_headers(&api_key, &api_secret))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_body = response.text().await.unwrap_or_default();
+            return Err(AppError::Broker(format!(
+                "Failed to delete watchlist: {}",
+                error_body
+            )));
+        }
+
+        Ok(())
     }
 
     async fn get_quote(
