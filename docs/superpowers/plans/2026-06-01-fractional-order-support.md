@@ -321,6 +321,112 @@ Then use `superpowers:finishing-a-development-branch` to decide merge/PR.
 
 ---
 
+## Task 6: Bracket / OCO orders (folded-in opportunity — shares the order files)
+
+**Files:**
+- Modify: `src-tauri/src/brokers/types.rs` (`OrderRequest` bracket fields)
+- Modify: `src-tauri/src/brokers/alpaca/mod.rs` (`build_order_body` + test)
+- Modify: `src/components/trading/PlaceOrderDialog.tsx` (TP/SL inputs)
+
+- [ ] **Step 1: Write the failing unit test**
+
+Add to the `order_body_tests` module in `src-tauri/src/brokers/alpaca/mod.rs`:
+
+```rust
+    #[test]
+    fn bracket_order_includes_tp_and_sl() {
+        let mut r = req(None, 1.0);
+        r.order_class = Some("bracket".into());
+        r.take_profit_price = Some(110.0);
+        r.stop_loss_price = Some(90.0);
+        let body = AlpacaBroker::build_order_body(&r);
+        assert_eq!(body.get("order_class").and_then(|v| v.as_str()), Some("bracket"));
+        assert_eq!(
+            body.get("take_profit").and_then(|v| v.get("limit_price")).and_then(|v| v.as_str()),
+            Some("110")
+        );
+        assert_eq!(
+            body.get("stop_loss").and_then(|v| v.get("stop_price")).and_then(|v| v.as_str()),
+            Some("90")
+        );
+    }
+```
+
+(The `req` helper from Task 2 must also set the new fields to `None` by default — update it.)
+
+- [ ] **Step 2: Run the test, confirm it fails**
+
+Run: `cd src-tauri && cargo test --lib order_body_tests 2>&1 | tail -20`
+Expected: FAIL — `OrderRequest` has no `order_class` / `take_profit_price` / `stop_loss_price`.
+
+- [ ] **Step 3: Add bracket fields to `OrderRequest`**
+
+In `src-tauri/src/brokers/types.rs`, add to `OrderRequest`:
+```rust
+    /// Order class: "simple" (default), "bracket", "oco", "oto".
+    #[serde(default)]
+    pub order_class: Option<String>,
+    /// Take-profit limit price (bracket/oto).
+    #[serde(default)]
+    pub take_profit_price: Option<f64>,
+    /// Stop-loss stop price (bracket/oco/oto).
+    #[serde(default)]
+    pub stop_loss_price: Option<f64>,
+    /// Optional stop-loss limit price (stop-limit exit).
+    #[serde(default)]
+    pub stop_loss_limit_price: Option<f64>,
+```
+
+- [ ] **Step 4: Emit bracket legs in `build_order_body`**
+
+In `AlpacaBroker::build_order_body`, after the side/type/time_in_force inserts, append:
+```rust
+        if let Some(class) = order.order_class.as_deref() {
+            if class != "simple" {
+                body.insert("order_class".into(), serde_json::json!(class));
+            }
+        }
+        if let Some(tp) = order.take_profit_price {
+            body.insert(
+                "take_profit".into(),
+                serde_json::json!({ "limit_price": tp.to_string() }),
+            );
+        }
+        if order.stop_loss_price.is_some() || order.stop_loss_limit_price.is_some() {
+            let mut sl = serde_json::Map::new();
+            if let Some(sp) = order.stop_loss_price {
+                sl.insert("stop_price".into(), serde_json::json!(sp.to_string()));
+            }
+            if let Some(lp) = order.stop_loss_limit_price {
+                sl.insert("limit_price".into(), serde_json::json!(lp.to_string()));
+            }
+            body.insert("stop_loss".into(), serde_json::Value::Object(sl));
+        }
+```
+
+- [ ] **Step 5: Run the test, confirm pass**
+
+Run: `cd src-tauri && cargo test --lib order_body_tests 2>&1 | tail -20`
+Expected: PASS (all order-body tests).
+
+- [ ] **Step 6: Fix remaining `OrderRequest` construction sites**
+
+Run `cd src-tauri && cargo check --lib`. Add `order_class: None, take_profit_price: None, stop_loss_price: None, stop_loss_limit_price: None,` to any other `OrderRequest { .. }` literals the compiler flags. Compile clean.
+
+- [ ] **Step 7: UI — optional bracket section**
+
+In `src/components/trading/PlaceOrderDialog.tsx`, add an optional "Bracket (take-profit / stop-loss)" toggle. When enabled, show two price inputs (Take-profit, Stop-loss), set `order_class: 'bracket'` and pass `take_profit_price` / `stop_loss_price`. Bracket requires share quantity — when enabled, force **Shares** mode (disable Dollars/notional) and a limit or market entry. Thread the fields through `PlaceOrderRequest` in `tauri-client.ts`.
+
+Run: `npx tsc --noEmit -p tsconfig.json` — expect no errors.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add -A && git commit -m "feat(orders): bracket/OCO orders with take-profit + stop-loss"
+```
+
+---
+
 ## Notes / Risks
 
 - **Blast radius (Task 1):** the `i32→f64` change touches ~142 sites, but every one is a compile error until fixed — nothing fails silently. Do not "fix" by re-casting back to `i32`; that defeats the feature.
