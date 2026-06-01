@@ -111,6 +111,7 @@ export const sidebarGroups: SidebarGroup[] = [
       { href: '/calendar', label: 'Calendar', icon: Calendar },
       { href: '/options', label: 'Options', icon: Sigma },
       { href: '/quant', label: 'Quant', icon: BarChart3 },
+      { href: '/backtest', label: 'Backtest', icon: FlaskConical },
       { href: '/historify', label: 'Historify', icon: Database },
     ],
   },
