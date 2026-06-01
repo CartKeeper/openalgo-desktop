@@ -177,11 +177,11 @@ export function DrawdownChart({ equityCurve }: DrawdownChartProps) {
         chartRef.current.applyOptions({ width: container.offsetWidth })
       }
     }
-    const observer = new ResizeObserver(observer => handleResize())
-    observer.observe(container)
+    const ro = new ResizeObserver(() => handleResize())
+    ro.observe(container)
 
     return () => {
-      observer.disconnect()
+      ro.disconnect()
       if (chartRef.current) {
         chartRef.current.remove()
         chartRef.current = null
