@@ -148,3 +148,114 @@ pub struct BacktestResult {
 }
 
 pub struct BacktestService;
+
+use crate::services::indicators_service::{compute_sma, OhlcvData};
+
+/// Convert engine bars to indicator input.
+fn to_ohlcv(bars: &[Bar]) -> Vec<OhlcvData> {
+    bars.iter()
+        .map(|b| OhlcvData {
+            timestamp: b.timestamp.clone(),
+            open: b.open,
+            high: b.high,
+            low: b.low,
+            close: b.close,
+            volume: b.volume,
+        })
+        .collect()
+}
+
+/// `a` crossed from <= `b` to > `b` between i-1 and i.
+fn crossed_above(a: &[f64], b: &[f64], i: usize) -> bool {
+    i > 0 && a[i - 1] <= b[i - 1] && a[i] > b[i]
+}
+/// `a` crossed from >= `b` to < `b` between i-1 and i.
+fn crossed_below(a: &[f64], b: &[f64], i: usize) -> bool {
+    i > 0 && a[i - 1] >= b[i - 1] && a[i] < b[i]
+}
+/// scalar-threshold variants
+fn crossed_above_scalar(a: &[f64], t: f64, i: usize) -> bool {
+    i > 0 && a[i - 1] <= t && a[i] > t
+}
+fn crossed_below_scalar(a: &[f64], t: f64, i: usize) -> bool {
+    i > 0 && a[i - 1] >= t && a[i] < t
+}
+
+/// A strategy that produces per-bar signals from precomputed indicator series.
+pub trait SignalGenerator {
+    /// Precompute indicator series over the full bar set (called once).
+    fn prepare(&mut self, bars: &[Bar]);
+    /// Bars before this index cannot produce a valid signal.
+    fn warmup(&self) -> usize;
+    /// Signal at bar `i` using only data at or before `i` (no look-ahead).
+    fn signal(&self, i: usize) -> Signal;
+}
+
+pub struct SmaCrossover {
+    fast: usize,
+    slow: usize,
+    fast_v: Vec<f64>,
+    slow_v: Vec<f64>,
+}
+impl SmaCrossover {
+    pub fn new(fast: usize, slow: usize) -> Self {
+        Self { fast, slow, fast_v: Vec::new(), slow_v: Vec::new() }
+    }
+}
+impl SignalGenerator for SmaCrossover {
+    fn prepare(&mut self, bars: &[Bar]) {
+        let o = to_ohlcv(bars);
+        self.fast_v = compute_sma(&o, self.fast).values.iter().map(|p| p.value).collect();
+        self.slow_v = compute_sma(&o, self.slow).values.iter().map(|p| p.value).collect();
+    }
+    fn warmup(&self) -> usize {
+        self.slow.max(self.fast)
+    }
+    fn signal(&self, i: usize) -> Signal {
+        if crossed_above(&self.fast_v, &self.slow_v, i) {
+            Signal::Buy
+        } else if crossed_below(&self.fast_v, &self.slow_v, i) {
+            Signal::Sell
+        } else {
+            Signal::Hold
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bars_from_closes(closes: &[f64]) -> Vec<Bar> {
+        closes
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| Bar {
+                timestamp: format!("2024-01-{:02}", i + 1),
+                open: c,
+                high: c,
+                low: c,
+                close: c,
+                volume: 1000.0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sma_crossover_emits_buy_on_cross_up_and_sell_on_cross_down() {
+        // Fast(2)/Slow(3). Closes engineered so fast SMA crosses slow up then down.
+        let closes = [10.0, 10.0, 10.0, 12.0, 14.0, 8.0, 6.0];
+        let bars = bars_from_closes(&closes);
+        let mut gen = SmaCrossover::new(2, 3);
+        gen.prepare(&bars);
+
+        // Collect signals across all bars.
+        let signals: Vec<Signal> = (0..bars.len()).map(|i| gen.signal(i)).collect();
+        assert!(signals.contains(&Signal::Buy), "expected a Buy: {signals:?}");
+        assert!(signals.contains(&Signal::Sell), "expected a Sell: {signals:?}");
+        // A Buy must occur before the Sell.
+        let buy = signals.iter().position(|s| *s == Signal::Buy).unwrap();
+        let sell = signals.iter().position(|s| *s == Signal::Sell).unwrap();
+        assert!(buy < sell);
+    }
+}
