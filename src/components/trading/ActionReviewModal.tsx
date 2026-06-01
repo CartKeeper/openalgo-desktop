@@ -188,6 +188,8 @@ export function ActionReviewModal({
   const setResults = useActionQueueStore((s) => s.setResults)
   const [showResults, setShowResults] = useState(false)
   const [cloneName, setCloneName] = useState('')
+  // Gate B (pre-execution acknowledgment) — required before any LIVE order.
+  const [acknowledged, setAcknowledged] = useState(false)
 
   const handlePlaceAll = async () => {
     if (items.length === 0) return
@@ -255,6 +257,7 @@ export function ActionReviewModal({
   const handleClose = () => {
     setShowResults(false)
     setCloneName('')
+    setAcknowledged(false)
     close()
   }
 
@@ -274,6 +277,18 @@ export function ActionReviewModal({
       : 'Apply to Scenario'
     : `Place ${items.length} Order${items.length !== 1 ? 's' : ''}`
   const resolvedApplyLabel = applyButtonLabel ?? defaultApplyLabel
+
+  // Gate B figures (live path only). Real-money downside restated in the
+  // user's own dollars per the trading-advice spec (C5).
+  const isLivePath = !onApply
+  const buyCost = items
+    .filter((i) => i.side === 'BUY' && i.price > 0)
+    .reduce((sum, i) => sum + i.quantity * i.price, 0)
+  const marketLegs = items.filter((i) => i.price === 0).length
+  const realisticDownside = buyCost * 0.25
+  const usd = (n: number) =>
+    n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
+  const showGateB = isLivePath && !showResults && items.length > 0
 
   return (
     <Dialog open={isReviewOpen} onOpenChange={(open) => !open && handleClose()}>
@@ -370,6 +385,45 @@ export function ActionReviewModal({
           )}
         </div>
 
+        {showGateB && (
+          <div className="shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 space-y-2">
+            <p className="text-sm font-semibold text-amber-600 dark:text-amber-400">
+              Real money — confirm before placing
+            </p>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              These place <strong>real orders</strong> on your live account
+              {buyCost > 0 && (
+                <>
+                  {' '}totaling about <strong>{usd(buyCost)}</strong>
+                </>
+              )}
+              {marketLegs > 0 && (
+                <>
+                  {' '}(plus {marketLegs} market-priced order{marketLegs !== 1 ? 's' : ''} filled at the
+                  live price)
+                </>
+              )}
+              .{' '}
+              {buyCost > 0 && (
+                <>
+                  A realistic drawdown of ~25% would be about <strong>{usd(realisticDownside)}</strong> of
+                  real money — and losses can be larger.{' '}
+                </>
+              )}
+              AI recommendations can be confidently wrong and don't know your full finances.
+            </p>
+            <label className="flex items-start gap-2 text-xs cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                onChange={(e) => setAcknowledged(e.target.checked)}
+                className="mt-0.5 h-4 w-4"
+              />
+              <span>I understand these are real orders and I accept the risk.</span>
+            </label>
+          </div>
+        )}
+
         <DialogFooter className="gap-2">
           {showResults ? (
             <Button onClick={handleClose}>Done</Button>
@@ -383,7 +437,8 @@ export function ActionReviewModal({
                 disabled={
                   isSubmitting ||
                   items.length === 0 ||
-                  (cloneNameRequired && cloneName.trim().length === 0)
+                  (cloneNameRequired && cloneName.trim().length === 0) ||
+                  (showGateB && !acknowledged)
                 }
                 className="bg-primary"
               >
