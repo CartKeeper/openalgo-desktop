@@ -1236,6 +1236,7 @@ impl AngelBroker {
             option_type,
             brsymbol: Some(brsymbol),
             brexchange: Some(brexchange),
+            fractionable: false,
         }
     }
 

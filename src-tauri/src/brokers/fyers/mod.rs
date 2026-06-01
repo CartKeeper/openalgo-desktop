@@ -1324,6 +1324,7 @@ impl FyersBroker {
             option_type: None,
             brsymbol: Some(symbol_ticker.to_string()),
             brexchange: Some("NSE".to_string()),
+            fractionable: false,
         })
     }
 
@@ -1359,6 +1360,7 @@ impl FyersBroker {
             option_type: None,
             brsymbol: Some(symbol_ticker.to_string()),
             brexchange: Some("BSE".to_string()),
+            fractionable: false,
         })
     }
 
@@ -1414,6 +1416,7 @@ impl FyersBroker {
             },
             brsymbol: Some(symbol_ticker.to_string()),
             brexchange: Some(exchange.to_string()),
+            fractionable: false,
         })
     }
 

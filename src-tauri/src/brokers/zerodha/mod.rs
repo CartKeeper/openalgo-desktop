@@ -982,6 +982,7 @@ impl Broker for ZerodhaBroker {
                     option_type,
                     brsymbol: Some(brsymbol),
                     brexchange: Some(brexchange),
+                    fractionable: false,
                 });
             }
         }

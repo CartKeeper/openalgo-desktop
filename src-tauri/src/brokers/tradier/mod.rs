@@ -925,6 +925,7 @@ impl Broker for TradierBroker {
                     option_type: None,
                     brsymbol: Some(sec.symbol),
                     brexchange: Some(sec.exchange),
+                    fractionable: false,
                 });
             }
         }

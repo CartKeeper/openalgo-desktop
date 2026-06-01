@@ -252,4 +252,7 @@ pub struct SymbolData {
     pub brsymbol: Option<String>,
     /// Broker's exchange code (e.g., "NSE" for the broker's API)
     pub brexchange: Option<String>,
+    /// Whether the symbol supports fractional/notional orders (Alpaca). Other
+    /// brokers default to false.
+    pub fractionable: bool,
 }

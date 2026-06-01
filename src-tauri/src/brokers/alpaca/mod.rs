@@ -1176,6 +1176,7 @@ impl Broker for AlpacaBroker {
                 expiry: None,
                 strike: None,
                 option_type: None,
+                fractionable: a.fractionable,
                 brsymbol: Some(a.symbol),
                 brexchange: Some("US".to_string()),
             })

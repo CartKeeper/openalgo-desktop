@@ -862,6 +862,7 @@ impl Broker for SchwabBroker {
                 option_type: None,
                 brsymbol: Some(inst.symbol),
                 brexchange: Some("US".to_string()),
+                fractionable: false,
             })
             .collect())
     }

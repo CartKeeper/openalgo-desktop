@@ -135,6 +135,7 @@ pub async fn refresh_symbol_master(state: State<'_, AppState>) -> Result<usize> 
             instrument_type: s.instrument_type,
             brsymbol: s.brsymbol,
             brexchange: s.brexchange,
+            fractionable: s.fractionable,
         })
         .collect();
 

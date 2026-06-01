@@ -226,6 +226,7 @@ impl SymbolService {
                 instrument_type: s.instrument_type,
                 brsymbol: s.brsymbol,
                 brexchange: s.brexchange,
+                fractionable: s.fractionable,
             })
             .collect();
 
