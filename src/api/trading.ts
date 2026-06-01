@@ -377,6 +377,11 @@ export const tradingApi = {
         amo: order.amo || false,
         trail_price: order.trail_price,
         trail_percent: order.trail_percent,
+        notional: order.notional,
+        order_class: order.order_class,
+        take_profit_price: order.take_profit_price,
+        stop_loss_price: order.stop_loss_price,
+        stop_loss_limit_price: order.stop_loss_limit_price,
       })
 
       return {

@@ -410,6 +410,11 @@ export function PlaceOrderDialog({
     trailPrice: 0,
     trailPercent: 0,
     trailMode: 'price' as 'price' | 'percent',
+    orderMode: 'shares' as 'shares' | 'dollars',
+    notional: 0,
+    bracketEnabled: false,
+    takeProfitPrice: 0,
+    stopLossPrice: 0,
   })
 
   // Reset form when dialog opens
@@ -434,6 +439,11 @@ export function PlaceOrderDialog({
         trailPrice: 0,
         trailPercent: 0,
         trailMode: 'price',
+        orderMode: 'shares',
+        notional: 0,
+        bracketEnabled: false,
+        takeProfitPrice: 0,
+        stopLossPrice: 0,
       })
       setSymbolQuery(sym)
       setSearchResults([])
@@ -526,9 +536,23 @@ export function PlaceOrderDialog({
       toast.error('Please select a symbol')
       return
     }
-    if (form.quantity <= 0) {
+    if (form.orderMode === 'shares' && form.quantity <= 0) {
       toast.error('Quantity must be greater than 0')
       return
+    }
+    if (form.orderMode === 'dollars' && form.notional < 1) {
+      toast.error('Amount must be at least $1')
+      return
+    }
+    if (form.bracketEnabled) {
+      if (form.takeProfitPrice <= 0) {
+        toast.error('Take-profit price must be greater than 0')
+        return
+      }
+      if (form.stopLossPrice <= 0) {
+        toast.error('Stop-loss price must be greater than 0')
+        return
+      }
     }
     if (form.orderType === 'LIMIT' && form.price <= 0) {
       toast.error('Price must be greater than 0 for limit orders')
@@ -562,7 +586,11 @@ export function PlaceOrderDialog({
         product: form.product,
         pricetype: form.orderType,
         price: form.orderType === 'MARKET' || form.orderType === 'TRAILING_STOP' ? 0 : form.price,
-        quantity: form.quantity,
+        quantity: form.orderMode === 'dollars' ? 0 : form.quantity,
+        notional: form.orderMode === 'dollars' ? form.notional : undefined,
+        order_class: form.bracketEnabled ? 'bracket' : undefined,
+        take_profit_price: form.bracketEnabled ? form.takeProfitPrice : undefined,
+        stop_loss_price: form.bracketEnabled ? form.stopLossPrice : undefined,
         trigger_price:
           form.orderType === 'SL' || form.orderType === 'SL-M' ? form.triggerPrice : undefined,
         validity: form.validity,
@@ -576,7 +604,7 @@ export function PlaceOrderDialog({
       })
 
       if (response.status === 'success') {
-        toast.success(`Order placed: ${form.side} ${form.quantity} ${form.symbol}`, {
+        toast.success(`Order placed: ${form.side} ${form.orderMode === 'dollars' ? `$${form.notional} of ${form.symbol}` : `${form.quantity} ${form.symbol}`}`, {
           description: `Order ID: ${response.data?.orderid}`,
         })
         emit('order_event', {
@@ -602,7 +630,9 @@ export function PlaceOrderDialog({
   }
 
   const estimatedCost =
-    form.orderType === 'MARKET' || form.orderType === 'TRAILING_STOP'
+    form.orderMode === 'dollars'
+      ? form.notional
+      : form.orderType === 'MARKET' || form.orderType === 'TRAILING_STOP'
       ? (quote?.price ?? 0) * form.quantity
       : form.price * form.quantity
 
@@ -804,7 +834,41 @@ export function PlaceOrderDialog({
           </div>
         </div>
 
-        {/* Order Type + Quantity Row */}
+        {/* Shares / Dollars Toggle */}
+        <div className="space-y-1.5">
+          <Label>Order In</Label>
+          <div className="flex border rounded-md overflow-hidden">
+            <button
+              onClick={() => setForm((prev) => ({ ...prev, orderMode: 'shares' }))}
+              className={cn(
+                'flex-1 h-10 px-3 text-xs font-semibold transition-colors',
+                form.orderMode === 'shares'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-background text-muted-foreground hover:bg-muted'
+              )}
+            >
+              Shares
+            </button>
+            <button
+              onClick={() =>
+                !form.bracketEnabled &&
+                setForm((prev) => ({ ...prev, orderMode: 'dollars', orderType: 'MARKET' }))
+              }
+              disabled={form.bracketEnabled}
+              className={cn(
+                'flex-1 h-10 px-3 text-xs font-semibold transition-colors',
+                form.orderMode === 'dollars'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-background text-muted-foreground hover:bg-muted',
+                form.bracketEnabled && 'opacity-50 cursor-not-allowed'
+              )}
+            >
+              Dollars
+            </button>
+          </div>
+        </div>
+
+        {/* Order Type + Quantity/Amount Row */}
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <Label>
@@ -820,6 +884,7 @@ export function PlaceOrderDialog({
               onValueChange={(val) =>
                 setForm((prev) => ({ ...prev, orderType: val as OrderType }))
               }
+              disabled={form.orderMode === 'dollars'}
             >
               <SelectTrigger className="h-10">
                 <SelectValue />
@@ -832,20 +897,41 @@ export function PlaceOrderDialog({
                 ))}
               </SelectContent>
             </Select>
+            {form.orderMode === 'dollars' && (
+              <p className="text-[10px] text-muted-foreground">
+                Dollar orders are market-day only.
+              </p>
+            )}
           </div>
-          <div className="space-y-1.5">
-            <Label>Quantity</Label>
-            <Input
-              type="number"
-              min={1}
-              step={1}
-              value={form.quantity}
-              onChange={(e) =>
-                setForm((prev) => ({ ...prev, quantity: parseInt(e.target.value) || 0 }))
-              }
-              className="h-10 tabular-nums"
-            />
-          </div>
+          {form.orderMode === 'shares' ? (
+            <div className="space-y-1.5">
+              <Label>Quantity</Label>
+              <Input
+                type="number"
+                min={1}
+                step="any"
+                value={form.quantity}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, quantity: parseFloat(e.target.value) || 0 }))
+                }
+                className="h-10 tabular-nums"
+              />
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              <Label>$ Amount</Label>
+              <Input
+                type="number"
+                min={1}
+                step="any"
+                value={form.notional}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, notional: parseFloat(e.target.value) || 0 }))
+                }
+                className="h-10 tabular-nums"
+              />
+            </div>
+          )}
         </div>
 
         {/* Validity + Extended Hours Row */}
@@ -992,8 +1078,61 @@ export function PlaceOrderDialog({
           </div>
         )}
 
+        {/* Bracket (take-profit / stop-loss) */}
+        <div className="space-y-1.5">
+          <div className="flex items-center h-10 gap-2">
+            <Switch
+              checked={form.bracketEnabled}
+              onCheckedChange={(checked) =>
+                setForm((prev) => ({
+                  ...prev,
+                  bracketEnabled: checked,
+                  orderMode: checked ? 'shares' : prev.orderMode,
+                }))
+              }
+            />
+            <Label className="cursor-pointer">Bracket (take-profit / stop-loss)</Label>
+          </div>
+          {form.bracketEnabled && (
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label>Take-profit</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  step="any"
+                  value={form.takeProfitPrice}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      takeProfitPrice: parseFloat(e.target.value) || 0,
+                    }))
+                  }
+                  className="h-10 tabular-nums"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Stop-loss</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  step="any"
+                  value={form.stopLossPrice}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      stopLossPrice: parseFloat(e.target.value) || 0,
+                    }))
+                  }
+                  className="h-10 tabular-nums"
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Estimated Cost */}
-        {form.symbol && form.quantity > 0 && (
+        {form.symbol && estimatedCost > 0 && (
           <div className="rounded-lg border p-3 flex items-center justify-between">
             <span className="text-sm text-muted-foreground">
               Estimated {form.side === 'BUY' ? 'Cost' : 'Proceeds'}
@@ -1011,7 +1150,11 @@ export function PlaceOrderDialog({
         </Button>
         <Button
           onClick={handleSubmit}
-          disabled={isSubmitting || !form.symbol || form.quantity <= 0}
+          disabled={
+            isSubmitting ||
+            !form.symbol ||
+            (form.orderMode === 'shares' ? form.quantity <= 0 : form.notional < 1)
+          }
           className={cn(
             form.side === 'BUY'
               ? 'bg-green-500 hover:bg-green-600'
