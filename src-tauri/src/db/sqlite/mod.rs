@@ -22,11 +22,13 @@ mod watchlist;
 pub mod alerts;
 mod clients;
 mod client_scenarios;
+pub mod backtest;
 
 pub use reports::{ResearchReport, ResearchReportSummary, ReportNote};
 pub use watchlist::WatchlistItem;
 pub use alerts::{AlertConfig, AlertHistoryEntry, AlertGlobalSettings};
 pub use clients::ClientAccount;
+pub use backtest::BacktestRunRecord;
 
 use crate::error::Result;
 use crate::security::SecurityManager;
@@ -1546,5 +1548,40 @@ impl SqliteDb {
     ) -> Result<crate::providers::types::ScenarioPosition> {
         let conn = self.conn.lock();
         client_scenarios::apply_trade_to_scenario(&conn, scenario_id, symbol, exchange, side, quantity, price)
+    }
+
+    // ========== Backtest Run Methods ==========
+
+    /// Persist a backtest run's config + summary; returns the new row id.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_backtest_run(
+        &self,
+        created_at: &str,
+        symbol: &str,
+        exchange: &str,
+        interval: &str,
+        from_date: &str,
+        to_date: &str,
+        strategy_kind: &str,
+        config_json: &str,
+        summary_json: &str,
+    ) -> Result<i64> {
+        let conn = self.conn.lock();
+        backtest::insert_run(
+            &conn, created_at, symbol, exchange, interval,
+            from_date, to_date, strategy_kind, config_json, summary_json,
+        )
+    }
+
+    /// List backtest runs, newest first.
+    pub fn list_backtest_runs(&self) -> Result<Vec<BacktestRunRecord>> {
+        let conn = self.conn.lock();
+        backtest::list_runs(&conn)
+    }
+
+    /// Fetch one backtest run by id.
+    pub fn get_backtest_run(&self, id: i64) -> Result<Option<BacktestRunRecord>> {
+        let conn = self.conn.lock();
+        backtest::get_run(&conn, id)
     }
 }

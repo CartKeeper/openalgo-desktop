@@ -71,6 +71,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "053_compliance_resolution_meta", ADD_COMPLIANCE_RESOLUTION_META)?;
     run_migration(conn, "054_holdings_market_value", ADD_HOLDINGS_MARKET_VALUE)?;
     run_migration(conn, "055_symtoken_fractionable", ADD_SYMTOKEN_FRACTIONABLE)?;
+    run_migration(conn, "056_backtest_runs", CREATE_BACKTEST_RUNS_TABLE)?;
 
     tracing::info!("Database migrations completed");
     Ok(())
@@ -900,6 +901,21 @@ ALTER TABLE client_holdings ADD COLUMN gain_percent REAL;
 /// Whether a symbol supports fractional/notional orders (Alpaca).
 const ADD_SYMTOKEN_FRACTIONABLE: &str =
     "ALTER TABLE symtoken ADD COLUMN fractionable INTEGER NOT NULL DEFAULT 0;";
+
+/// Backtest run history — config + summary metrics (equity_curve and trades are not stored)
+const CREATE_BACKTEST_RUNS_TABLE: &str = "
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    exchange TEXT NOT NULL,
+    interval TEXT NOT NULL,
+    from_date TEXT NOT NULL,
+    to_date TEXT NOT NULL,
+    strategy_kind TEXT NOT NULL,
+    config_json TEXT NOT NULL,
+    summary_json TEXT NOT NULL
+);";
 
 /// 401k compliance violations detected during import
 const CREATE_CLIENT_COMPLIANCE_VIOLATIONS_TABLE: &str = r#"
