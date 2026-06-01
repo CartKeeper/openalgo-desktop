@@ -554,9 +554,9 @@ impl Broker for AlpacaBroker {
                 symbol: o.symbol,
                 exchange: "US".to_string(),
                 side: o.side.to_uppercase(),
-                quantity: qty as i32,
-                filled_quantity: filled as i32,
-                pending_quantity: pending as i32,
+                quantity: qty as f64,
+                filled_quantity: filled as f64,
+                pending_quantity: pending as f64,
                 price: parse_f64_or_zero(o.limit_price.as_deref()),
                 trigger_price: parse_f64_or_zero(o.stop_price.as_deref()),
                 average_price: parse_f64_or_zero(o.filled_avg_price.as_deref()),
@@ -603,9 +603,9 @@ impl Broker for AlpacaBroker {
                     symbol: o.symbol,
                     exchange: "US".to_string(),
                     side: o.side.to_uppercase(),
-                    quantity: qty as i32,
-                    filled_quantity: filled as i32,
-                    pending_quantity: 0,
+                    quantity: qty as f64,
+                    filled_quantity: filled as f64,
+                    pending_quantity: 0.0,
                     price: parse_f64_or_zero(o.limit_price.as_deref()),
                     trigger_price: parse_f64_or_zero(o.stop_price.as_deref()),
                     average_price: parse_f64_or_zero(o.filled_avg_price.as_deref()),
@@ -641,7 +641,7 @@ impl Broker for AlpacaBroker {
 
         Ok(positions.into_iter().map(|p| {
             let qty: f64 = p.qty.parse().unwrap_or(0.0);
-            let qty_i32 = qty as i32;
+            let _qty_i32 = qty as i32;
             let avg_price: f64 = p.avg_entry_price.parse().unwrap_or(0.0);
             let current_price: f64 = p.current_price.parse().unwrap_or(0.0);
             let cost_basis: f64 = p.cost_basis.parse().unwrap_or(0.0);
@@ -649,17 +649,17 @@ impl Broker for AlpacaBroker {
             let unrealized: f64 = p.unrealized_pl.parse().unwrap_or(0.0);
 
             let (buy_qty, buy_val, sell_qty, sell_val) = if p.side == "long" {
-                (qty_i32.abs(), cost_basis, 0, 0.0)
+                (qty.abs(), cost_basis, 0.0, 0.0)
             } else {
-                (0, 0.0, qty_i32.abs(), cost_basis)
+                (0.0, 0.0, qty.abs(), cost_basis)
             };
 
             Position {
                 symbol: p.symbol,
                 exchange: if p.exchange.is_empty() { "US".to_string() } else { p.exchange },
                 product: "CNC".to_string(),
-                quantity: qty_i32,
-                overnight_quantity: qty_i32,
+                quantity: qty,
+                overnight_quantity: qty,
                 average_price: avg_price,
                 ltp: current_price,
                 pnl: unrealized,
@@ -691,7 +691,7 @@ impl Broker for AlpacaBroker {
                 exchange: p.exchange,
                 isin: None,
                 quantity: p.quantity,
-                t1_quantity: 0,
+                t1_quantity: 0.0,
                 average_price: p.average_price,
                 ltp: p.ltp,
                 close_price: p.ltp,

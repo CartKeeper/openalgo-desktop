@@ -77,7 +77,7 @@ impl PositionService {
             p.symbol.eq_ignore_ascii_case(symbol)
                 && p.exchange.eq_ignore_ascii_case(exchange)
                 && p.product.eq_ignore_ascii_case(product)
-                && p.quantity != 0
+                && p.quantity != 0.0
         });
 
         Ok(position)
@@ -100,7 +100,7 @@ impl PositionService {
             AppError::NotFound(format!("No open position for {} {}", exchange, symbol))
         })?;
 
-        if position.quantity == 0 {
+        if position.quantity == 0.0 {
             return Ok(ClosePositionResult {
                 success: true,
                 order_id: None,
@@ -109,7 +109,7 @@ impl PositionService {
         }
 
         // Determine action based on position quantity
-        let (action, qty) = if position.quantity > 0 {
+        let (action, qty) = if position.quantity > 0.0 {
             ("SELL", position.quantity)
         } else {
             ("BUY", position.quantity.abs())
@@ -124,7 +124,7 @@ impl PositionService {
                 symbol,
                 exchange,
                 action,
-                qty,
+                qty as i32,
                 position.ltp,
                 "MARKET",
                 product,
@@ -177,7 +177,7 @@ impl PositionService {
         let mut results = Vec::new();
 
         for position in result.positions {
-            if position.quantity != 0 {
+            if position.quantity != 0.0 {
                 match Self::close_position(
                     state,
                     &position.exchange,
@@ -233,15 +233,15 @@ impl PositionService {
                 symbol: sp.symbol,
                 exchange: sp.exchange,
                 product: sp.product,
-                quantity: sp.quantity,
-                overnight_quantity: 0,
+                quantity: sp.quantity as f64,
+                overnight_quantity: 0.0,
                 average_price: sp.average_price,
                 ltp: sp.ltp,
                 pnl: sp.pnl,
                 realized_pnl: 0.0,
                 unrealized_pnl: sp.pnl,
-                buy_quantity: 0,
-                sell_quantity: 0,
+                buy_quantity: 0.0,
+                sell_quantity: 0.0,
                 buy_value: 0.0,
                 sell_value: 0.0,
             })

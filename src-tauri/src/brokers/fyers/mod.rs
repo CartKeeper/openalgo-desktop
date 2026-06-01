@@ -615,7 +615,7 @@ impl Broker for FyersBroker {
 
         let request = FyersOrderRequest {
             symbol,
-            qty: order.quantity,
+            qty: order.quantity as i32,
             order_type,
             side,
             product_type,
@@ -803,9 +803,9 @@ impl Broker for FyersBroker {
                     symbol: symbol_name,
                     exchange,
                     side: map_side(o.side.unwrap_or(1)),
-                    quantity: o.qty.unwrap_or(0) as i32,
-                    filled_quantity: o.filledQty.unwrap_or(0) as i32,
-                    pending_quantity: (o.qty.unwrap_or(0) - o.filledQty.unwrap_or(0)) as i32,
+                    quantity: o.qty.unwrap_or(0) as f64,
+                    filled_quantity: o.filledQty.unwrap_or(0) as f64,
+                    pending_quantity: (o.qty.unwrap_or(0) - o.filledQty.unwrap_or(0)) as f64,
                     price: o.limitPrice.unwrap_or(0.0),
                     trigger_price: o.stopPrice.unwrap_or(0.0),
                     average_price: o.tradedPrice.unwrap_or(0.0),
@@ -862,9 +862,9 @@ impl Broker for FyersBroker {
                     symbol: symbol_name,
                     exchange,
                     side: map_side(t.side.unwrap_or(1)),
-                    quantity: t.tradedQty.unwrap_or(0) as i32,
-                    filled_quantity: t.tradedQty.unwrap_or(0) as i32,
-                    pending_quantity: 0,
+                    quantity: t.tradedQty.unwrap_or(0) as f64,
+                    filled_quantity: t.tradedQty.unwrap_or(0) as f64,
+                    pending_quantity: 0.0,
                     price: t.tradePrice.unwrap_or(0.0),
                     trigger_price: 0.0,
                     average_price: t.tradePrice.unwrap_or(0.0),
@@ -915,7 +915,7 @@ impl Broker for FyersBroker {
                     .map(|s| Self::extract_symbol_name(s))
                     .unwrap_or_default();
 
-                let quantity = p.netQty.unwrap_or(0) as i32;
+                let quantity = p.netQty.unwrap_or(0) as f64;
                 let avg_price = p.netAvg.unwrap_or(0.0);
                 let ltp = p.ltp.unwrap_or(0.0);
 
@@ -924,16 +924,16 @@ impl Broker for FyersBroker {
                     exchange,
                     product: map_product_type(p.productType.as_deref().unwrap_or("INTRADAY")),
                     quantity,
-                    overnight_quantity: 0,
+                    overnight_quantity: 0.0,
                     average_price: avg_price,
                     ltp,
                     pnl: p.pl.unwrap_or(0.0),
                     realized_pnl: p.realized_profit.unwrap_or(0.0),
                     unrealized_pnl: p.unrealized_profit.unwrap_or(0.0),
-                    buy_quantity: if quantity > 0 { quantity } else { 0 },
-                    buy_value: if quantity > 0 { quantity as f64 * avg_price } else { 0.0 },
-                    sell_quantity: if quantity < 0 { quantity.abs() } else { 0 },
-                    sell_value: if quantity < 0 { quantity.abs() as f64 * avg_price } else { 0.0 },
+                    buy_quantity: if quantity > 0.0 { quantity } else { 0.0 },
+                    buy_value: if quantity > 0.0 { quantity * avg_price } else { 0.0 },
+                    sell_quantity: if quantity < 0.0 { quantity.abs() } else { 0.0 },
+                    sell_value: if quantity < 0.0 { quantity.abs() * avg_price } else { 0.0 },
                 }
             })
             .collect();
@@ -974,7 +974,7 @@ impl Broker for FyersBroker {
                     .map(|s| Self::extract_symbol_name(s))
                     .unwrap_or_default();
 
-                let quantity = h.quantity.unwrap_or(0) as i32;
+                let quantity = h.quantity.unwrap_or(0) as f64;
                 let avg_price = h.costPrice.unwrap_or(0.0);
                 let ltp = h.ltp.unwrap_or(0.0);
                 let pnl = h.pl.unwrap_or(0.0);
@@ -989,13 +989,13 @@ impl Broker for FyersBroker {
                     exchange,
                     isin: None,
                     quantity,
-                    t1_quantity: 0,
+                    t1_quantity: 0.0,
                     average_price: avg_price,
                     ltp,
                     close_price: avg_price,
                     pnl,
                     pnl_percentage,
-                    current_value: quantity as f64 * ltp,
+                    current_value: quantity * ltp,
                 }
             })
             .collect();

@@ -94,8 +94,8 @@ impl HoldingsService {
                     symbol: sh.symbol,
                     exchange: sh.exchange,
                     isin: None,
-                    quantity: sh.quantity,
-                    t1_quantity: 0,
+                    quantity: sh.quantity as f64,
+                    t1_quantity: 0.0,
                     average_price: sh.average_price,
                     ltp: sh.ltp,
                     close_price: sh.ltp, // Use LTP as close price

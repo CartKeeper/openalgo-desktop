@@ -537,9 +537,9 @@ impl Broker for IbkrBroker {
                     symbol: o.ticker,
                     exchange: "US".to_string(),
                     side: map_ibkr_side(&o.side),
-                    quantity: o.total_size as i32,
-                    filled_quantity: o.filled_quantity as i32,
-                    pending_quantity: o.remaining_quantity as i32,
+                    quantity: o.total_size as f64,
+                    filled_quantity: o.filled_quantity as f64,
+                    pending_quantity: o.remaining_quantity as f64,
                     price: o.price,
                     trigger_price: o.aux_price,
                     average_price: o.avg_price,
@@ -589,11 +589,11 @@ impl Broker for IbkrBroker {
         Ok(positions
             .into_iter()
             .map(|p| {
-                let qty = p.position as i32;
-                let (buy_qty, buy_val, sell_qty, sell_val) = if qty > 0 {
-                    (qty, p.avg_cost * (qty as f64), 0, 0.0)
+                let qty = p.position as f64;
+                let (buy_qty, buy_val, sell_qty, sell_val) = if qty > 0.0 {
+                    (qty, p.avg_cost * qty, 0.0, 0.0)
                 } else {
-                    (0, 0.0, qty.unsigned_abs() as i32, p.avg_cost * (qty.abs() as f64))
+                    (0.0, 0.0, qty.abs(), p.avg_cost * qty.abs())
                 };
 
                 Position {
@@ -634,7 +634,7 @@ impl Broker for IbkrBroker {
                     exchange: p.exchange,
                     isin: None,
                     quantity: p.quantity,
-                    t1_quantity: 0,
+                    t1_quantity: 0.0,
                     average_price: p.average_price,
                     ltp: p.ltp,
                     close_price: p.ltp,

@@ -587,9 +587,9 @@ impl Broker for TradierBroker {
                     symbol: o.symbol,
                     exchange: "US".to_string(),
                     side: o.side.to_uppercase(),
-                    quantity: o.quantity as i32,
-                    filled_quantity: o.exec_quantity as i32,
-                    pending_quantity: o.remaining_quantity as i32,
+                    quantity: o.quantity as f64,
+                    filled_quantity: o.exec_quantity as f64,
+                    pending_quantity: o.remaining_quantity as f64,
                     price: o.price.unwrap_or(0.0),
                     trigger_price: o.stop_price.unwrap_or(0.0),
                     average_price: o.avg_fill_price,
@@ -663,10 +663,10 @@ impl Broker for TradierBroker {
         Ok(positions
             .into_iter()
             .map(|p| {
-                let qty = p.quantity as i32;
+                let qty = p.quantity as f64;
                 let cost_basis = p.cost_basis;
-                let avg_price = if qty != 0 {
-                    cost_basis / (qty as f64)
+                let avg_price = if qty != 0.0 {
+                    cost_basis / qty
                 } else {
                     0.0
                 };
@@ -674,13 +674,13 @@ impl Broker for TradierBroker {
                     .get(&p.symbol)
                     .map(|q| q.ltp)
                     .unwrap_or(avg_price);
-                let current_value = ltp * (qty as f64);
+                let current_value = ltp * qty;
                 let unrealized = current_value - cost_basis;
 
-                let (buy_qty, buy_val, sell_qty, sell_val) = if qty > 0 {
-                    (qty, cost_basis, 0, 0.0)
+                let (buy_qty, buy_val, sell_qty, sell_val) = if qty > 0.0 {
+                    (qty, cost_basis, 0.0, 0.0)
                 } else {
-                    (0, 0.0, qty.unsigned_abs() as i32, cost_basis.abs())
+                    (0.0, 0.0, qty.abs(), cost_basis.abs())
                 };
 
                 Position {
@@ -721,7 +721,7 @@ impl Broker for TradierBroker {
                     exchange: p.exchange,
                     isin: None,
                     quantity: p.quantity,
-                    t1_quantity: 0,
+                    t1_quantity: 0.0,
                     average_price: p.average_price,
                     ltp: p.ltp,
                     close_price: p.ltp,

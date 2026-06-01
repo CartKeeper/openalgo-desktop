@@ -62,7 +62,7 @@ import {
 } from '@/components/ui/table'
 import { useLivePrice } from '@/hooks/useLivePrice'
 import { useOrderEventRefresh } from '@/hooks/useOrderEventRefresh'
-import { cn, sanitizeCSV } from '@/lib/utils'
+import { cn, formatQty, sanitizeCSV } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { onModeChange } from '@/stores/themeStore'
 import type { Position } from '@/types/trading'
@@ -948,7 +948,7 @@ export default function Positions() {
                                   position.quantity > 0 ? 'text-green-600' : 'text-red-600'
                                 )}
                               >
-                                {position.quantity}
+                                {formatQty(position.quantity)}
                               </TableCell>
                               <TableCell className="w-[120px] text-right font-mono">
                                 {formatCurrency(position.average_price)}

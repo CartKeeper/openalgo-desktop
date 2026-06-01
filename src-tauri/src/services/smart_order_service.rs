@@ -86,7 +86,7 @@ impl SmartOrderService {
         )
         .await?;
 
-        let current_qty = current_position.map(|p| p.quantity).unwrap_or(0);
+        let current_qty = current_position.map(|p| p.quantity as i32).unwrap_or(0);
         let target_size = req.position_size;
         let action = req.action.to_uppercase();
 
@@ -108,7 +108,7 @@ impl SmartOrderService {
             symbol: req.symbol.clone(),
             exchange: req.exchange.clone(),
             side: order_action.clone(),
-            quantity: order_qty,
+            quantity: order_qty as f64,
             order_type: req.pricetype.clone().unwrap_or_else(|| "MARKET".to_string()),
             product: req.product.clone(),
             price: req.price.unwrap_or(0.0),
@@ -160,7 +160,7 @@ impl SmartOrderService {
                 symbol: req.symbol.clone(),
                 exchange: req.exchange.clone(),
                 side: req.action.clone(),
-                quantity: qty,
+                quantity: qty as f64,
                 order_type: req.pricetype.clone().unwrap_or_else(|| "MARKET".to_string()),
                 product: req.product.clone(),
                 price: req.price.unwrap_or(0.0),
