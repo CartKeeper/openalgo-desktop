@@ -333,7 +333,7 @@ pub async fn place_order(
     };
 
     // Execute order via service
-    match OrderService::place_order(&app_state, order, Some(&req.apikey)).await {
+    match OrderService::place_order(&app_state, order, Some(&req.apikey), None).await {
         Ok(result) => {
             state.emit("api_order", &req);
             if result.success {
@@ -935,7 +935,7 @@ pub async fn place_basket_order(
         symbol_token: None,   // Set by OrderService from symbol cache
     }).collect();
 
-    match SmartOrderService::place_basket_order(&app_state, orders, Some(&req.apikey)).await {
+    match SmartOrderService::place_basket_order(&app_state, orders, Some(&req.apikey), None).await {
         Ok(order_results) => {
             let results: Vec<BasketOrderResult> = order_results.into_iter()
                 .enumerate()

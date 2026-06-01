@@ -45,15 +45,43 @@ impl OrderService {
     /// - Session-based auth (api_key is None) - for Tauri command calls
     ///
     /// In analyze mode, routes to sandbox instead of live broker.
+    ///
+    /// `expected_mode` is the analyze-mode value the caller (UI Gate B) confirmed
+    /// with the user. When `Some`, the mode we actually route against MUST equal
+    /// it or the order is rejected — see the atomic check below. `None` skips the
+    /// check (internal/REST callers that have no user acknowledgment to honor).
     pub async fn place_order(
         state: &AppState,
         order: OrderRequest,
         api_key: Option<&str>,
+        expected_mode: Option<bool>,
     ) -> Result<PlaceOrderResult> {
         info!("OrderService::place_order - {:?}", order);
 
-        // Check if in analyze mode
+        // Check if in analyze mode. This single read is the one authority: it both
+        // decides routing (sandbox vs live) AND enforces the acknowledgment below,
+        // so there is no time-of-check-to-time-of-use gap between the two.
         let analyze_mode = state.sqlite.get_analyze_mode().unwrap_or(false);
+
+        // Gate B enforcement: the order may only execute against the mode the user
+        // acknowledged. If a background actor (e.g. WebSocket auto-reconnect, a
+        // scheduled task) flipped analyze_mode between the user's confirmation and
+        // now, `expected_mode` won't match `analyze_mode` and we reject — closing
+        // the bad failure direction (paper acknowledged, live executed).
+        if let Some(expected) = expected_mode {
+            if expected != analyze_mode {
+                let ack = if expected { "paper (sandbox)" } else { "LIVE (real money)" };
+                let actual = if analyze_mode { "paper (sandbox)" } else { "LIVE (real money)" };
+                warn!(
+                    "Order rejected: acknowledged {ack} mode but execution mode is {actual} — \
+                     mode changed between confirmation and execution"
+                );
+                return Err(AppError::Validation(format!(
+                    "Order rejected: you confirmed {ack} mode, but the app is now in {actual} mode. \
+                     Re-confirm before placing."
+                )));
+            }
+        }
 
         if analyze_mode {
             return Self::place_sandbox_order(state, order, api_key).await;

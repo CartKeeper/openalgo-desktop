@@ -127,7 +127,7 @@ impl SmartOrderService {
             symbol_token: None,   // Set by OrderService from symbol cache
         };
 
-        let result = OrderService::place_order(state, order_request, api_key).await?;
+        let result = OrderService::place_order(state, order_request, api_key, None).await?;
 
         Ok(SmartOrderResult {
             success: result.success,
@@ -184,7 +184,7 @@ impl SmartOrderService {
                 symbol_token: None,   // Set by OrderService from symbol cache
             };
 
-            match OrderService::place_order(state, order_request, api_key).await {
+            match OrderService::place_order(state, order_request, api_key, None).await {
                 Ok(result) => {
                     if let Some(order_id) = result.order_id {
                         order_ids.push(order_id);
@@ -211,13 +211,16 @@ impl SmartOrderService {
         state: &AppState,
         orders: Vec<OrderRequest>,
         api_key: Option<&str>,
+        expected_mode: Option<bool>,
     ) -> Result<Vec<PlaceOrderResult>> {
         info!("SmartOrderService::place_basket_order - {} orders", orders.len());
 
         let mut results = Vec::new();
 
         for order in orders {
-            match OrderService::place_order(state, order, api_key).await {
+            // Gate B acknowledgment is enforced per-order inside place_order, so a
+            // mid-basket mode flip rejects every remaining leg, not just the first.
+            match OrderService::place_order(state, order, api_key, expected_mode).await {
                 Ok(result) => results.push(result),
                 Err(e) => {
                     results.push(PlaceOrderResult {

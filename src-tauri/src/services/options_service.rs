@@ -272,7 +272,7 @@ impl OptionsService {
             symbol_token: None,   // Set by OrderService from symbol cache
         };
 
-        OrderService::place_order(state, order_request, api_key).await
+        OrderService::place_order(state, order_request, api_key, None).await
     }
 
     /// Place multi-leg options order
@@ -326,7 +326,7 @@ impl OptionsService {
                 symbol_token: None,   // Set by OrderService from symbol cache
             };
 
-            match OrderService::place_order(state, order_request, api_key).await {
+            match OrderService::place_order(state, order_request, api_key, None).await {
                 Ok(result) => results.push(result),
                 Err(e) => {
                     results.push(PlaceOrderResult {

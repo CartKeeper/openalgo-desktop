@@ -553,7 +553,10 @@ export const brokerCommands = {
 // ============================================================================
 
 export const orderCommands = {
-  placeOrder: (order: OrderRequest) => tauriInvoke<OrderResponse>('place_order', { order }),
+  // expectedAnalyzeMode: the analyze-mode value the user acknowledged (Gate B).
+  // The backend rejects the order if the mode it routes against no longer matches.
+  placeOrder: (order: OrderRequest, expectedAnalyzeMode?: boolean) =>
+    tauriInvoke<OrderResponse>('place_order', { order, expectedAnalyzeMode }),
 
   modifyOrder: (orderId: string, order: ModifyOrderRequest) =>
     tauriInvoke<OrderResponse>('modify_order', { order_id: orderId, order }),
@@ -564,8 +567,8 @@ export const orderCommands = {
   getOrderBook: () => tauriInvoke<Order[]>('get_order_book'),
 
   getTradeBook: () => tauriInvoke<Order[]>('get_trade_book'),
-  placeBasketOrder: (orders: OrderRequest[]) =>
-    tauriInvoke<PlaceOrderResult[]>('place_basket_order', { orders }),
+  placeBasketOrder: (orders: OrderRequest[], expectedAnalyzeMode?: boolean) =>
+    tauriInvoke<PlaceOrderResult[]>('place_basket_order', { orders, expectedAnalyzeMode }),
 }
 
 // ============================================================================

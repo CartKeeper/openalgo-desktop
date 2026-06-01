@@ -21,10 +21,11 @@ pub struct OrderResponse {
 pub async fn place_order(
     state: State<'_, AppState>,
     order: OrderRequest,
+    expected_analyze_mode: Option<bool>,
 ) -> Result<OrderResponse> {
     tracing::info!("Placing order: {:?}", order);
 
-    let result = OrderService::place_order(&state, order, None).await?;
+    let result = OrderService::place_order(&state, order, None, expected_analyze_mode).await?;
     tracing::info!("Order placed in {} mode", result.mode);
 
     Ok(OrderResponse {
@@ -101,7 +102,8 @@ pub async fn get_trade_book(state: State<'_, AppState>) -> Result<Vec<Order>> {
 pub async fn place_basket_order(
     state: State<'_, AppState>,
     orders: Vec<OrderRequest>,
+    expected_analyze_mode: Option<bool>,
 ) -> Result<Vec<PlaceOrderResult>> {
     tracing::info!("Placing basket order: {} orders", orders.len());
-    SmartOrderService::place_basket_order(&state, orders, None).await
+    SmartOrderService::place_basket_order(&state, orders, None, expected_analyze_mode).await
 }

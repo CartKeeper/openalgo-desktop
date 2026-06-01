@@ -161,7 +161,7 @@ impl PositionService {
             symbol_token: None,   // Set by OrderService from symbol cache
         };
 
-        let result = crate::services::OrderService::place_order(state, order_request, api_key).await?;
+        let result = crate::services::OrderService::place_order(state, order_request, api_key, None).await?;
 
         Ok(ClosePositionResult {
             success: result.success,

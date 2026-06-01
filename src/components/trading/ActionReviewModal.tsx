@@ -281,7 +281,13 @@ export function ActionReviewModal({
           amo: false,
           trail_price: item.orderType === 'TRAILING_STOP' ? item.trailPrice : undefined,
           trail_percent: item.orderType === 'TRAILING_STOP' ? item.trailPercent : undefined,
-        }))
+        })),
+        // Pass the acknowledged analyze-mode to the backend. It re-reads the same
+        // authority at routing time and rejects if it no longer matches — so no
+        // background mode flip between this confirmation and execution can route a
+        // LIVE order under a paper acknowledgment (or vice versa). freshLive is the
+        // mode just confirmed, so the acknowledged analyze_mode is its inverse.
+        !freshLive
       )
 
       if (response.status === 'success' && response.data) {

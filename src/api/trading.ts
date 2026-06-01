@@ -537,7 +537,8 @@ export const tradingApi = {
    * Place a basket of orders
    */
   placeBasketOrder: async (
-    orders: PlaceOrderRequest[]
+    orders: PlaceOrderRequest[],
+    expectedAnalyzeMode?: boolean
   ): Promise<ApiResponse<{ symbol: string; exchange: string; orderId: string | null; success: boolean; message: string }[]>> => {
     try {
       const results = await orderCommands.placeBasketOrder(
@@ -555,7 +556,8 @@ export const tradingApi = {
           amo: o.amo || false,
           trail_price: o.trail_price,
           trail_percent: o.trail_percent,
-        }))
+        })),
+        expectedAnalyzeMode
       )
       return {
         status: 'success',
