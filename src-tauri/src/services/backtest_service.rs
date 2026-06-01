@@ -293,6 +293,37 @@ impl SignalGenerator for BollingerReversion {
     }
 }
 
+/// SEC fee rate on sells (per $ of notional). Approximate; user can disable.
+const SEC_FEE_RATE: f64 = 0.0000278; // $27.80 per $1,000,000 (2024-era)
+/// FINRA Trading Activity Fee per share sold, capped per trade.
+const TAF_PER_SHARE: f64 = 0.000166;
+const TAF_CAP: f64 = 8.30;
+
+/// Apply slippage to a reference price for the given side.
+fn fill_price(reference: f64, slippage_bps: f64, side: Signal) -> f64 {
+    let adj = slippage_bps / 10_000.0;
+    match side {
+        Signal::Buy => reference * (1.0 + adj),
+        Signal::Sell => reference * (1.0 - adj),
+        Signal::Hold => reference,
+    }
+}
+
+/// Fees charged on an entry (buy): commission only.
+fn entry_fees(costs: &Costs) -> f64 {
+    costs.commission_per_trade
+}
+
+/// Fees charged on an exit (sell): commission + optional SEC + FINRA TAF.
+fn exit_fees(costs: &Costs, notional: f64, shares: f64) -> f64 {
+    let mut f = costs.commission_per_trade;
+    if costs.reg_fees_enabled {
+        f += notional * SEC_FEE_RATE;
+        f += (shares * TAF_PER_SHARE).min(TAF_CAP);
+    }
+    f
+}
+
 /// Build a boxed signal generator from a strategy spec.
 pub fn build_generator(spec: &StrategySpec) -> Box<dyn SignalGenerator> {
     match *spec {
@@ -350,6 +381,26 @@ mod tests {
         gen.prepare(&bars);
         let signals: Vec<Signal> = (0..bars.len()).map(|i| gen.signal(i)).collect();
         assert!(signals.contains(&Signal::Buy), "{signals:?}");
+    }
+
+    #[test]
+    fn slippage_moves_buy_up_and_sell_down() {
+        // 100.0 with 50 bps slippage -> buy 100.5, sell 99.5
+        assert!((fill_price(100.0, 50.0, Signal::Buy) - 100.5).abs() < 1e-9);
+        assert!((fill_price(100.0, 50.0, Signal::Sell) - 99.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn reg_fees_only_apply_to_sells_when_enabled() {
+        let costs = Costs { commission_per_trade: 1.0, slippage_bps: 0.0, reg_fees_enabled: true };
+        // Buy: commission only.
+        assert!((entry_fees(&costs) - 1.0).abs() < 1e-9);
+        // Sell on $10,000 notional: commission + SEC + TAF, all > 0 and small.
+        let sell = exit_fees(&costs, 10_000.0, 100.0);
+        assert!(sell > 1.0 && sell < 5.0, "sell fees {sell}");
+        // Disabled: sell = commission only.
+        let costs_off = Costs { reg_fees_enabled: false, ..costs };
+        assert!((exit_fees(&costs_off, 10_000.0, 100.0) - 1.0).abs() < 1e-9);
     }
 
     #[test]
