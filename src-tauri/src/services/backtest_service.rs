@@ -386,7 +386,7 @@ impl BacktestService {
         let mut peak = cfg.starting_capital;
         let mut bars_in_position: usize = 0;
 
-        let mut push_equity = |ts: &str, eq: f64, peak: &mut f64, out: &mut Vec<EquityPoint>| {
+        let push_equity = |ts: &str, eq: f64, peak: &mut f64, out: &mut Vec<EquityPoint>| {
             if eq > *peak { *peak = eq; }
             let dd = if *peak > 0.0 { (eq - *peak) / *peak } else { 0.0 };
             out.push(EquityPoint { timestamp: ts.to_string(), equity: eq, drawdown: dd });
@@ -449,7 +449,7 @@ impl BacktestService {
                 &cfg.costs, shares, entry_price, &entry_time, px, &last.timestamp,
             ));
             cash += shares * px - exit_fees(&cfg.costs, shares * px, shares);
-            shares = 0.0;
+            // position is now flat; `shares` is not read again before return
             if let Some(p) = equity.last_mut() {
                 p.equity = cash; // realized; reflect final cash
                 if cash > peak { peak = cash; }
