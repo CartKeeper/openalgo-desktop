@@ -12,6 +12,7 @@ import { memo, useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { LivePositionsCard } from '@/components/dashboard/LivePositionsCard'
 import { OpenOrdersCard } from '@/components/dashboard/OpenOrdersCard'
+import { PortfolioChartCard } from '@/components/dashboard/PortfolioChartCard'
 import { RecentTradesCard } from '@/components/dashboard/RecentTradesCard'
 import { WatchlistCard } from '@/components/dashboard/WatchlistCard'
 import { Badge } from '@/components/ui/badge'
@@ -25,6 +26,7 @@ import { onModeChange, useThemeStore } from '@/stores/themeStore'
 // Memoized so the dashboard's frequent live-price re-renders don't cascade into
 // these (they own their own data and don't depend on the tick feed). Positions
 // is memoized too — it only re-renders when its position props actually change.
+const MemoPortfolioChartCard = memo(PortfolioChartCard)
 const MemoLivePositionsCard = memo(LivePositionsCard)
 const MemoOpenOrdersCard = memo(OpenOrdersCard)
 const MemoRecentTradesCard = memo(RecentTradesCard)
@@ -348,6 +350,9 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Portfolio value + equity curve (Alpaca portfolio-history) */}
+      <MemoPortfolioChartCard />
 
       {/* Portfolio Metrics (USD). P&L / market value come from live positions;
           cash / collateral / margin come from the broker funds endpoint. */}
