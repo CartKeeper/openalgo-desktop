@@ -10,19 +10,32 @@ API key. The desktop app must be **running** (its API server listens on port
 
 ---
 
-## ⚠️ Read this first — FULL ACCESS / real money
+## Read-only by default
 
-This server is configured for **full access**, including **live trading tools**
-(`place_order`, `place_smart_order`, `place_basket_order`, `modify_order`,
-`cancel_order`, `cancel_all_orders`, `close_position`).
+By default this server exposes **observation tools only** — funds, holdings,
+positions, quotes, order/trade book, and analyzer status. The AI can *see* your
+account and the market; it **cannot place, modify, cancel, or close** anything.
+The order-placement tools are **not even registered** unless you deliberately
+turn them on.
 
-**When the desktop app is connected to a LIVE broker, these tools move REAL
-money.** Claude Desktop will be able to place and cancel real orders on your live
-account. Treat the MCP connection like handing the keys over.
+This is on purpose: an AI placing live trades on your real money is a capability
+the long-term plan is better off without — the returns that compound come from
+allocation and savings rate, not from an AI's trades. Keep the eyes; skip the
+hands.
 
-Safer practice: call `set_analyzer_mode` with `mode: true` to put the app in
-**Analyze (paper) mode** first — then trading tools hit the fake-money sandbox,
-not your live account. `get_analyzer_status` tells you which mode you're in.
+### Enabling live trading (opt-in)
+
+If you have a specific reason — e.g. a small, ring-fenced, **expendable**
+speculation sleeve you've consciously chosen to run — set
+`OPENALGO_MCP_ALLOW_LIVE_TRADING=true` in the MCP env. Only then are the
+order tools (`place_order`, `place_smart_order`, `place_basket_order`,
+`modify_order`, `cancel_order`, `cancel_all_orders`, `close_position`, and
+`set_analyzer_mode`) registered.
+
+**When enabled and the desktop app is on a LIVE broker, these tools move REAL
+money.** Note: the MCP path does **not** carry the in-app order confirmations
+(Gate A/B). Put the app in **Analyze (paper) mode** first if you want a sandbox.
+The startup log line states which mode the server booted in.
 
 ---
 
@@ -67,17 +80,18 @@ not your live account. `get_analyzer_status` tells you which mode you're in.
 
 ## Tools
 
-**Read (safe):**
+**Read (always available, safe):**
 `get_funds`, `get_holdings`, `get_positions`, `get_orderbook`, `get_tradebook`,
 `get_quote`, `get_depth`, `get_order_status`, `get_open_position`,
 `get_analyzer_status`
 
-**Trade (⚠️ real money on a live broker):**
+**Trade + mode control (⚠️ real money; registered ONLY when
+`OPENALGO_MCP_ALLOW_LIVE_TRADING=true`):**
 `place_order`, `place_smart_order`, `place_basket_order`, `modify_order`,
-`cancel_order`, `cancel_all_orders`, `close_position`
+`cancel_order`, `cancel_all_orders`, `close_position`, `set_analyzer_mode`
 
-**Mode:**
-`set_analyzer_mode` (switch to paper/live)
+With live trading disabled (the default), the tools above are not exposed at
+all — the AI has no way to invoke them.
 
 ---
 
@@ -88,6 +102,7 @@ not your live account. `get_analyzer_status` tells you which mode you're in.
 | `OPENALGO_API_KEY` | yes | — | The app's API key |
 | `OPENALGO_BASE_URL` | no | `http://127.0.0.1:5000` | Local API base URL |
 | `OPENALGO_STRATEGY` | no | `Claude` | Strategy tag applied to orders |
+| `OPENALGO_MCP_ALLOW_LIVE_TRADING` | no | `false` | `true` registers the order-placement tools. Default: read-only. |
 
 ---
 

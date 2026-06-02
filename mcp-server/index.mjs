@@ -4,16 +4,22 @@
  *
  * Exposes the OpenAlgo Desktop local REST API (http://127.0.0.1:5000/api/v1/*)
  * as MCP tools so Claude Desktop (or any MCP client) can read account state and
- * place/manage orders.
+ * (optionally) place/manage orders.
  *
- * ⚠️ FULL ACCESS: this server includes LIVE trading tools. When the desktop app
- * is connected to a live broker, the place_/modify_/cancel_/close_ tools move
- * REAL money. See README.md.
+ * READ-ONLY BY DEFAULT: only observation tools (funds, holdings, positions,
+ * quotes, order/trade book, analyzer status) are exposed. The live-trading tools
+ * (place_/modify_/cancel_/close_) are NOT registered unless you explicitly opt in
+ * by setting OPENALGO_MCP_ALLOW_LIVE_TRADING=true. The deliberate design here is
+ * that an AI cannot place a live order on your real money unless you turn that
+ * capability on on purpose — e.g. for a ring-fenced, expendable speculation
+ * sleeve. See README.md.
  *
  * Config (env):
- *   OPENALGO_API_KEY   (required) — the app's API key (Settings → API Key page)
- *   OPENALGO_BASE_URL  (optional) — default http://127.0.0.1:5000
- *   OPENALGO_STRATEGY  (optional) — strategy tag on orders, default "Claude"
+ *   OPENALGO_API_KEY                 (required) — the app's API key (Settings → API Key page)
+ *   OPENALGO_BASE_URL                (optional) — default http://127.0.0.1:5000
+ *   OPENALGO_STRATEGY                (optional) — strategy tag on orders, default "Claude"
+ *   OPENALGO_MCP_ALLOW_LIVE_TRADING  (optional) — "true" to expose order-placement
+ *                                                 tools. Default false (read-only).
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -23,6 +29,10 @@ import { z } from 'zod'
 const BASE_URL = (process.env.OPENALGO_BASE_URL ?? 'http://127.0.0.1:5000').replace(/\/$/, '')
 const API_KEY = process.env.OPENALGO_API_KEY
 const STRATEGY = process.env.OPENALGO_STRATEGY ?? 'Claude'
+// Live order placement is OFF unless explicitly opted in. When false, the
+// trading tools are never registered, so an AI literally cannot place, modify,
+// cancel, or close a position on the live account through this server.
+const ALLOW_LIVE_TRADING = process.env.OPENALGO_MCP_ALLOW_LIVE_TRADING === 'true'
 
 if (!API_KEY) {
   console.error('[openalgo-mcp] OPENALGO_API_KEY is required. Set it in your MCP client config.')
@@ -174,8 +184,11 @@ server.tool(
 
 // ---------------------------------------------------------------------------
 // TRADE tools  ⚠️ live money when the app is on a live broker
+// Registered ONLY when OPENALGO_MCP_ALLOW_LIVE_TRADING=true. Off by default so
+// the AI cannot execute on the live account unless you deliberately enable it.
 // ---------------------------------------------------------------------------
 
+if (ALLOW_LIVE_TRADING) {
 server.tool(
   'place_order',
   '⚠️ Place an order. REAL money if the app is connected to a live broker.',
@@ -313,9 +326,12 @@ server.tool(
     }
   }
 )
+} // end if (ALLOW_LIVE_TRADING)
 
 // ---------------------------------------------------------------------------
-// Analyzer (paper) mode toggle — useful so Claude can switch to safe practice
+// Analyzer (paper) mode — get_analyzer_status is always available (read-only).
+// set_analyzer_mode (which can switch the app to LIVE) is gated with the
+// trading tools, since flipping to live is a trading-control action.
 // ---------------------------------------------------------------------------
 
 server.tool('get_analyzer_status', 'Check whether the app is in Analyze (paper) mode or live.', {}, async () => {
@@ -326,6 +342,7 @@ server.tool('get_analyzer_status', 'Check whether the app is in Analyze (paper) 
   }
 })
 
+if (ALLOW_LIVE_TRADING) {
 server.tool(
   'set_analyzer_mode',
   'Switch the app between Analyze (paper, mode=true) and live (mode=false). Use mode=true to make trading tools safe (sandbox).',
@@ -338,7 +355,14 @@ server.tool(
     }
   }
 )
+} // end if (ALLOW_LIVE_TRADING)
 
 const transport = new StdioServerTransport()
 await server.connect(transport)
-console.error('[openalgo-mcp] connected over stdio, proxying ' + BASE_URL)
+console.error(
+  '[openalgo-mcp] connected over stdio, proxying ' +
+    BASE_URL +
+    (ALLOW_LIVE_TRADING
+      ? ' — LIVE TRADING ENABLED (order-placement tools active)'
+      : ' — read-only (live-trading tools disabled; set OPENALGO_MCP_ALLOW_LIVE_TRADING=true to enable)')
+)
