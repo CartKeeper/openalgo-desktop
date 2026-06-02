@@ -64,8 +64,8 @@ interface TrendData {
 }
 
 interface CopilotResponse {
-  responseText: string
-  toolCallsMade: { toolName: string; summary: string }[]
+  response_text: string
+  tool_calls_made: { tool_name: string; summary: string }[]
 }
 
 // ---------------------------------------------------------------------------
@@ -319,7 +319,7 @@ export function AnalysisTab({ symbol }: { symbol: string }) {
         conversationHistoryJson: '[]',
       })
 
-      setAiAnalysis(response.responseText)
+      setAiAnalysis(response.response_text)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       if (msg.includes('not configured') || msg.includes('API key')) {
