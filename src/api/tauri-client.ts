@@ -780,6 +780,67 @@ export const sandboxCommands = {
 }
 
 // ============================================================================
+// Historify Commands — Types
+// ============================================================================
+
+export interface HistorifyWatchlistItem {
+  id: number
+  symbol: string
+  exchange: string
+  name?: string
+  added_at: string
+}
+
+export interface HistorifyStats {
+  database_size_mb: number
+  total_records: number
+  total_symbols: number
+  watchlist_count: number
+}
+
+export interface HistorifyCatalogItem {
+  symbol: string
+  exchange: string
+  interval: string
+  first_timestamp: number
+  last_timestamp: number
+  record_count: number
+  first_date?: string
+  last_date?: string
+}
+
+export interface HistorifyDownloadJob {
+  id: string
+  job_type: string
+  status: string
+  total_symbols: number
+  completed_symbols: number
+  failed_symbols: number
+  interval: string
+  start_date: string
+  end_date: string
+  created_at: string
+  started_at?: string
+  completed_at?: string
+  error_message?: string
+}
+
+export interface CreateJobRequest {
+  job_type?: string
+  symbols: { symbol: string; exchange: string }[]
+  interval: string
+  start_date: string
+  end_date: string
+  incremental?: boolean
+}
+
+export interface StorageIntervals {
+  storage_intervals: string[]
+  computed_intervals: string[]
+  all_intervals: string[]
+}
+
+// ============================================================================
 // Historify Commands
 // ============================================================================
 
@@ -790,6 +851,39 @@ export const historifyCommands = {
   downloadHistoricalData: (request: MarketDataQuery) =>
     tauriInvoke<{ success: boolean; rows_downloaded: number; message: string }>(
       'download_historical_data',
+      { request }
+    ),
+
+  getWatchlist: () =>
+    tauriInvoke<HistorifyWatchlistItem[]>('historify_get_watchlist'),
+
+  addWatchlist: (symbol: string, exchange: string) =>
+    tauriInvoke<HistorifyWatchlistItem>('historify_add_watchlist', { symbol, exchange }),
+
+  removeWatchlist: (symbol: string, exchange: string) =>
+    tauriInvoke<boolean>('historify_remove_watchlist', { symbol, exchange }),
+
+  bulkAddWatchlist: (symbols: { symbol: string; exchange: string }[]) =>
+    tauriInvoke<number>('historify_bulk_add_watchlist', { symbols }),
+
+  getCatalog: () =>
+    tauriInvoke<HistorifyCatalogItem[]>('historify_get_catalog'),
+
+  getStats: () =>
+    tauriInvoke<HistorifyStats>('historify_get_stats'),
+
+  getStorageIntervals: () =>
+    tauriInvoke<StorageIntervals>('historify_get_storage_intervals'),
+
+  getExchanges: () =>
+    tauriInvoke<string[]>('historify_get_exchanges'),
+
+  getJobs: (limit?: number) =>
+    tauriInvoke<HistorifyDownloadJob[]>('historify_get_jobs', { limit }),
+
+  createJob: (request: CreateJobRequest) =>
+    tauriInvoke<{ success: boolean; job_id: number; total_symbols: number; message: string }>(
+      'historify_create_job',
       { request }
     ),
 }
