@@ -544,7 +544,7 @@ export const brokerCommands = {
   getBrokerStatus: () => tauriInvoke<BrokerStatus>('get_broker_status'),
 
   setActiveBroker: (brokerId: string) =>
-    tauriInvoke<void>('set_active_broker', { broker_id: brokerId }),
+    tauriInvoke<void>('set_active_broker', { brokerId }),
 
   getAvailableBrokers: () => tauriInvoke<BrokerInfo[]>('get_available_brokers'),
 }
@@ -737,7 +737,7 @@ export const settingsCommands = {
     tauriInvoke<void>('save_broker_credentials', { request }),
 
   deleteBrokerCredentials: (brokerId: string) =>
-    tauriInvoke<void>('delete_broker_credentials', { broker_id: brokerId }),
+    tauriInvoke<void>('delete_broker_credentials', { brokerId }),
 
   getAnalyzeMode: () => tauriInvoke<AnalyzerModeStatus>('get_analyze_mode'),
 
@@ -767,7 +767,7 @@ export const sandboxCommands = {
     tauriInvoke<void>('update_sandbox_ltp', { request: { exchange, symbol, ltp } }),
 
   cancelSandboxOrder: (orderId: string) =>
-    tauriInvoke<{ success: boolean; order_id: string }>('cancel_sandbox_order', { order_id: orderId }),
+    tauriInvoke<{ success: boolean; order_id: string }>('cancel_sandbox_order', { orderId }),
 
   getSandboxConfig: () => tauriInvoke<SandboxConfig>('get_sandbox_config'),
 
@@ -1020,7 +1020,7 @@ export interface ScreenerFilters {
 export const providerCommands = {
   // API key management
   saveProviderApiKey: (provider: string, apiKey: string) =>
-    tauriInvoke<void>('save_provider_api_key', { provider, api_key: apiKey }),
+    tauriInvoke<void>('save_provider_api_key', { provider, apiKey }),
 
   deleteProviderApiKey: (provider: string) =>
     tauriInvoke<boolean>('delete_provider_api_key', { provider }),
@@ -1071,7 +1071,7 @@ export const providerCommands = {
     tauriInvoke<unknown[]>('get_price_targets', { symbol }),
 
   getEconomicCalendar: (fromDate: string, toDate: string) =>
-    tauriInvoke<unknown[]>('get_economic_calendar', { from_date: fromDate, to_date: toDate }),
+    tauriInvoke<unknown[]>('get_economic_calendar', { fromDate, toDate }),
 
   screenStocks: (filters: ScreenerFilters) =>
     tauriInvoke<unknown[]>('screen_stocks', { filters }),
@@ -1091,7 +1091,7 @@ export const providerCommands = {
 
   // FRED (requires API key)
   getFredSeries: (seriesId: string, observationStart?: string, observationEnd?: string) =>
-    tauriInvoke<unknown[]>('get_fred_series', { series_id: seriesId, observation_start: observationStart, observation_end: observationEnd }),
+    tauriInvoke<unknown[]>('get_fred_series', { seriesId, observationStart, observationEnd }),
 
   searchFredSeries: (query: string, limit?: number) =>
     tauriInvoke<unknown[]>('search_fred_series', { query, limit }),
@@ -1129,7 +1129,7 @@ export const portfolioCommands = {
     tauriInvoke<PortfolioPosition[]>('get_portfolio_positions'),
 
   importCsv: (csvContent: string) =>
-    tauriInvoke<number>('import_portfolio_csv', { csv_content: csvContent }),
+    tauriInvoke<number>('import_portfolio_csv', { csvContent }),
 
   exportCsv: () =>
     tauriInvoke<string>('export_portfolio_csv'),
