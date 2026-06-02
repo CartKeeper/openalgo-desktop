@@ -107,7 +107,14 @@ CREATE TABLE IF NOT EXISTS download_jobs (
     total_items INTEGER NOT NULL DEFAULT 0,
     completed_items INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    completed_at TIMESTAMP
+    completed_at TIMESTAMP,
+    job_type VARCHAR,
+    interval VARCHAR,
+    start_date VARCHAR,
+    end_date VARCHAR,
+    failed_items INTEGER,
+    started_at TIMESTAMP,
+    error_message VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS job_items (
@@ -121,15 +128,20 @@ CREATE TABLE IF NOT EXISTS job_items (
 );
 "#;
 
-/// Idempotent ALTER TABLE to add Historify job columns introduced in v2.
-/// DuckDB supports `ADD COLUMN IF NOT EXISTS` so each statement is safe to
-/// replay on an existing database.
+/// Idempotent ALTER TABLE to add Historify job columns introduced in v2 (for
+/// databases created before these columns were added to the base CREATE above).
+///
+/// IMPORTANT: these adds MUST NOT use a DEFAULT clause. DuckDB cannot replay an
+/// `ALTER TABLE ... ADD COLUMN ... DEFAULT ...` from its write-ahead log (the
+/// default expression binder has no catalog during WAL replay), which corrupts
+/// the WAL and makes the app abort on every subsequent launch. Columns are added
+/// nullable; the read queries COALESCE missing values to their defaults instead.
 const ALTER_DOWNLOAD_JOBS_V2: &str = r#"
-ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS job_type VARCHAR DEFAULT 'custom';
-ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS interval VARCHAR DEFAULT 'D';
+ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS job_type VARCHAR;
+ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS interval VARCHAR;
 ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS start_date VARCHAR;
 ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS end_date VARCHAR;
-ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS failed_items INTEGER DEFAULT 0;
+ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS failed_items INTEGER;
 ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS started_at TIMESTAMP;
 ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS error_message VARCHAR;
 "#;
