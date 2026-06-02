@@ -183,6 +183,16 @@ pub fn run() {
             // Historify commands
             commands::historify::get_market_data,
             commands::historify::download_historical_data,
+            commands::historify::historify_get_watchlist,
+            commands::historify::historify_add_watchlist,
+            commands::historify::historify_remove_watchlist,
+            commands::historify::historify_bulk_add_watchlist,
+            commands::historify::historify_get_catalog,
+            commands::historify::historify_get_stats,
+            commands::historify::historify_get_storage_intervals,
+            commands::historify::historify_get_exchanges,
+            commands::historify::historify_get_jobs,
+            commands::historify::historify_create_job,
             // WebSocket commands
             commands::websocket::websocket_connect,
             commands::websocket::websocket_disconnect,

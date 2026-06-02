@@ -1386,6 +1386,49 @@ fn map_alpaca_exchange(exchange: &str) -> String {
     }
 }
 
+/// Resolve the exchange for a US equity symbol by querying the Alpaca assets
+/// endpoint. Returns the mapped exchange string (e.g. "NASDAQ", "NYSE"), or
+/// the supplied `fallback` on any error. Never propagates errors — best-effort.
+pub async fn resolve_alpaca_exchange(auth_token: &str, symbol: &str, fallback: &str) -> String {
+    let Ok((api_key, api_secret)) = parse_auth_token(auth_token) else {
+        return fallback.to_string();
+    };
+    let base_url = AlpacaBroker::get_base_url(&api_key);
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+    let url = format!("{base_url}/v2/assets/{symbol}");
+    let Ok(resp) = client
+        .get(&url)
+        .headers({
+            let broker = AlpacaBroker::new();
+            broker.get_headers(&api_key, &api_secret)
+        })
+        .send()
+        .await
+    else {
+        return fallback.to_string();
+    };
+    if !resp.status().is_success() {
+        return fallback.to_string();
+    }
+    #[derive(serde::Deserialize)]
+    struct AssetExchange {
+        #[serde(default)]
+        exchange: String,
+    }
+    let Ok(asset) = resp.json::<AssetExchange>().await else {
+        return fallback.to_string();
+    };
+    let mapped = map_alpaca_exchange(&asset.exchange);
+    if mapped == "US" || mapped.is_empty() {
+        fallback.to_string()
+    } else {
+        mapped
+    }
+}
+
 #[cfg(test)]
 mod history_tests {
     use super::*;
