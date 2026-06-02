@@ -3,6 +3,7 @@ import {
   BookMarked,
   ChevronDown,
   ChevronUp,
+  Download,
   FlaskConical,
   HelpCircle,
   Loader2,
@@ -13,6 +14,7 @@ import {
 import { useCallback, useState } from 'react'
 import { toast } from 'sonner'
 import { backtestApi, type BacktestConfig, type BacktestResult, type BacktestRunRecord, type StrategySpec, type Sizing } from '@/api/backtest'
+import { historifyCommands } from '@/api/tauri-client'
 import { EquityChart, DrawdownChart } from '@/components/backtest/EquityChart'
 import { MetricsTable } from '@/components/backtest/MetricsTable'
 import { TradeTable } from '@/components/backtest/TradeTable'
@@ -151,6 +153,7 @@ export default function Backtest() {
   const [savedRuns, setSavedRuns] = useState<BacktestRunRecord[]>([])
   const [showSavedRuns, setShowSavedRuns] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
+  const [downloading, setDownloading] = useState(false)
 
   const updateParam = useCallback((key: string, value: string) => {
     setStrategyParams((prev) => ({ ...prev, [key]: value }))
@@ -202,6 +205,30 @@ export default function Backtest() {
       setPageState({ status: 'success', result })
     } catch (e) {
       setPageState({ status: 'error', message: String(e) })
+    }
+  }
+
+  const handleDownloadAndRun = async () => {
+    setDownloading(true)
+    try {
+      const resp = await historifyCommands.downloadHistoricalData({
+        symbol: symbol.trim().toUpperCase(),
+        exchange: exchange.trim().toUpperCase(),
+        timeframe: barInterval,
+        from_date: fromDate,
+        to_date: toDate,
+      })
+      if (resp.rows_downloaded > 0) {
+        toast.success(`Downloaded ${resp.rows_downloaded} bars`)
+        setDownloading(false)
+        await handleRun()
+      } else {
+        toast.warning('No bars returned — check the symbol, date range, or your Alpaca market-data entitlement.')
+        setDownloading(false)
+      }
+    } catch (e) {
+      setPageState({ status: 'error', message: String(e) })
+      setDownloading(false)
     }
   }
 
@@ -584,19 +611,39 @@ export default function Backtest() {
             )}
 
             {/* Error state */}
-            {pageState.status === 'error' && (
-              <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-6 flex flex-col gap-3">
-                <div className="flex items-center gap-2 text-rose-500">
-                  <AlertTriangle className="w-5 h-5" />
-                  <span className="font-semibold text-sm">Backtest failed</span>
+            {pageState.status === 'error' && (() => {
+              const isNoData = pageState.message.toLowerCase().includes('no historical data')
+              return (
+                <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-6 flex flex-col gap-3">
+                  <div className="flex items-center gap-2 text-rose-500">
+                    <AlertTriangle className="w-5 h-5" />
+                    <span className="font-semibold text-sm">Backtest failed</span>
+                  </div>
+                  <p className="text-sm text-foreground/80">{pageState.message}</p>
+                  {isNoData ? (
+                    <Button
+                      className="w-fit h-10 gap-2 font-semibold"
+                      onClick={handleDownloadAndRun}
+                      disabled={downloading}
+                    >
+                      {downloading ? (
+                        <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" />
+                      ) : (
+                        <Download className="w-4 h-4" />
+                      )}
+                      {downloading
+                        ? 'Downloading…'
+                        : `Download ${symbol.trim().toUpperCase()} ${barInterval} history`}
+                    </Button>
+                  ) : (
+                    <Button variant="outline" size="sm" className="w-fit h-9 gap-2" onClick={handleRun}>
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      Retry
+                    </Button>
+                  )}
                 </div>
-                <p className="text-sm text-foreground/80">{pageState.message}</p>
-                <Button variant="outline" size="sm" className="w-fit h-9 gap-2" onClick={handleRun}>
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  Retry
-                </Button>
-              </div>
-            )}
+              )
+            })()}
 
             {/* Success: results */}
             {result && (

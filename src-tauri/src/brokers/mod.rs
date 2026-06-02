@@ -184,6 +184,23 @@ pub trait Broker: Send + Sync {
             "Watchlists are not supported by this broker".to_string(),
         ))
     }
+
+    /// Get historical OHLCV bars. `interval` is the app interval string
+    /// (e.g. "D", "1h", "5m"); the broker maps it to its own timeframe.
+    /// Default: not supported.
+    async fn get_history(
+        &self,
+        _auth_token: &str,
+        _symbol: &str,
+        _exchange: &str,
+        _interval: &str,
+        _from_date: &str,
+        _to_date: &str,
+    ) -> Result<Vec<crate::brokers::types::HistoricalBar>> {
+        Err(crate::error::AppError::Broker(
+            "Historical data is not supported by this broker".to_string(),
+        ))
+    }
 }
 
 /// Broker credentials for authentication

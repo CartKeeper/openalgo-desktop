@@ -247,6 +247,17 @@ pub struct DepthLevel {
     pub orders: i32,
 }
 
+/// One OHLCV bar returned by a broker's historical-data endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoricalBar {
+    pub timestamp: String, // RFC3339 / ISO
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: i64,
+}
+
 /// Symbol data from master contract
 #[derive(Debug, Clone)]
 pub struct SymbolData {

@@ -1052,6 +1052,50 @@ impl Broker for AlpacaBroker {
         Ok(())
     }
 
+    async fn get_history(
+        &self,
+        auth_token: &str,
+        symbol: &str,
+        _exchange: &str,
+        interval: &str,
+        from_date: &str,
+        to_date: &str,
+    ) -> Result<Vec<crate::brokers::types::HistoricalBar>> {
+        let (api_key, api_secret) = parse_auth_token(auth_token)?;
+        let timeframe = interval_to_timeframe(interval)?;
+        let mut all: Vec<crate::brokers::types::HistoricalBar> = Vec::new();
+        let mut page_token: Option<String> = None;
+
+        loop {
+            let mut url = format!(
+                "{DATA_BASE_URL}/v2/stocks/{symbol}/bars?timeframe={timeframe}&start={from_date}&end={to_date}&feed=iex&adjustment=split&limit=10000"
+            );
+            if let Some(tok) = &page_token {
+                url.push_str(&format!("&page_token={tok}"));
+            }
+            let resp = self
+                .client
+                .get(&url)
+                .headers(self.get_headers(&api_key, &api_secret))
+                .send()
+                .await?;
+            if !resp.status().is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                return Err(AppError::Broker(format!(
+                    "Alpaca bars request failed: {body}"
+                )));
+            }
+            let page: AlpacaBarsPage = resp.json().await?;
+            let next = page.next_page_token.clone();
+            all.extend(page.into_bars());
+            match next {
+                Some(tok) if !tok.is_empty() => page_token = Some(tok),
+                _ => break,
+            }
+        }
+        Ok(all)
+    }
+
     async fn get_quote(
         &self,
         auth_token: &str,
@@ -1208,6 +1252,71 @@ impl Broker for AlpacaBroker {
 }
 
 // ============================================================================
+// Historical Bars DTOs + Mapping
+// ============================================================================
+
+/// One bar from the /v2/stocks/{symbol}/bars response.
+#[derive(serde::Deserialize)]
+struct AlpacaHistBar {
+    #[serde(rename = "t")]
+    t: String,
+    #[serde(rename = "o")]
+    o: f64,
+    #[serde(rename = "h")]
+    h: f64,
+    #[serde(rename = "l")]
+    l: f64,
+    #[serde(rename = "c")]
+    c: f64,
+    /// Volume can be fractional for crypto; cast to i64 for equities.
+    #[serde(rename = "v")]
+    v: f64,
+}
+
+#[derive(serde::Deserialize)]
+struct AlpacaBarsPage {
+    #[serde(default)]
+    bars: Vec<AlpacaHistBar>,
+    #[serde(default)]
+    next_page_token: Option<String>,
+}
+
+impl AlpacaBarsPage {
+    fn into_bars(self) -> Vec<crate::brokers::types::HistoricalBar> {
+        self.bars
+            .into_iter()
+            .map(|b| crate::brokers::types::HistoricalBar {
+                timestamp: b.t,
+                open: b.o,
+                high: b.h,
+                low: b.l,
+                close: b.c,
+                volume: b.v as i64,
+            })
+            .collect()
+    }
+}
+
+/// Map the app interval string to an Alpaca `timeframe` value.
+fn interval_to_timeframe(interval: &str) -> Result<String> {
+    let tf = match interval {
+        "D" | "1d" | "1D" | "1Day" => "1Day",
+        "W" | "1W" | "1Week" => "1Week",
+        "1h" | "1H" | "60m" => "1Hour",
+        "1m" => "1Min",
+        "5m" => "5Min",
+        "15m" => "15Min",
+        "30m" => "30Min",
+        other => {
+            return Err(AppError::Broker(format!(
+                "Unsupported interval for Alpaca history: {other}"
+            )))
+        }
+    };
+    Ok(tf.to_string())
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -1274,6 +1383,35 @@ fn map_alpaca_exchange(exchange: &str) -> String {
     match exchange {
         "NASDAQ" | "NYSE" | "ARCA" | "BATS" | "OTC" | "AMEX" => exchange.to_string(),
         _ => "US".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    #[test]
+    fn maps_app_interval_to_alpaca_timeframe() {
+        assert_eq!(interval_to_timeframe("D").unwrap(), "1Day");
+        assert_eq!(interval_to_timeframe("W").unwrap(), "1Week");
+        assert_eq!(interval_to_timeframe("1h").unwrap(), "1Hour");
+        assert_eq!(interval_to_timeframe("5m").unwrap(), "5Min");
+        assert_eq!(interval_to_timeframe("1m").unwrap(), "1Min");
+        assert!(interval_to_timeframe("nope").is_err());
+    }
+
+    #[test]
+    fn parses_alpaca_bars_payload() {
+        let body = r#"{"bars":[
+            {"t":"2024-01-02T05:00:00Z","o":187.1,"h":188.4,"l":183.9,"c":185.6,"v":82488200},
+            {"t":"2024-01-03T05:00:00Z","o":184.2,"h":185.9,"l":183.4,"c":184.3,"v":58414500}
+        ],"symbol":"AAPL","next_page_token":null}"#;
+        let page: AlpacaBarsPage = serde_json::from_str(body).unwrap();
+        let bars = page.into_bars();
+        assert_eq!(bars.len(), 2);
+        assert_eq!(bars[0].timestamp, "2024-01-02T05:00:00Z");
+        assert!((bars[0].close - 185.6).abs() < 1e-9);
+        assert_eq!(bars[1].volume, 58414500);
     }
 }
 
