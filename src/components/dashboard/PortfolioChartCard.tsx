@@ -24,6 +24,29 @@ const RANGES = [
 
 type RangeKey = (typeof RANGES)[number]['key']
 
+// lightweight-charts renders timestamps in UTC. Alpaca returns UTC epoch
+// seconds, so we shift each point by the America/New_York offset (DST-aware via
+// Intl — never a hardcoded -4/-5) so the axis and crosshair read Eastern time.
+const ET_FMT = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  hour12: false,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+})
+function toEtSeconds(utcSeconds: number): number {
+  const parts = ET_FMT.formatToParts(new Date(utcSeconds * 1000))
+  const p: Record<string, string> = {}
+  for (const part of parts) p[part.type] = part.value
+  // hour can come back as "24" at midnight in some engines — normalize to 0.
+  const hour = p.hour === '24' ? 0 : Number(p.hour)
+  const asUtc = Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), hour, Number(p.minute), Number(p.second))
+  return Math.floor(asUtc / 1000)
+}
+
 export function PortfolioChartCard() {
   const { mode } = useThemeStore()
   const isDark = mode === 'dark'
@@ -66,7 +89,7 @@ export function PortfolioChartCard() {
       const v = history.equity[i]
       const t = history.timestamp[i]
       if (typeof v === 'number' && Number.isFinite(v) && v > 0 && typeof t === 'number') {
-        out.push({ time: t as UTCTimestamp, value: v })
+        out.push({ time: toEtSeconds(t) as UTCTimestamp, value: v })
       }
     }
     return out
