@@ -684,6 +684,23 @@ export default function OrderBook() {
 
           {/* Editable Fields - Based on Order Type */}
           <div className="grid gap-4 py-2">
+            {/* Quantity field - editable for all order types */}
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="quantity" className="text-right">
+                Quantity
+              </Label>
+              <Input
+                id="quantity"
+                type="number"
+                min="1"
+                step="1"
+                value={modifyForm.quantity}
+                onChange={(e) =>
+                  setModifyForm({ ...modifyForm, quantity: parseInt(e.target.value, 10) || 0 })
+                }
+                className="col-span-3"
+              />
+            </div>
             {/* Price field - shown for LIMIT and SL orders */}
             {(modifyForm.pricetype === 'LIMIT' || modifyForm.pricetype === 'SL') && (
               <div className="grid grid-cols-4 items-center gap-4">

@@ -559,11 +559,13 @@ export const orderCommands = {
   placeOrder: (order: OrderRequest, expectedAnalyzeMode?: boolean) =>
     tauriInvoke<OrderResponse>('place_order', { order, expectedAnalyzeMode }),
 
+  // Tauri v2 converts snake_case Rust params (order_id) to camelCase JS keys
+  // (orderId). Sending order_id fails with "missing required key orderId".
   modifyOrder: (orderId: string, order: ModifyOrderRequest) =>
-    tauriInvoke<OrderResponse>('modify_order', { order_id: orderId, order }),
+    tauriInvoke<OrderResponse>('modify_order', { orderId, order }),
 
   cancelOrder: (orderId: string, variety?: string) =>
-    tauriInvoke<OrderResponse>('cancel_order', { order_id: orderId, variety }),
+    tauriInvoke<OrderResponse>('cancel_order', { orderId, variety }),
 
   getOrderBook: () => tauriInvoke<Order[]>('get_order_book'),
 
