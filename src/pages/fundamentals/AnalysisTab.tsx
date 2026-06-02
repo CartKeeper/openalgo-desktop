@@ -12,9 +12,12 @@ import {
   TrendingDown,
   TrendingUp,
 } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { providerCommands } from '@/api/tauri-client'
+import { ActionReviewModal } from '@/components/trading/ActionReviewModal'
 import { PlaceOrderDialog } from '@/components/trading/PlaceOrderDialog'
+import { parseActionsFromMarkdown } from '@/lib/parseActions'
+import { useActionQueueStore } from '@/stores/actionQueueStore'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -254,6 +257,21 @@ export function AnalysisTab({ symbol }: { symbol: string }) {
   const [isLoadingTrend, setIsLoadingTrend] = useState(false)
   const [isLoadingAi, setIsLoadingAi] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
+
+  // Turn the AI's structured ACTIONS_JSON into buildable trades (same flow as the
+  // main Copilot): the "Build trade" button loads them into the review queue and
+  // opens ActionReviewModal, which carries the Gate B dollar-downside safeguard.
+  const setItemsAndOpen = useActionQueueStore((s) => s.setItemsAndOpen)
+  const aiActions = useMemo(
+    () => (aiAnalysis ? parseActionsFromMarkdown(aiAnalysis, 'copilot') : []),
+    [aiAnalysis]
+  )
+  // Strip the raw ACTIONS_JSON comment block from the text this tab renders
+  // line-by-line (it isn't a real markdown renderer, so the block would show).
+  const displayAnalysis = useMemo(
+    () => (aiAnalysis ? aiAnalysis.replace(/<!--\s*ACTIONS_JSON[\s\S]*?-->/g, '').trim() : ''),
+    [aiAnalysis]
+  )
 
   const fetchTechnicals = useCallback(async () => {
     setIsLoadingSignals(true)
@@ -582,16 +600,29 @@ export function AnalysisTab({ symbol }: { symbol: string }) {
               {aiError}
             </div>
           ) : aiAnalysis ? (
-            <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed">
-              {aiAnalysis.split('\n').map((line, i) => {
-                if (!line.trim()) return <br key={i} />
-                if (line.startsWith('### ')) return <h3 key={i} className="text-sm font-semibold mt-3 mb-1">{line.replace('### ', '')}</h3>
-                if (line.startsWith('## ')) return <h2 key={i} className="text-base font-semibold mt-4 mb-1">{line.replace('## ', '')}</h2>
-                if (line.startsWith('**') && line.endsWith('**')) return <p key={i} className="font-semibold mt-2">{line.replace(/\*\*/g, '')}</p>
-                if (line.startsWith('- ')) return <li key={i} className="ml-4 list-disc text-sm">{renderInlineBold(line.slice(2))}</li>
-                return <p key={i} className="text-sm">{renderInlineBold(line)}</p>
-              })}
-            </div>
+            <>
+              <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed">
+                {displayAnalysis.split('\n').map((line, i) => {
+                  if (!line.trim()) return <br key={i} />
+                  if (line.startsWith('### ')) return <h3 key={i} className="text-sm font-semibold mt-3 mb-1">{line.replace('### ', '')}</h3>
+                  if (line.startsWith('## ')) return <h2 key={i} className="text-base font-semibold mt-4 mb-1">{line.replace('## ', '')}</h2>
+                  if (line.startsWith('**') && line.endsWith('**')) return <p key={i} className="font-semibold mt-2">{line.replace(/\*\*/g, '')}</p>
+                  if (line.startsWith('- ')) return <li key={i} className="ml-4 list-disc text-sm">{renderInlineBold(line.slice(2))}</li>
+                  return <p key={i} className="text-sm">{renderInlineBold(line)}</p>
+                })}
+              </div>
+              {aiActions.length > 0 && (
+                <div className="mt-4 pt-3 border-t border-border flex items-center justify-between gap-3">
+                  <p className="text-xs text-muted-foreground">
+                    The analysis includes {aiActions.length} suggested trade{aiActions.length !== 1 ? 's' : ''}. You confirm size and the dollar risk before anything is placed.
+                  </p>
+                  <Button size="sm" className="h-9 shrink-0" onClick={() => setItemsAndOpen(aiActions)}>
+                    <ShoppingCart className="h-4 w-4 mr-1.5" />
+                    Build {aiActions.length} trade{aiActions.length !== 1 ? 's' : ''}
+                  </Button>
+                </div>
+              )}
+            </>
           ) : (
             <div className="text-sm text-muted-foreground text-center py-4">
               Click Analyze to get AI-powered insights and strategy recommendations.
@@ -599,6 +630,8 @@ export function AnalysisTab({ symbol }: { symbol: string }) {
           )}
         </CardContent>
       </Card>
+
+      <ActionReviewModal />
     </div>
   )
 }
@@ -668,6 +701,10 @@ function buildAnalysisPrompt(
   parts.push('Key technical and market risks that could invalidate this analysis.')
   parts.push('')
   parts.push('Be specific with dollar amounts. Keep it concise but actionable. Do not call any tools.')
+  parts.push('')
+  parts.push(
+    `If your recommendation is to BUY or SELL ${symbol} now (not "wait"/"avoid"), append the structured ACTIONS_JSON block exactly as defined in your system instructions, so the user can build the trade in one click. Propose a sensible starter quantity; the user confirms the size and acknowledges the dollar downside before anything is placed. Set "exchange" to the symbol's US listing (e.g. "NASDAQ" or "NYSE"). If you would wait or avoid, omit the block.`
+  )
 
   return parts.join('\n')
 }
