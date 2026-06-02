@@ -858,13 +858,13 @@ export const historifyCommands = {
     tauriInvoke<HistorifyWatchlistItem[]>('historify_get_watchlist'),
 
   addWatchlist: (symbol: string, exchange: string) =>
-    tauriInvoke<HistorifyWatchlistItem>('historify_add_watchlist', { symbol, exchange }),
+    tauriInvoke<HistorifyWatchlistItem>('historify_add_watchlist', { request: { symbol, exchange } }),
 
   removeWatchlist: (symbol: string, exchange: string) =>
-    tauriInvoke<boolean>('historify_remove_watchlist', { symbol, exchange }),
+    tauriInvoke<boolean>('historify_remove_watchlist', { request: { symbol, exchange } }),
 
   bulkAddWatchlist: (symbols: { symbol: string; exchange: string }[]) =>
-    tauriInvoke<number>('historify_bulk_add_watchlist', { symbols }),
+    tauriInvoke<number>('historify_bulk_add_watchlist', { request: { symbols } }),
 
   getCatalog: () =>
     tauriInvoke<HistorifyCatalogItem[]>('historify_get_catalog'),
