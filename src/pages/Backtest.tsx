@@ -43,6 +43,16 @@ type PageState =
   | { status: 'error'; message: string }
   | { status: 'success'; result: BacktestResult }
 
+/** Extract a human-readable message from a Tauri/Rust error. AppError serializes
+ *  to an object { code, message }, so a bare String(e) yields "[object Object]". */
+function errMsg(e: unknown): string {
+  if (typeof e === 'string') return e
+  if (e && typeof e === 'object' && 'message' in e && typeof (e as { message: unknown }).message === 'string') {
+    return (e as { message: string }).message
+  }
+  return String(e)
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -204,7 +214,7 @@ export default function Backtest() {
       const result = await backtestApi.run(config)
       setPageState({ status: 'success', result })
     } catch (e) {
-      setPageState({ status: 'error', message: String(e) })
+      setPageState({ status: 'error', message: errMsg(e) })
     }
   }
 
@@ -227,7 +237,7 @@ export default function Backtest() {
         setDownloading(false)
       }
     } catch (e) {
-      setPageState({ status: 'error', message: String(e) })
+      setPageState({ status: 'error', message: errMsg(e) })
       setDownloading(false)
     }
   }
@@ -239,7 +249,7 @@ export default function Backtest() {
       const id = await backtestApi.save(config, JSON.stringify(pageState.result.metrics))
       toast.success(`Run saved`, { description: `ID: ${id}` })
     } catch (e) {
-      toast.error('Save failed', { description: String(e) })
+      toast.error('Save failed', { description: errMsg(e) })
     }
   }
 
@@ -249,7 +259,7 @@ export default function Backtest() {
       setSavedRuns(runs)
       setShowSavedRuns(true)
     } catch (e) {
-      toast.error('Could not load saved runs', { description: String(e) })
+      toast.error('Could not load saved runs', { description: errMsg(e) })
     }
   }
 
