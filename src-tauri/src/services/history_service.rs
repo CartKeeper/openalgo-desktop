@@ -7,7 +7,7 @@ use crate::db::duckdb::models::MarketDataRow;
 use crate::error::Result;
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{error, info};
 
 /// Historical candle data
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,10 +80,17 @@ impl HistoryService {
                     candles,
                 });
             }
-            _ => {
-                // Cache miss - would fetch from broker here
-                // For now, return empty result
-                info!("Cache miss for {} {} {}", symbol, exchange, interval);
+            Ok(_) => {
+                info!(
+                    "query_market_data returned 0 rows for {} {} {} [{}..{}]",
+                    symbol, exchange, interval, from_date, to_date
+                );
+            }
+            Err(e) => {
+                error!(
+                    "query_market_data ERROR for {} {} {} [{}..{}]: {}",
+                    symbol, exchange, interval, from_date, to_date, e
+                );
             }
         }
 
