@@ -47,10 +47,14 @@ impl DuckDb {
         let conn = self.conn.lock();
 
         let mut stmt = conn.prepare(
-            "SELECT timestamp, open, high, low, close, volume
+            // CAST(timestamp AS VARCHAR): the column is a TIMESTAMP, but MarketDataRow
+            // reads it into a String — duckdb-rs cannot convert TIMESTAMP -> String, so
+            // without this cast every row mapping errors and the query returns nothing.
+            // CAST(? AS TIMESTAMP) on the bounds lets the string date params compare.
+            "SELECT CAST(timestamp AS VARCHAR), open, high, low, close, volume
              FROM market_data
              WHERE symbol = ? AND exchange = ? AND timeframe = ?
-               AND timestamp >= ? AND timestamp <= ?
+               AND timestamp >= CAST(? AS TIMESTAMP) AND timestamp <= CAST(? AS TIMESTAMP)
              ORDER BY timestamp ASC",
         )?;
 
