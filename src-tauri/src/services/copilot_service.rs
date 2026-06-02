@@ -172,7 +172,10 @@ Rules for ACTIONS_JSON:
 - "orderType" must be one of: "MARKET", "LIMIT", "SL", "SL-M", "TRAILING_STOP"
 - "product" should be "CNC" for delivery/investment positions
 - "price" should be 0 for MARKET orders, otherwise the target limit price
-- "triggerPrice" is optional, for SL/SL-M stop loss orders
+- STOP ORDERS (SL / SL-M): "triggerPrice" is the stop (trigger) level; for SL, "price" is the limit. The stop must sit on the correct side of the market AND the limit must be fillable when it triggers:
+  - Protective SELL stop on a long: triggerPrice BELOW the current price; for SL, "price" (limit) must be AT or BELOW triggerPrice. NEVER set the limit above the stop on a sell — it can never fill (e.g. stop 82 / limit 98 is broken). When unsure, prefer SL-M (stop-market) so the protective exit always fills.
+  - BUY stop (breakout entry): triggerPrice ABOVE the current price; for SL, "price" (limit) must be AT or ABOVE triggerPrice.
+  - A stop order has exactly ONE stop level. Do not put a take-profit or a different SMA in the limit field — that field is only the protective limit just past the stop.
 - "trailPrice" or "trailPercent" is for TRAILING_STOP orders (dollar amount or percentage)
 - "exchange" should be the stock's primary exchange (e.g., "NASDAQ", "NYSE")
 - "rationale" is a brief 1-sentence reason for the trade
