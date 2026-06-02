@@ -49,7 +49,7 @@ pub async fn get_market_data(
 /// Download historical data from broker
 #[tauri::command]
 pub async fn download_historical_data(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
     request: DownloadRequest,
 ) -> Result<DownloadResponse> {
     tracing::info!(
@@ -59,14 +59,23 @@ pub async fn download_historical_data(
         request.timeframe
     );
 
-    // This would typically:
-    // 1. Get historical data from broker API
-    // 2. Store in DuckDB
-    // For now, return a placeholder response
-
+    let rows = crate::services::HistoryService::download_history(
+        &state,
+        &request.symbol,
+        &request.exchange,
+        &request.timeframe,
+        &request.from_date,
+        &request.to_date,
+        None,
+    )
+    .await?;
     Ok(DownloadResponse {
         success: true,
-        rows_downloaded: 0,
-        message: "Historical data download not yet implemented".to_string(),
+        rows_downloaded: rows,
+        message: if rows == 0 {
+            "No bars returned for that symbol/range".into()
+        } else {
+            format!("Downloaded {rows} bars")
+        },
     })
 }
