@@ -258,7 +258,11 @@ export const tradingApi = {
         ...o,
         action: (o.action || o.side || 'BUY') as 'BUY' | 'SELL',
         orderid: o.orderid || o.order_id,
-        order_status: (o.order_status || o.status || 'open') as Order['order_status'],
+        // Brokers emit OpenAlgo statuses in UPPERCASE (OPEN, COMPLETE, CANCELLED,
+        // REJECTED, PENDING). The frontend compares against lowercase everywhere
+        // (statusConfig keys, filter chips, canCancel gate, dashboard stats), so
+        // normalise to lowercase as orders enter the frontend.
+        order_status: (o.order_status || o.status || 'open').toLowerCase() as Order['order_status'],
         pricetype: (o.pricetype || o.order_type || 'MARKET') as Order['pricetype'],
         timestamp: o.timestamp || o.order_timestamp || '',
       }))
