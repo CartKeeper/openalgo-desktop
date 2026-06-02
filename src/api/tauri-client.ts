@@ -1061,6 +1061,11 @@ export const providerCommands = {
   getKeyMetrics: (symbol: string, period: string, limit?: number) =>
     tauriInvoke<unknown[]>('get_key_metrics', { symbol, period, limit }),
 
+  // FMP /stable/ratios — P/E, P/B, margins, dividend yield, etc. (FMP moved these
+  // out of key-metrics). Merge with getKeyMetrics by index for a full metric set.
+  getRatios: (symbol: string, period: string, limit?: number) =>
+    tauriInvoke<unknown[]>('get_ratios', { symbol, period, limit }),
+
   getStockNews: (symbols?: string, limit?: number) =>
     tauriInvoke<unknown[]>('get_stock_news', { symbols, limit }),
 

@@ -215,6 +215,7 @@ pub fn run() {
             commands::providers::get_balance_sheet,
             commands::providers::get_cash_flow,
             commands::providers::get_key_metrics,
+            commands::providers::get_ratios,
             commands::providers::get_stock_news,
             commands::providers::get_analyst_estimates,
             commands::providers::get_price_targets,
