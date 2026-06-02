@@ -711,25 +711,56 @@ impl FmpClient {
         if let Some(ref v) = filters.country { params.push(format!("country={}", v)); }
         if let Some(ref v) = filters.exchange { params.push(format!("exchange={}", v)); }
         if let Some(v) = filters.is_etf { params.push(format!("isEtf={}", v)); }
-        if let Some(v) = filters.limit { params.push(format!("limit={}", v)); }
 
-        let url = format!("{}/stock-screener?{}", FMP_BASE_URL, params.join("&"));
+        // Dividend yield is filtered client-side below (FMP has no yield filter),
+        // so when a yield minimum is set we fetch a larger pool and truncate to
+        // the user's requested count afterward — otherwise the post-filter would
+        // shrink a 50-row fetch down to a handful.
+        let user_limit = filters.limit.unwrap_or(50);
+        let fetch_limit = if filters.dividend_yield_min.is_some() {
+            (user_limit.saturating_mul(20)).clamp(user_limit, 1000)
+        } else {
+            user_limit
+        };
+        params.push(format!("limit={}", fetch_limit));
+
+        // FMP's stable API renamed the screener endpoint stock-screener -> company-screener.
+        let url = format!("{}/company-screener?{}", FMP_BASE_URL, params.join("&"));
         let resp = self.fetch_fmp_json(&url).await?;
 
-        Ok(resp.iter().map(|item| ScreenerResult {
-            symbol: item["symbol"].as_str().unwrap_or("").to_string(),
-            company_name: item["companyName"].as_str().unwrap_or("").to_string(),
-            exchange: item["exchangeShortName"].as_str().unwrap_or("").to_string(),
-            sector: item["sector"].as_str().map(String::from),
-            industry: item["industry"].as_str().map(String::from),
-            market_cap: item["marketCap"].as_f64(),
-            price: item["price"].as_f64(),
-            change_percent: None,
-            volume: item["volume"].as_i64(),
-            pe_ratio: None,
-            beta: item["beta"].as_f64(),
-            dividend_yield: None,
-            country: item["country"].as_str().map(String::from),
-        }).collect())
+        let mut results: Vec<ScreenerResult> = resp.iter().map(|item| {
+            let price = item["price"].as_f64();
+            // FMP's screener exposes the annual dividend (a dollar amount), not the
+            // yield. Derive yield = annual dividend / price * 100 so it can be shown
+            // and filtered (the API has no server-side yield filter).
+            let dividend_yield = match (item["lastAnnualDividend"].as_f64(), price) {
+                (Some(d), Some(p)) if p > 0.0 => Some(d / p * 100.0),
+                _ => None,
+            };
+            ScreenerResult {
+                symbol: item["symbol"].as_str().unwrap_or("").to_string(),
+                company_name: item["companyName"].as_str().unwrap_or("").to_string(),
+                exchange: item["exchangeShortName"].as_str().unwrap_or("").to_string(),
+                sector: item["sector"].as_str().map(String::from),
+                industry: item["industry"].as_str().map(String::from),
+                market_cap: item["marketCap"].as_f64(),
+                price,
+                change_percent: None,
+                volume: item["volume"].as_i64(),
+                pe_ratio: None,
+                beta: item["beta"].as_f64(),
+                dividend_yield,
+                country: item["country"].as_str().map(String::from),
+            }
+        }).collect();
+
+        // FMP can't filter by dividend yield server-side, so honor the user's
+        // minimum here (only keep rows with a computed yield at or above it).
+        if let Some(min_yield) = filters.dividend_yield_min {
+            results.retain(|r| r.dividend_yield.map(|y| y >= min_yield).unwrap_or(false));
+            results.truncate(user_limit as usize);
+        }
+
+        Ok(results)
     }
 }
