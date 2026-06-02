@@ -32,6 +32,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "003_data_catalog", CREATE_DATA_CATALOG)?;
     run_migration(conn, "004_download_jobs", CREATE_DOWNLOAD_JOBS)?;
     run_migration(conn, "005_symbol_metadata", CREATE_SYMBOL_METADATA)?;
+    run_migration(conn, "006_download_jobs_v2", ALTER_DOWNLOAD_JOBS_V2)?;
 
     tracing::info!("DuckDB migrations completed");
     Ok(())
@@ -118,6 +119,19 @@ CREATE TABLE IF NOT EXISTS job_items (
     status VARCHAR NOT NULL DEFAULT 'pending',
     error VARCHAR
 );
+"#;
+
+/// Idempotent ALTER TABLE to add Historify job columns introduced in v2.
+/// DuckDB supports `ADD COLUMN IF NOT EXISTS` so each statement is safe to
+/// replay on an existing database.
+const ALTER_DOWNLOAD_JOBS_V2: &str = r#"
+ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS job_type VARCHAR DEFAULT 'custom';
+ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS interval VARCHAR DEFAULT 'D';
+ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS start_date VARCHAR;
+ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS end_date VARCHAR;
+ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS failed_items INTEGER DEFAULT 0;
+ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS started_at TIMESTAMP;
+ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS error_message VARCHAR;
 "#;
 
 const CREATE_SYMBOL_METADATA: &str = r#"
