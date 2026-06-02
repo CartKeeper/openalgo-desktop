@@ -703,7 +703,19 @@ function buildAnalysisPrompt(
   parts.push('Be specific with dollar amounts. Keep it concise but actionable. Do not call any tools.')
   parts.push('')
   parts.push(
-    `If your recommendation is to BUY or SELL ${symbol} now (not "wait"/"avoid"), append the structured ACTIONS_JSON block exactly as defined in your system instructions, so the user can build the trade in one click. Propose a sensible starter quantity; the user confirms the size and acknowledges the dollar downside before anything is placed. Set "exchange" to the symbol's US listing (e.g. "NASDAQ" or "NYSE"). If you would wait or avoid, omit the block.`
+    `After your prose, append the structured ACTIONS_JSON block (exactly as defined in your system instructions) for the concrete ENTRY order your analysis points to, so the user can build it in one click. They confirm size and acknowledge the dollar downside before anything is placed. Rules:`
+  )
+  parts.push(
+    `- If you recommend buying/selling ${symbol} at the current price, emit a MARKET order.`
+  )
+  parts.push(
+    `- If you recommend WAITING for a better entry at a specific price (a limit buy at a support level), emit a LIMIT order at that price. A resting limit order is exactly how the user acts on a "wait for the pullback" thesis — do NOT omit it just because your stance is "wait". If you give a price range, use the price you'd actually want filled.`
+  )
+  parts.push(
+    `- Propose a sensible starter quantity. Set "exchange" to the symbol's US listing (e.g. "NASDAQ" or "NYSE").`
+  )
+  parts.push(
+    `- Only omit the block entirely for a pure "avoid" with no entry price. Do NOT emit SELL or stop orders for ${symbol} unless the user already holds it (stop-loss / take-profit can be set after the entry fills).`
   )
 
   return parts.join('\n')
