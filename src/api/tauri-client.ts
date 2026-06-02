@@ -1017,6 +1017,24 @@ export interface ScreenerFilters {
   limit?: number
 }
 
+export interface MarketMover {
+  symbol: string
+  name?: string | null
+  change?: number | null
+  price?: number | null
+  change_percent?: number | null
+}
+
+export interface FmpQuote {
+  symbol: string
+  name?: string | null
+  price?: number | null
+  change?: number | null
+  change_percent?: number | null
+  volume?: number | null
+  previous_close?: number | null
+}
+
 export const providerCommands = {
   // API key management
   saveProviderApiKey: (provider: string, apiKey: string) =>
@@ -1048,6 +1066,14 @@ export const providerCommands = {
   // FMP (requires API key)
   getCompanyProfile: (symbol: string) =>
     tauriInvoke<CompanyProfile | null>('get_company_profile', { symbol }),
+
+  getMarketGainers: () => tauriInvoke<MarketMover[]>('get_market_gainers'),
+  getMarketLosers: () => tauriInvoke<MarketMover[]>('get_market_losers'),
+  getMarketMostActive: () => tauriInvoke<MarketMover[]>('get_market_most_active'),
+
+  // Batch quote for indices / commodities / crypto, e.g. "^GSPC,^DJI,GCUSD,BTCUSD"
+  getBatchQuote: (symbols: string) =>
+    tauriInvoke<FmpQuote[]>('get_batch_quote', { symbols }),
 
   getIncomeStatement: (symbol: string, period: string, limit?: number) =>
     tauriInvoke<unknown[]>('get_income_statement', { symbol, period, limit }),

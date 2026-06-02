@@ -529,17 +529,18 @@ impl FmpClient {
     }
 
     pub async fn get_market_gainers(&self) -> Result<Vec<MarketMover>, ProviderError> {
-        let url = format!("{}/stock-market-gainers?apikey={}", FMP_BASE_URL, self.api_key);
+        // FMP /stable renamed the movers endpoints (stock-market-gainers -> biggest-gainers etc.)
+        let url = format!("{}/biggest-gainers?apikey={}", FMP_BASE_URL, self.api_key);
         self.fetch_market_movers(&url).await
     }
 
     pub async fn get_market_losers(&self) -> Result<Vec<MarketMover>, ProviderError> {
-        let url = format!("{}/stock-market-losers?apikey={}", FMP_BASE_URL, self.api_key);
+        let url = format!("{}/biggest-losers?apikey={}", FMP_BASE_URL, self.api_key);
         self.fetch_market_movers(&url).await
     }
 
     pub async fn get_market_most_active(&self) -> Result<Vec<MarketMover>, ProviderError> {
-        let url = format!("{}/stock-market-most-active?apikey={}", FMP_BASE_URL, self.api_key);
+        let url = format!("{}/most-actives?apikey={}", FMP_BASE_URL, self.api_key);
         self.fetch_market_movers(&url).await
     }
 
@@ -674,7 +675,9 @@ impl FmpClient {
             name: item["name"].as_str().map(String::from),
             price: item["price"].as_f64(),
             change: item["change"].as_f64(),
-            change_percent: item["changesPercentage"].as_f64(),
+            // The /stable quote endpoint uses changePercentage (no 's'); older
+            // endpoints used changesPercentage. Accept either.
+            change_percent: item["changePercentage"].as_f64().or_else(|| item["changesPercentage"].as_f64()),
             day_low: item["dayLow"].as_f64(),
             day_high: item["dayHigh"].as_f64(),
             year_low: item["yearLow"].as_f64(),

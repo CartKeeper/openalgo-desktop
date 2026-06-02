@@ -10,7 +10,10 @@ import {
 } from 'lucide-react'
 import { memo, useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { AssetAllocationCard } from '@/components/dashboard/AssetAllocationCard'
 import { LivePositionsCard } from '@/components/dashboard/LivePositionsCard'
+import { MarketMoversCard } from '@/components/dashboard/MarketMoversCard'
+import { MarketsTickerCard } from '@/components/dashboard/MarketsTickerCard'
 import { OpenOrdersCard } from '@/components/dashboard/OpenOrdersCard'
 import { PortfolioChartCard } from '@/components/dashboard/PortfolioChartCard'
 import { RecentTradesCard } from '@/components/dashboard/RecentTradesCard'
@@ -27,6 +30,9 @@ import { onModeChange, useThemeStore } from '@/stores/themeStore'
 // these (they own their own data and don't depend on the tick feed). Positions
 // is memoized too — it only re-renders when its position props actually change.
 const MemoPortfolioChartCard = memo(PortfolioChartCard)
+const MemoMarketsTickerCard = memo(MarketsTickerCard)
+const MemoMarketMoversCard = memo(MarketMoversCard)
+const MemoAssetAllocationCard = memo(AssetAllocationCard)
 const MemoLivePositionsCard = memo(LivePositionsCard)
 const MemoOpenOrdersCard = memo(OpenOrdersCard)
 const MemoRecentTradesCard = memo(RecentTradesCard)
@@ -423,6 +429,13 @@ export default function Dashboard() {
         <MemoOpenOrdersCard />
       </div>
       <MemoRecentTradesCard />
+
+      {/* Market data: indices/commodities/crypto, movers, allocation */}
+      <div className="grid grid-cols-1 gap-4 md:gap-6 lg:grid-cols-3">
+        <MemoMarketsTickerCard />
+        <MemoMarketMoversCard />
+        <MemoAssetAllocationCard positions={positions} />
+      </div>
 
       {/* Watchlist */}
       <MemoWatchlistCard />
