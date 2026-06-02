@@ -8,7 +8,7 @@ import {
   Search,
   Zap,
 } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { LivePositionsCard } from '@/components/dashboard/LivePositionsCard'
 import { OpenOrdersCard } from '@/components/dashboard/OpenOrdersCard'
@@ -21,6 +21,14 @@ import { useLivePositions } from '@/hooks/useLivePositions'
 import { formatSignedUSD, formatUSD, pnlColorClass } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { onModeChange, useThemeStore } from '@/stores/themeStore'
+
+// Memoized so the dashboard's frequent live-price re-renders don't cascade into
+// these (they own their own data and don't depend on the tick feed). Positions
+// is memoized too — it only re-renders when its position props actually change.
+const MemoLivePositionsCard = memo(LivePositionsCard)
+const MemoOpenOrdersCard = memo(OpenOrdersCard)
+const MemoRecentTradesCard = memo(RecentTradesCard)
+const MemoWatchlistCard = memo(WatchlistCard)
 
 interface FundsData {
   available_cash: number
@@ -406,13 +414,13 @@ export default function Dashboard() {
 
       {/* Live trading data */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 md:gap-6">
-        <LivePositionsCard positions={positions} isLoading={positionsLoading} isLive={isLive} />
-        <OpenOrdersCard />
+        <MemoLivePositionsCard positions={positions} isLoading={positionsLoading} isLive={isLive} />
+        <MemoOpenOrdersCard />
       </div>
-      <RecentTradesCard />
+      <MemoRecentTradesCard />
 
       {/* Watchlist */}
-      <WatchlistCard />
+      <MemoWatchlistCard />
 
       {/* Error Alert */}
       {error && (

@@ -103,36 +103,52 @@ export function useMarketData({
   const subscribedSymbolsRef = useRef<Set<string>>(new Set())
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Handle incoming market tick
+  // Ticks can arrive faster than React can paint (dozens/sec per symbol during
+  // active markets). Writing state on every tick re-renders all consumers on
+  // every tick and saturates the main thread, making the whole UI laggy. Instead
+  // we accumulate ticks into a ref and flush to state on a fixed cadence below,
+  // capping re-renders regardless of incoming tick volume.
+  const pendingRef = useRef<Map<string, SymbolData>>(new Map())
+  const dirtyRef = useRef(false)
+
+  // Handle incoming market tick — mutate the pending buffer only, no setState.
   const handleMarketTick = useCallback((tick: MarketTick) => {
     const key = `${tick.exchange}:${tick.symbol}`
-
-    setMarketData((prev) => {
-      const updated = new Map(prev)
-      updated.set(key, {
-        symbol: tick.symbol,
-        exchange: tick.exchange,
-        data: {
-          ltp: tick.ltp,
-          open: tick.open,
-          high: tick.high,
-          low: tick.low,
-          close: tick.close,
-          volume: tick.volume,
-          change: tick.change,
-          change_percent: tick.change_percent,
-          bid: tick.bid,
-          ask: tick.ask,
-          bid_qty: tick.bid_qty,
-          ask_qty: tick.ask_qty,
-          oi: tick.oi,
-          timestamp: tick.timestamp ? new Date(tick.timestamp).toISOString() : undefined,
-        },
-        lastUpdate: Date.now(),
-      })
-      return updated
+    pendingRef.current.set(key, {
+      symbol: tick.symbol,
+      exchange: tick.exchange,
+      data: {
+        ltp: tick.ltp,
+        open: tick.open,
+        high: tick.high,
+        low: tick.low,
+        close: tick.close,
+        volume: tick.volume,
+        change: tick.change,
+        change_percent: tick.change_percent,
+        bid: tick.bid,
+        ask: tick.ask,
+        bid_qty: tick.bid_qty,
+        ask_qty: tick.ask_qty,
+        oi: tick.oi,
+        timestamp: tick.timestamp ? new Date(tick.timestamp).toISOString() : undefined,
+      },
+      lastUpdate: Date.now(),
     })
+    dirtyRef.current = true
   }, [])
+
+  // Flush the accumulated ticks to React state at most ~4x/sec.
+  useEffect(() => {
+    if (!enabled) return
+    const id = setInterval(() => {
+      if (dirtyRef.current) {
+        dirtyRef.current = false
+        setMarketData(new Map(pendingRef.current))
+      }
+    }, 250)
+    return () => clearInterval(id)
+  }, [enabled])
 
   // Subscribe to symbols
   const subscribeToSymbols = useCallback(
@@ -162,14 +178,12 @@ export function useMarketData({
           const key = `${s.exchange}:${s.symbol}`
           subscribedSymbolsRef.current.add(key)
 
-          // Initialize market data entry
-          setMarketData((prev) => {
-            const updated = new Map(prev)
-            if (!updated.has(key)) {
-              updated.set(key, { symbol: s.symbol, exchange: s.exchange, data: {} })
-            }
-            return updated
-          })
+          // Initialize market data entry in the pending buffer; the throttled
+          // flush above will surface it to consumers.
+          if (!pendingRef.current.has(key)) {
+            pendingRef.current.set(key, { symbol: s.symbol, exchange: s.exchange, data: {} })
+            dirtyRef.current = true
+          }
         })
       } catch (err) {
         console.error('Failed to subscribe to symbols:', err)
