@@ -1,10 +1,24 @@
 import { invoke } from '@tauri-apps/api/core'
-import { BarChart3, BookOpen, FileText, MessageCircle, Search, Zap } from 'lucide-react'
+import {
+  BarChart3,
+  BookOpen,
+  FileText,
+  HelpCircle,
+  MessageCircle,
+  Search,
+  Zap,
+} from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { LivePositionsCard } from '@/components/dashboard/LivePositionsCard'
+import { OpenOrdersCard } from '@/components/dashboard/OpenOrdersCard'
+import { RecentTradesCard } from '@/components/dashboard/RecentTradesCard'
 import { WatchlistCard } from '@/components/dashboard/WatchlistCard'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { useLivePositions } from '@/hooks/useLivePositions'
+import { formatSignedUSD, formatUSD, pnlColorClass } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { onModeChange, useThemeStore } from '@/stores/themeStore'
 
@@ -43,44 +57,6 @@ interface SandboxFunds {
   total_pnl: number
 }
 
-// Format number in Indian format with Cr/L suffixes
-function formatIndianNumber(value: string | number): string {
-  const num = typeof value === 'string' ? parseFloat(value) : value
-  if (Number.isNaN(num)) return '0.00'
-
-  const isNegative = num < 0
-  const absNum = Math.abs(num)
-
-  let formatted: string
-  if (absNum >= 10000000) {
-    // 1 Crore or more
-    formatted = `${(absNum / 10000000).toFixed(2)}Cr`
-  } else if (absNum >= 100000) {
-    // 1 Lakh or more
-    formatted = `${(absNum / 100000).toFixed(2)}L`
-  } else {
-    // Less than 1 Lakh - just decimal format
-    formatted = absNum.toFixed(2)
-  }
-
-  return isNegative ? `-${formatted}` : formatted
-}
-
-// Get color class based on P&L value
-function getPnLColor(value: string | number): string {
-  const num = typeof value === 'string' ? parseFloat(value) : value
-  if (num > 0) return 'text-green-600 dark:text-green-400'
-  if (num < 0) return 'text-red-600 dark:text-red-400'
-  return 'text-foreground'
-}
-
-function getPnLBadgeVariant(value: string | number): 'default' | 'destructive' | 'secondary' {
-  const num = typeof value === 'string' ? parseFloat(value) : value
-  if (num > 0) return 'default'
-  if (num < 0) return 'destructive'
-  return 'secondary'
-}
-
 export default function Dashboard() {
   const [marginData, setMarginData] = useState<MarginData | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -90,6 +66,10 @@ export default function Dashboard() {
   })
   const [isAuthenticated, setIsAuthenticated] = useState(true) // Assume authenticated initially
   const { appMode } = useThemeStore()
+
+  // Live positions (broker poll + WebSocket price overlay) drive the portfolio
+  // metrics and the positions table below.
+  const { positions, totals, isLoading: positionsLoading, isLive } = useLivePositions()
 
   // Fetch dashboard funds data using Tauri invoke
   const fetchFundsData = useCallback(async () => {
@@ -309,7 +289,37 @@ export default function Dashboard() {
       {/* Dashboard Header */}
       <div className="flex flex-col lg:flex-row lg:items-start gap-4">
         <div className="flex-1">
-          <h1 className="text-2xl md:text-3xl font-bold">Trading Dashboard</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl md:text-3xl font-bold">Trading Dashboard</h1>
+            <Popover>
+              <PopoverTrigger
+                aria-label="Dashboard help"
+                className="text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-full"
+              >
+                <HelpCircle className="h-5 w-5" strokeWidth={1.5} />
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-80 text-sm">
+                <p className="font-semibold mb-1">Dashboard</p>
+                <ul className="space-y-1.5 text-muted-foreground">
+                  <li>
+                    <strong className="text-foreground">Metrics</strong> show cash and margin from
+                    your broker; P&amp;L and market value are computed live from your open positions.
+                  </li>
+                  <li>
+                    <strong className="text-foreground">Open Positions</strong> update tick-by-tick
+                    when the live price feed is connected (green “Live” dot).
+                  </li>
+                  <li>
+                    <strong className="text-foreground">Open Orders</strong> lists working orders —
+                    cancel inline, or open the Order Book to modify.
+                  </li>
+                  <li>
+                    <strong className="text-foreground">Recent Trades</strong> shows today’s fills.
+                  </li>
+                </ul>
+              </PopoverContent>
+            </Popover>
+          </div>
           <p className="text-muted-foreground mt-1 md:mt-2 text-sm md:text-base">
             Overview of your trading account and market positions
           </p>
@@ -331,122 +341,75 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-5 gap-4 md:gap-6">
-        {/* Available Balance */}
-        <Card>
-          <CardContent className="pt-6">
-            <div className="space-y-1">
-              <p className="text-sm text-muted-foreground">Available Balance</p>
-              <p className="text-2xl font-bold text-primary">
-                {isLoading
-                  ? '...'
-                  : marginData
-                    ? formatIndianNumber(marginData.availablecash)
-                    : '0.00'}
-              </p>
-              <Badge variant="secondary" className="mt-2">
-                Cash Balance
-              </Badge>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Collateral */}
-        <Card>
-          <CardContent className="pt-6">
-            <div className="space-y-1">
-              <p className="text-sm text-muted-foreground">Collateral</p>
-              <p className="text-2xl font-bold text-violet-500 dark:text-violet-400">
-                {isLoading
-                  ? '...'
-                  : marginData
-                    ? formatIndianNumber(marginData.collateral)
-                    : '0.00'}
-              </p>
-              <Badge variant="secondary" className="mt-2">
-                Total Collateral
-              </Badge>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Unrealized P&L */}
-        <Card>
-          <CardContent className="pt-6">
-            <div className="space-y-1">
-              <p className="text-sm text-muted-foreground">Unrealized P&L</p>
-              <p
-                className={cn(
-                  'text-2xl font-bold',
-                  marginData ? getPnLColor(marginData.m2munrealized) : ''
-                )}
-              >
-                {isLoading
-                  ? '...'
-                  : marginData
-                    ? formatIndianNumber(marginData.m2munrealized)
-                    : '0.00'}
-              </p>
-              <Badge
-                variant={marginData ? getPnLBadgeVariant(marginData.m2munrealized) : 'secondary'}
-                className="mt-2"
-              >
-                Mark to Market
-              </Badge>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Realized P&L */}
-        <Card>
-          <CardContent className="pt-6">
-            <div className="space-y-1">
-              <p className="text-sm text-muted-foreground">Realized P&L</p>
-              <p
-                className={cn(
-                  'text-2xl font-bold',
-                  marginData ? getPnLColor(marginData.m2mrealized) : ''
-                )}
-              >
-                {isLoading
-                  ? '...'
-                  : marginData
-                    ? formatIndianNumber(marginData.m2mrealized)
-                    : '0.00'}
-              </p>
-              <Badge
-                variant={marginData ? getPnLBadgeVariant(marginData.m2mrealized) : 'secondary'}
-                className="mt-2"
-              >
-                Booked P&L
-              </Badge>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Utilised Margin */}
-        <Card>
-          <CardContent className="pt-6">
-            <div className="space-y-1">
-              <p className="text-sm text-muted-foreground">Utilised Margin</p>
-              <p className="text-2xl font-bold text-cyan-500 dark:text-cyan-400">
-                {isLoading
-                  ? '...'
-                  : marginData
-                    ? formatIndianNumber(marginData.utiliseddebits)
-                    : '0.00'}
-              </p>
-              <Badge
-                variant="outline"
-                className="mt-2 border-cyan-500/50 text-cyan-600 dark:text-cyan-400"
-              >
-                Used Margin
-              </Badge>
-            </div>
-          </CardContent>
-        </Card>
+      {/* Portfolio Metrics (USD). P&L / market value come from live positions;
+          cash / collateral / margin come from the broker funds endpoint. */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
+        {[
+          {
+            label: 'Available Cash',
+            value: marginData ? formatUSD(marginData.availablecash) : '--',
+            badge: 'Cash Balance',
+            color: 'text-primary',
+          },
+          {
+            label: 'Unrealized P&L',
+            value: formatSignedUSD(totals.unrealized),
+            badge: 'Mark to Market',
+            color: pnlColorClass(totals.unrealized),
+          },
+          {
+            label: 'Realized P&L',
+            value: formatSignedUSD(totals.realized),
+            badge: 'Booked P&L',
+            color: pnlColorClass(totals.realized),
+          },
+          {
+            label: 'Market Value',
+            value: formatUSD(totals.marketValue),
+            badge: 'Positions',
+            color: 'text-foreground',
+          },
+          {
+            label: 'Open Positions',
+            value: String(totals.openCount),
+            badge: 'Holdings',
+            color: 'text-foreground',
+          },
+          {
+            label: 'Collateral',
+            value: marginData ? formatUSD(marginData.collateral) : '--',
+            badge: 'Total Collateral',
+            color: 'text-violet-500 dark:text-violet-400',
+          },
+          {
+            label: 'Utilised Margin',
+            value: marginData ? formatUSD(marginData.utiliseddebits) : '--',
+            badge: 'Used Margin',
+            color: 'text-cyan-500 dark:text-cyan-400',
+          },
+        ].map((m) => (
+          <Card key={m.label}>
+            <CardContent className="pt-6">
+              <div className="space-y-1">
+                <p className="text-sm text-muted-foreground">{m.label}</p>
+                <p className={cn('text-2xl font-bold tabular-nums', m.color)}>
+                  {isLoading && !marginData ? '...' : m.value}
+                </p>
+                <Badge variant="secondary" className="mt-2">
+                  {m.badge}
+                </Badge>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
       </div>
+
+      {/* Live trading data */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 md:gap-6">
+        <LivePositionsCard positions={positions} isLoading={positionsLoading} isLive={isLive} />
+        <OpenOrdersCard />
+      </div>
+      <RecentTradesCard />
 
       {/* Watchlist */}
       <WatchlistCard />
