@@ -27,7 +27,9 @@ function formatDate(dateStr: string): string {
 function parseTags(tagsJson: string | null): string[] {
   if (!tagsJson) return []
   try {
-    return JSON.parse(tagsJson)
+    // Dedupe: older reports were saved with duplicate tool tags (e.g. two
+    // "Get Market Overview"), which collide as React keys when rendered.
+    return [...new Set(JSON.parse(tagsJson) as string[])]
   } catch {
     return []
   }

@@ -102,17 +102,20 @@ impl FmpClient {
         self.fetch_fmp_json(&url).await
     }
 
-    /// Get stock news (uses fmp-articles endpoint on stable API)
+    /// Get stock news (FMP /stable news endpoints — the legacy stock-news /
+    /// fmp-articles paths 404 on /stable). With symbols → /stable/news/stock
+    /// (note: param is `symbols`, not `tickers`); without → /stable/news/stock-latest.
     pub async fn get_stock_news(&self, symbols: Option<&str>, limit: i32) -> Result<Vec<NewsArticle>, ProviderError> {
         let url = if let Some(syms) = symbols {
-            format!("{}/stock-news?tickers={}&limit={}&apikey={}", FMP_BASE_URL, syms, limit, self.api_key)
+            format!("{}/news/stock?symbols={}&limit={}&apikey={}", FMP_BASE_URL, syms, limit, self.api_key)
         } else {
-            format!("{}/fmp-articles?limit={}&apikey={}", FMP_BASE_URL, limit, self.api_key)
+            format!("{}/news/stock-latest?page=0&limit={}&apikey={}", FMP_BASE_URL, limit, self.api_key)
         };
         let resp = self.fetch_fmp_json(&url).await?;
 
         Ok(resp.iter().map(|item| {
-            // Handle both stock-news and fmp-articles response formats
+            // Both endpoints share the same article schema; the .or_else fallbacks
+            // keep older field names working too.
             let url_val = item["url"].as_str()
                 .or_else(|| item["link"].as_str())
                 .unwrap_or("").to_string();

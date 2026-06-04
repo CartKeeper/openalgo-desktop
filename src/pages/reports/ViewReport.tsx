@@ -46,7 +46,9 @@ function formatDate(dateStr: string): string {
 function parseTags(tagsJson: string | null): string[] {
   if (!tagsJson) return []
   try {
-    return JSON.parse(tagsJson)
+    // Dedupe: older reports were saved with duplicate tool tags (e.g. two
+    // "Get Market Overview"), which collide as React keys when rendered.
+    return [...new Set(JSON.parse(tagsJson) as string[])]
   } catch {
     return []
   }
@@ -256,7 +258,7 @@ export default function ViewReport() {
         .flatMap((m) => parseActionsFromMarkdown(m.content, 'report')),
     [currentMessages]
   )
-  const setItemsAndOpen = useActionQueueStore((s) => s.setItemsAndOpen)
+  const reviewWithFundsCheck = useActionQueueStore((s) => s.setItemsAndOpenWithFundsCheck)
 
   const handleTitleSave = async () => {
     if (!reportId || !titleDraft.trim()) return
@@ -398,7 +400,7 @@ export default function ViewReport() {
                     variant="outline"
                     size="sm"
                     className="h-8"
-                    onClick={() => setItemsAndOpen(reportActions)}
+                    onClick={() => reviewWithFundsCheck(reportActions)}
                   >
                     <ShoppingCart className="h-4 w-4 mr-1" />
                     Review {reportActions.length} Action{reportActions.length !== 1 ? 's' : ''}

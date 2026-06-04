@@ -414,7 +414,7 @@ export default function BriefingPage() {
   const [isStatsLoading, setIsStatsLoading] = useState(true)
   const navigate = useNavigate()
   const { saveReport } = useReportsStore()
-  const setItemsAndOpen = useActionQueueStore((s) => s.setItemsAndOpen)
+  const reviewWithFundsCheck = useActionQueueStore((s) => s.setItemsAndOpenWithFundsCheck)
   const { apiKey } = useAuthStore()
 
   useEffect(() => {
@@ -491,7 +491,15 @@ export default function BriefingPage() {
     try {
       const title = `10-Min Briefing — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
       const summary = sections[0]?.content.slice(0, 300) || ''
-      const tags = ['Briefing', ...toolCalls.map((t) => t.name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())).slice(0, 5)]
+      // Dedupe tool names BEFORE formatting — a briefing calls get_market_overview
+      // several times (sector_performance, gainers, losers, most_active), which would
+      // otherwise produce duplicate tags and collide as React keys when rendered.
+      const tags = [
+        'Briefing',
+        ...Array.from(new Set(toolCalls.map((t) => t.name)))
+          .map((n) => n.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()))
+          .slice(0, 5),
+      ]
       const messages = [
         { id: '1', role: 'user' as const, content: 'Generate 10-Minute Market Briefing', timestamp: Date.now() },
         { id: '2', role: 'assistant' as const, content: rawText, toolCalls, timestamp: Date.now() },
@@ -641,7 +649,7 @@ export default function BriefingPage() {
                 className="h-10 gap-2"
                 onClick={() => {
                   const actions = parseActionsFromMarkdown(rawText, 'briefing')
-                  if (actions.length > 0) setItemsAndOpen(actions)
+                  if (actions.length > 0) reviewWithFundsCheck(actions)
                 }}
               >
                 <ShoppingCart className="h-4 w-4" />
