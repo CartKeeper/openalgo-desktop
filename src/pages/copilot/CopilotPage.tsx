@@ -122,7 +122,7 @@ function MessageBubble({
   const isUser = message.role === 'user'
   const tickers = !isUser ? extractTickers(message.content) : []
   const actions = !isUser ? parseActionsFromMarkdown(message.content, 'copilot') : []
-  const setItemsAndOpen = useActionQueueStore((s) => s.setItemsAndOpen)
+  const reviewWithFundsCheck = useActionQueueStore((s) => s.setItemsAndOpenWithFundsCheck)
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`}>
@@ -151,7 +151,7 @@ function MessageBubble({
               variant="outline"
               size="sm"
               className="h-8 gap-1.5 text-[12px]"
-              onClick={() => setItemsAndOpen(actions)}
+              onClick={() => reviewWithFundsCheck(actions)}
             >
               <ShoppingCart className="h-3.5 w-3.5" />
               Review {actions.length} trade{actions.length !== 1 ? 's' : ''}
@@ -161,7 +161,7 @@ function MessageBubble({
 
         {/* Tool call badges + Pin button row */}
         {!isUser && (
-          <div className="flex items-center gap-1.5 mt-3 pt-3 border-t border-border/40">
+          <div className="flex flex-wrap items-center gap-1.5 mt-3 pt-3 border-t border-border/40">
             {message.toolCalls && message.toolCalls.length > 0 && (
               <>
                 <Wrench className="h-3 w-3 text-muted-foreground mt-[1px] shrink-0" />

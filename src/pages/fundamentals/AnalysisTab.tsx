@@ -8,19 +8,23 @@ import {
   Bot,
   Loader2,
   RefreshCw,
+  Send,
   ShoppingCart,
   TrendingDown,
   TrendingUp,
+  Wrench,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { providerCommands } from '@/api/tauri-client'
 import { ActionReviewModal } from '@/components/trading/ActionReviewModal'
 import { PlaceOrderDialog } from '@/components/trading/PlaceOrderDialog'
 import { parseActionsFromMarkdown } from '@/lib/parseActions'
 import { useActionQueueStore } from '@/stores/actionQueueStore'
+import type { OrderRecommendation } from '@/types/actionQueue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 
@@ -69,6 +73,19 @@ interface TrendData {
 interface CopilotResponse {
   response_text: string
   tool_calls_made: { tool_name: string; summary: string }[]
+}
+
+interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  /** First entry is the technical-data prompt — kept for AI context, never rendered. */
+  hidden?: boolean
+  toolCalls?: { tool_name: string; summary: string }[]
+}
+
+function genId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 }
 
 // ---------------------------------------------------------------------------
@@ -252,26 +269,24 @@ export function AnalysisTab({ symbol }: { symbol: string }) {
   const [signals, setSignals] = useState<TechnicalSignals | null>(null)
   const [trend, setTrend] = useState<TrendData | null>(null)
   const [trendRange, setTrendRange] = useState<TrendRange>('6mo')
-  const [aiAnalysis, setAiAnalysis] = useState<string | null>(null)
+  // The AI section is an open conversation: the first turn is the auto-generated
+  // analysis, after which the user can chat back to refine it.
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [chatInput, setChatInput] = useState('')
   const [isLoadingSignals, setIsLoadingSignals] = useState(false)
   const [isLoadingTrend, setIsLoadingTrend] = useState(false)
   const [isLoadingAi, setIsLoadingAi] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
 
+  const chatScrollRef = useRef<HTMLDivElement>(null)
+  const chatInputRef = useRef<HTMLInputElement>(null)
+
   // Turn the AI's structured ACTIONS_JSON into buildable trades (same flow as the
   // main Copilot): the "Build trade" button loads them into the review queue and
   // opens ActionReviewModal, which carries the Gate B dollar-downside safeguard.
-  const setItemsAndOpen = useActionQueueStore((s) => s.setItemsAndOpen)
-  const aiActions = useMemo(
-    () => (aiAnalysis ? parseActionsFromMarkdown(aiAnalysis, 'copilot') : []),
-    [aiAnalysis]
-  )
-  // Strip the raw ACTIONS_JSON comment block from the text this tab renders
-  // line-by-line (it isn't a real markdown renderer, so the block would show).
-  const displayAnalysis = useMemo(
-    () => (aiAnalysis ? aiAnalysis.replace(/<!--\s*ACTIONS_JSON[\s\S]*?-->/g, '').trim() : ''),
-    [aiAnalysis]
-  )
+  const reviewWithFundsCheck = useActionQueueStore((s) => s.setItemsAndOpenWithFundsCheck)
+
+  const visibleMessages = messages.filter((m) => !m.hidden)
 
   const fetchTechnicals = useCallback(async () => {
     setIsLoadingSignals(true)
@@ -323,33 +338,92 @@ export function AnalysisTab({ symbol }: { symbol: string }) {
     }
   }, [symbol])
 
+  const toAiError = (err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes('not configured') || msg.includes('API key')) {
+      return 'Anthropic API key not configured. Add it in Data Providers settings.'
+    }
+    return 'Failed to reach the AI. Try again.'
+  }
+
+  // Initial analysis (and "Refresh" — starts a fresh conversation). The technical
+  // data prompt is stored as a hidden first message so follow-ups keep that context.
   const fetchAiAnalysis = useCallback(async () => {
     if (!signals) return
 
     setIsLoadingAi(true)
     setAiError(null)
-    try {
-      // Build a structured prompt with all the technical data
-      const prompt = buildAnalysisPrompt(symbol, signals, trend)
+    const prompt = buildAnalysisPrompt(symbol, signals, trend)
+    const promptMsg: ChatMessage = { id: genId(), role: 'user', content: prompt, hidden: true }
+    setMessages([promptMsg])
+    setChatInput('')
 
+    try {
       const response = await invoke<CopilotResponse>('copilot_send_message', {
         message: prompt,
         conversationHistoryJson: '[]',
       })
-
-      setAiAnalysis(response.response_text)
+      setMessages([
+        promptMsg,
+        {
+          id: genId(),
+          role: 'assistant',
+          content: response.response_text,
+          toolCalls: response.tool_calls_made,
+        },
+      ])
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (msg.includes('not configured') || msg.includes('API key')) {
-        setAiError('Anthropic API key not configured. Add it in Data Providers settings.')
-      } else {
-        setAiError('Failed to generate AI analysis. Try again.')
-      }
+      setAiError(toAiError(err))
       console.error('AI analysis failed:', err)
     } finally {
       setIsLoadingAi(false)
     }
   }, [symbol, signals, trend])
+
+  // Follow-up turn — passes the full conversation (including the hidden context
+  // prompt and every prior turn) so the AI answers in context.
+  const sendFollowUp = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault()
+      const text = chatInput.trim()
+      if (!text || isLoadingAi) return
+
+      const history = messages.map((m) => ({ role: m.role, content: m.content }))
+      setMessages((prev) => [...prev, { id: genId(), role: 'user', content: text }])
+      setChatInput('')
+      setIsLoadingAi(true)
+      setAiError(null)
+
+      try {
+        const response = await invoke<CopilotResponse>('copilot_send_message', {
+          message: text,
+          conversationHistoryJson: JSON.stringify(history),
+        })
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: genId(),
+            role: 'assistant',
+            content: response.response_text,
+            toolCalls: response.tool_calls_made,
+          },
+        ])
+      } catch (err) {
+        setAiError(toAiError(err))
+        console.error('AI follow-up failed:', err)
+      } finally {
+        setIsLoadingAi(false)
+        chatInputRef.current?.focus()
+      }
+    },
+    [chatInput, isLoadingAi, messages]
+  )
+
+  // Keep the conversation pinned to the latest message.
+  useEffect(() => {
+    const el = chatScrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [messages, isLoadingAi])
 
   // Fetch technicals when symbol changes
   useEffect(() => {
@@ -558,75 +632,103 @@ export function AnalysisTab({ symbol }: { symbol: string }) {
         </Card>
       </div>
 
-      {/* AI Analysis */}
+      {/* AI Analysis & Strategy — open conversation */}
       <Card>
-        <CardContent className="p-4">
-          <div className="flex items-center justify-between mb-3">
+        <CardContent className="flex flex-col p-4">
+          <div className="mb-3 flex items-center justify-between">
             <div className="flex items-center gap-1.5">
               <Bot className="h-4 w-4 text-primary" />
               <h4 className="text-sm font-semibold">AI Analysis & Strategy</h4>
             </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-xs"
-              onClick={fetchAiAnalysis}
-              disabled={isLoadingAi}
-            >
-              {isLoadingAi ? (
-                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-              ) : (
-                <RefreshCw className="h-3 w-3 mr-1" />
-              )}
-              {aiAnalysis ? 'Refresh' : 'Analyze'}
-            </Button>
+            {visibleMessages.length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={fetchAiAnalysis}
+                disabled={isLoadingAi}
+                title="Start a fresh analysis"
+              >
+                {isLoadingAi ? (
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3 w-3 mr-1" />
+                )}
+                Restart
+              </Button>
+            )}
           </div>
 
-          {isLoadingAi ? (
-            <div className="space-y-2">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Analyzing {symbol} — pulling data and computing strategy...
-              </div>
-              <Skeleton className="h-3 w-full" />
-              <Skeleton className="h-3 w-full" />
-              <Skeleton className="h-3 w-4/5" />
-              <Skeleton className="h-3 w-full" />
-              <Skeleton className="h-3 w-3/4" />
-            </div>
-          ) : aiError ? (
-            <div className="text-sm text-muted-foreground text-center py-4">
-              <AlertTriangle className="h-5 w-5 mx-auto mb-1 text-yellow-500" />
-              {aiError}
-            </div>
-          ) : aiAnalysis ? (
-            <>
-              <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed">
-                {displayAnalysis.split('\n').map((line, i) => {
-                  if (!line.trim()) return <br key={i} />
-                  if (line.startsWith('### ')) return <h3 key={i} className="text-sm font-semibold mt-3 mb-1">{line.replace('### ', '')}</h3>
-                  if (line.startsWith('## ')) return <h2 key={i} className="text-base font-semibold mt-4 mb-1">{line.replace('## ', '')}</h2>
-                  if (line.startsWith('**') && line.endsWith('**')) return <p key={i} className="font-semibold mt-2">{line.replace(/\*\*/g, '')}</p>
-                  if (line.startsWith('- ')) return <li key={i} className="ml-4 list-disc text-sm">{renderInlineBold(line.slice(2))}</li>
-                  return <p key={i} className="text-sm">{renderInlineBold(line)}</p>
-                })}
-              </div>
-              {aiActions.length > 0 && (
-                <div className="mt-4 pt-3 border-t border-border flex items-center justify-between gap-3">
-                  <p className="text-xs text-muted-foreground">
-                    The analysis includes {aiActions.length} suggested trade{aiActions.length !== 1 ? 's' : ''}. You confirm size and the dollar risk before anything is placed.
-                  </p>
-                  <Button size="sm" className="h-9 shrink-0" onClick={() => setItemsAndOpen(aiActions)}>
-                    <ShoppingCart className="h-4 w-4 mr-1.5" />
-                    Build {aiActions.length} trade{aiActions.length !== 1 ? 's' : ''}
+          {visibleMessages.length === 0 && !isLoadingAi ? (
+            aiError ? (
+              <div className="py-6 text-center text-sm text-muted-foreground">
+                <AlertTriangle className="mx-auto mb-1 h-5 w-5 text-yellow-500" />
+                {aiError}
+                <div>
+                  <Button variant="ghost" size="sm" className="mt-2" onClick={fetchAiAnalysis}>
+                    <RefreshCw className="mr-1 h-3 w-3" /> Try again
                   </Button>
                 </div>
-              )}
-            </>
+              </div>
+            ) : (
+              <div className="py-6 text-center">
+                <p className="mb-3 text-sm text-muted-foreground">
+                  Get an AI read on {symbol}'s setup, then chat back to refine the strategy.
+                </p>
+                <Button size="sm" onClick={fetchAiAnalysis} disabled={!signals}>
+                  <Bot className="mr-1.5 h-4 w-4" />
+                  Analyze {symbol}
+                </Button>
+              </div>
+            )
           ) : (
-            <div className="text-sm text-muted-foreground text-center py-4">
-              Click Analyze to get AI-powered insights and strategy recommendations.
-            </div>
+            <>
+              {/* Conversation window */}
+              <div ref={chatScrollRef} className="max-h-115 space-y-4 overflow-y-auto pr-1">
+                {visibleMessages.map((m) =>
+                  m.role === 'user' ? (
+                    <div key={m.id} className="flex justify-end">
+                      <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-primary px-3 py-2 text-sm text-primary-foreground">
+                        {m.content}
+                      </div>
+                    </div>
+                  ) : (
+                    <AssistantMessage key={m.id} message={m} onBuild={reviewWithFundsCheck} />
+                  )
+                )}
+                {isLoadingAi && (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Thinking…
+                  </div>
+                )}
+                {aiError && visibleMessages.length > 0 && (
+                  <div className="flex items-center gap-1.5 text-xs text-yellow-500">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> {aiError}
+                  </div>
+                )}
+              </div>
+
+              {/* Follow-up input */}
+              <form onSubmit={sendFollowUp} className="mt-3 flex items-center gap-2">
+                <Input
+                  ref={chatInputRef}
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder={`Ask a follow-up about ${symbol}…`}
+                  disabled={isLoadingAi}
+                  className="h-9 text-sm"
+                />
+                <Button
+                  type="submit"
+                  size="sm"
+                  className="h-9 w-9 shrink-0 p-0"
+                  disabled={isLoadingAi || !chatInput.trim()}
+                >
+                  <Send className="h-4 w-4" />
+                </Button>
+              </form>
+            </>
           )}
         </CardContent>
       </Card>
@@ -645,6 +747,71 @@ function renderInlineBold(text: string) {
     }
     return <span key={i}>{part}</span>
   })
+}
+
+// Lightweight line-by-line renderer for the AI's markdown (the ACTIONS_JSON
+// comment block is stripped first so it never shows in the conversation).
+function renderAnalysisMarkdown(text: string) {
+  const display = text.replace(/<!--\s*ACTIONS_JSON[\s\S]*?-->/g, '').trim()
+  return display.split('\n').map((line, i) => {
+    if (!line.trim()) return <br key={i} />
+    if (line.startsWith('### '))
+      return <h3 key={i} className="mt-3 mb-1 text-sm font-semibold">{line.replace('### ', '')}</h3>
+    if (line.startsWith('## '))
+      return <h2 key={i} className="mt-4 mb-1 text-base font-semibold">{line.replace('## ', '')}</h2>
+    if (line.startsWith('**') && line.endsWith('**'))
+      return <p key={i} className="mt-2 font-semibold">{line.replace(/\*\*/g, '')}</p>
+    if (line.startsWith('- '))
+      return <li key={i} className="ml-4 list-disc text-sm">{renderInlineBold(line.slice(2))}</li>
+    return <p key={i} className="text-sm">{renderInlineBold(line)}</p>
+  })
+}
+
+const formatTool = (name: string) =>
+  name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+
+// One assistant turn: rendered analysis + any tools it used + a one-click
+// "Build trade" for the concrete order(s) embedded in its ACTIONS_JSON.
+function AssistantMessage({
+  message,
+  onBuild,
+}: {
+  message: ChatMessage
+  onBuild: (items: OrderRecommendation[]) => void
+}) {
+  const actions = useMemo(
+    () => parseActionsFromMarkdown(message.content, 'copilot'),
+    [message.content]
+  )
+  return (
+    <div className="space-y-2">
+      <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed">
+        {renderAnalysisMarkdown(message.content)}
+      </div>
+      {message.toolCalls && message.toolCalls.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Wrench className="h-3 w-3 shrink-0 text-muted-foreground" />
+          {message.toolCalls.map((tc, i) => (
+            <Badge key={i} variant="secondary" className="px-2 py-0 text-[10px] font-semibold">
+              {formatTool(tc.tool_name)}
+            </Badge>
+          ))}
+        </div>
+      )}
+      {actions.length > 0 && (
+        <div className="flex items-center justify-between gap-3 border-t border-border pt-2">
+          <p className="text-xs text-muted-foreground">
+            {actions.length} suggested trade{actions.length !== 1 ? 's' : ''}. You confirm size and
+            the dollar risk before anything is placed.
+          </p>
+          <Button size="sm" className="h-9 shrink-0" onClick={() => onBuild(actions)}>
+            <ShoppingCart className="mr-1.5 h-4 w-4" />
+            Build {actions.length} trade{actions.length !== 1 ? 's' : ''}
+          </Button>
+        </div>
+      )}
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------

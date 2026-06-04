@@ -300,6 +300,10 @@ export default function Dashboard() {
     )
   }
 
+  // Total P&L % = (unrealized + realized) ÷ cost basis of open positions.
+  const totalPnlPct =
+    totals.costBasis !== 0 ? ((totals.unrealized + totals.realized) / totals.costBasis) * 100 : null
+
   return (
     <div className="space-y-6 md:space-y-12">
       {/* Dashboard Header */}
@@ -381,6 +385,15 @@ export default function Dashboard() {
             value: formatSignedUSD(totals.realized),
             badge: 'Booked P&L',
             color: pnlColorClass(totals.realized),
+          },
+          {
+            label: 'Total P&L %',
+            value:
+              totalPnlPct == null
+                ? '--'
+                : `${totalPnlPct >= 0 ? '+' : ''}${totalPnlPct.toFixed(2)}%`,
+            badge: 'Return on Cost',
+            color: pnlColorClass(totalPnlPct),
           },
           {
             label: 'Market Value',

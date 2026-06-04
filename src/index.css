@@ -382,6 +382,15 @@
   background: transparent;
 }
 
+/* Opt-in: scroll without showing a scrollbar */
+.no-scrollbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* legacy Edge/IE */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none; /* WebKit/Chromium */
+}
+
 /* Safe area utilities for mobile devices with notches/home indicators */
 .safe-area-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0px);

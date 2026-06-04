@@ -14,6 +14,8 @@ use crate::providers::fred::FredClient;
 use crate::providers::yahoo::YahooClient;
 use crate::providers::types::ScreenerFilters;
 use crate::state::AppState;
+use chrono::{Datelike, Timelike, Utc, Weekday};
+use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -40,7 +42,7 @@ pub struct CopilotService;
 impl CopilotService {
     /// Build the system prompt for the financial research copilot
     pub fn build_system_prompt() -> String {
-        r#"You are an AI Research Copilot for OpenAlgo Desktop, a professional trading and market analysis platform. You are a knowledgeable financial analyst assistant.
+        let base = r#"You are an AI Research Copilot for OpenAlgo Desktop, a professional trading and market analysis platform. You are a knowledgeable financial analyst assistant.
 
 ## RESPONSIBLE TRADING ADVICE — HIGHEST PRIORITY (overrides any conflicting guidance below)
 
@@ -190,7 +192,45 @@ CRITICAL — Position-aware constraints:
 - NEVER recommend selling more shares than the user actually holds — match or stay under the portfolio quantity
 - For stop loss (SL, SL-M) and trailing stop orders on existing positions, the quantity MUST equal the position's current quantity, not an arbitrary number
 - For BUY recommendations (new positions or adding to existing), use reasonable quantities appropriate to the stock price (e.g., 5-10 shares for $100+ stocks, 10-25 for $20-$100 stocks)
-- If the user's portfolio data is provided in the conversation, treat it as the source of truth for what they own"#.to_string()
+- If the user's portfolio data is provided in the conversation, treat it as the source of truth for what they own"#.to_string();
+
+        format!("{base}\n\n{time}", base = base, time = Self::current_time_context())
+    }
+
+    /// Build a ground-truth "current time" block in America/New_York so the model
+    /// never invents the time. Without this the copilot hallucinates an "as of"
+    /// timestamp (e.g. claiming "2:18 PM ET" at 10:26 AM), which poisons every
+    /// "intraday"/"today" claim downstream. Holidays are not resolved here — we
+    /// say so rather than guess.
+    fn current_time_context() -> String {
+        let now_et = Utc::now().with_timezone(&New_York);
+        let minutes = now_et.hour() * 60 + now_et.minute();
+        let is_weekend = matches!(now_et.weekday(), Weekday::Sat | Weekday::Sun);
+        let session = if is_weekend {
+            "the U.S. market is CLOSED (weekend)"
+        } else if minutes < 4 * 60 {
+            "the U.S. market is CLOSED (overnight)"
+        } else if minutes < 9 * 60 + 30 {
+            "it is PRE-MARKET (the regular session opens at 9:30 AM ET)"
+        } else if minutes < 16 * 60 {
+            "the U.S. market is OPEN (regular session, 9:30 AM – 4:00 PM ET)"
+        } else if minutes < 20 * 60 {
+            "it is AFTER-HOURS (the regular session closed at 4:00 PM ET)"
+        } else {
+            "the U.S. market is CLOSED (the after-hours session ended at 8:00 PM ET)"
+        };
+
+        format!(
+            "## CURRENT TIME — USE THIS, NEVER GUESS THE TIME (overrides any other time reference)\n\
+The current date and time is {date}, {time} ET. Right now {session}.\n\
+- Use THIS as \"now\" for every \"as of\" timestamp and every \"intraday\", \"today\", \"this morning\", or \"this afternoon\" reference. NEVER invent, estimate, or assume the current time.\n\
+- If the market is not in its regular session, say so plainly — do NOT describe pre-market, after-hours, or prior-close prices as live \"intraday\" action.\n\
+- Quote-tool timestamps may be delayed or from the prior close. Reconcile them against the current time above and state the explicit as-of (including the delay) for every price you cite.\n\
+- Market holidays are NOT accounted for in the session label above; if the date is a U.S. market holiday, treat the regular session as closed.",
+            date = now_et.format("%A, %B %-d, %Y"),
+            time = now_et.format("%-I:%M %p"),
+            session = session,
+        )
     }
 
     /// Execute a tool call by routing to the appropriate provider
@@ -240,6 +280,25 @@ CRITICAL — Position-aware constraints:
         let client = AnthropicClient::new((*state.http_client).clone());
         let tools = build_tool_definitions();
         let system_prompt = Self::build_system_prompt();
+
+        // Append the account's available cash so BUY recommendations are sized to
+        // funds the account actually holds. Best-effort: if funds can't be read we
+        // leave the prompt unchanged — the frontend applies a hard affordability
+        // cap on the parsed recommendations regardless. Routes to sandbox cash in
+        // analyze (paper) mode, matching where the orders would actually execute.
+        let system_prompt = match crate::services::FundsService::get_funds(state, None).await {
+            Ok(result) if result.funds.available_cash > 0.0 => format!(
+                "{prompt}\n\n## CRITICAL — Cash budget for BUY recommendations\n\
+The account currently has ${cash:.2} in available cash. Before recommending ANY buy you MUST confirm it fits this budget:\n\
+- The TOTAL cost of ALL BUY orders in your ACTIONS_JSON block (for each buy: quantity × the price it will fill at — the limit price for LIMIT orders, the current market price for MARKET orders) MUST NOT exceed ${cash:.2}.\n\
+- Treat available cash as one shared budget across all buys. Size each buy's whole-share quantity so the cumulative cost of every buy stays within ${cash:.2}.\n\
+- If a pick does not fit the remaining cash, reduce its quantity to what remains; if not even one whole share fits, omit that buy entirely.\n\
+- This cash budget constrains BUY orders only. SELL and stop orders are unaffected.",
+                prompt = system_prompt,
+                cash = result.funds.available_cash,
+            ),
+            _ => system_prompt,
+        };
 
         // Build conversation with the new user message
         let mut conversation = conversation_history;

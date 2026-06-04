@@ -88,7 +88,7 @@ export function AssetAllocationCard({ positions }: AssetAllocationCardProps) {
   let offset = 0
 
   return (
-    <Card>
+    <Card className="h-140">
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-base">
           <PieChart className="h-4 w-4 text-primary" />
