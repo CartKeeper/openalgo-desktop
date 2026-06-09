@@ -32,6 +32,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { authApi } from '@/api/auth'
+import { historifyCommands, symbolCommands } from '@/api/tauri-client'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -131,14 +132,7 @@ interface GroupedCatalogItem {
   latest_date?: string
 }
 
-interface IntervalData {
-  seconds: string[]
-  minutes: string[]
-  hours: string[]
-  days: string[]
-  weeks: string[]
-  months: string[]
-}
+// IntervalData interface removed — loadIntervals() was removed; storage intervals use StorageIntervals from tauri-client.ts
 
 // FNOSymbol interface (will be used when FNO Discovery is enabled)
 // interface FNOSymbol {
@@ -192,12 +186,7 @@ interface Stats {
   watchlist_count: number
 }
 
-// Helper functions
-async function fetchCSRFToken(): Promise<string> {
-  const response = await fetch('/auth/csrf-token', { credentials: 'include' })
-  const data = await response.json()
-  return data.csrf_token
-}
+// Helper functions (CSRF removed — Tauri IPC needs no CSRF token)
 
 // Date range presets
 const DATE_PRESETS = [
@@ -223,22 +212,19 @@ export default function Historify() {
   // Core state
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([])
   const [catalog, setCatalog] = useState<CatalogItem[]>([])
-  const [_intervals, setIntervals] = useState<IntervalData | null>(null)
+  // _intervals state removed — loadIntervals() was removed; storage intervals come from historifyCommands.getStorageIntervals()
   const [historifyIntervals, setHistorifyIntervals] = useState<{
     storage_intervals: string[]
     computed_intervals: string[]
     all_intervals: string[]
   } | null>(null)
   const [exchanges, setExchanges] = useState<string[]>([
-    'NSE',
-    'BSE',
-    'NFO',
-    'BFO',
-    'MCX',
-    'CDS',
-    'BCD',
-    'NSE_INDEX',
-    'BSE_INDEX',
+    'NASDAQ',
+    'NYSE',
+    'ARCA',
+    'BATS',
+    'AMEX',
+    'OTC',
   ])
   const [stats, setStats] = useState<Stats>({
     database_size_mb: 0,
@@ -252,7 +238,7 @@ export default function Historify() {
 
   // Symbol search state
   const [newSymbol, setNewSymbol] = useState('')
-  const [newExchange, setNewExchange] = useState('NSE')
+  const [newExchange, setNewExchange] = useState('NASDAQ')
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [showSearchResults, setShowSearchResults] = useState(false)
   const searchContainerRef = useRef<HTMLDivElement>(null)
@@ -409,7 +395,7 @@ export default function Historify() {
   useEffect(() => {
     loadWatchlist()
     loadCatalog()
-    loadIntervals()
+    // loadIntervals() removed — result (_intervals) was unused; storage intervals loaded via loadHistorifyIntervals
     loadHistorifyIntervals()
     loadStats()
     loadExchanges()
@@ -516,12 +502,19 @@ export default function Historify() {
     return () => clearTimeout(timer)
   }, [newSymbol])
 
-  // API Functions
+  // API Functions — all wired to Tauri commands (no Flask fetch calls)
   const loadWatchlist = async () => {
     try {
-      const response = await fetch('/historify/api/watchlist', { credentials: 'include' })
-      const data = await response.json()
-      if (data.status === 'success') setWatchlist(data.data || [])
+      const data = await historifyCommands.getWatchlist()
+      setWatchlist(
+        data.map((item) => ({
+          id: item.id,
+          symbol: item.symbol,
+          exchange: item.exchange,
+          display_name: item.name,
+          added_at: item.added_at,
+        }))
+      )
     } catch (error) {
       console.error('Error loading watchlist:', error)
     }
@@ -529,35 +522,24 @@ export default function Historify() {
 
   const loadCatalog = async () => {
     try {
-      const response = await fetch('/historify/api/catalog', { credentials: 'include' })
-      const data = await response.json()
-      if (data.status === 'success') setCatalog(data.data || [])
+      const data = await historifyCommands.getCatalog()
+      setCatalog(data)
     } catch (error) {
       console.error('Error loading catalog:', error)
     }
   }
 
-  const loadIntervals = async () => {
-    try {
-      const response = await fetch('/historify/api/intervals', { credentials: 'include' })
-      const data = await response.json()
-      if (data.status === 'success') setIntervals(data.data)
-    } catch (error) {
-      console.error('Error loading intervals:', error)
-    }
-  }
+  // loadIntervals() intentionally removed — _intervals state was never consumed by the UI.
+  // Storage intervals are provided by loadHistorifyIntervals() below.
 
   const loadHistorifyIntervals = async () => {
     try {
-      const response = await fetch('/historify/api/historify-intervals', { credentials: 'include' })
-      const data = await response.json()
-      if (data.status === 'success') {
-        setHistorifyIntervals({
-          storage_intervals: data.storage_intervals,
-          computed_intervals: data.computed_intervals,
-          all_intervals: data.all_intervals,
-        })
-      }
+      const data = await historifyCommands.getStorageIntervals()
+      setHistorifyIntervals({
+        storage_intervals: data.storage_intervals,
+        computed_intervals: data.computed_intervals,
+        all_intervals: data.all_intervals,
+      })
     } catch (error) {
       console.error('Error loading historify intervals:', error)
     }
@@ -565,9 +547,8 @@ export default function Historify() {
 
   const loadStats = async () => {
     try {
-      const response = await fetch('/historify/api/stats', { credentials: 'include' })
-      const data = await response.json()
-      if (data.status === 'success') setStats(data.data)
+      const data = await historifyCommands.getStats()
+      setStats(data)
     } catch (error) {
       console.error('Error loading stats:', error)
     }
@@ -575,9 +556,8 @@ export default function Historify() {
 
   const loadExchanges = async () => {
     try {
-      const response = await fetch('/historify/api/exchanges', { credentials: 'include' })
-      const data = await response.json()
-      if (data.status === 'success' && data.data?.length > 0) setExchanges(data.data)
+      const data = await historifyCommands.getExchanges()
+      if (data.length > 0) setExchanges(data)
     } catch (error) {
       console.error('Error loading exchanges:', error)
     }
@@ -586,9 +566,8 @@ export default function Historify() {
   const loadJobs = async () => {
     setJobsLoading(true)
     try {
-      const response = await fetch('/historify/api/jobs?limit=50', { credentials: 'include' })
-      const data = await response.json()
-      if (data.status === 'success') setJobs(data.data || [])
+      const data = await historifyCommands.getJobs(50)
+      setJobs(data)
     } catch (error) {
       console.error('Error loading jobs:', error)
     } finally {
@@ -599,11 +578,15 @@ export default function Historify() {
   const performSearch = async (query: string) => {
     if (query.length < 2) return
     try {
-      const params = new URLSearchParams({ q: query })
-      if (newExchange) params.append('exchange', newExchange)
-      const response = await fetch(`/search/api/search?${params}`, { credentials: 'include' })
-      const data = await response.json()
-      setSearchResults((data.results || []).slice(0, 10))
+      const results = await symbolCommands.searchSymbols(query, newExchange || undefined, 10)
+      setSearchResults(
+        results.map((r) => ({
+          symbol: r.symbol,
+          name: r.name,
+          exchange: r.exchange,
+          token: r.token,
+        }))
+      )
       setShowSearchResults(true)
     } catch (error) {
       console.error('Error searching symbols:', error)
@@ -618,22 +601,11 @@ export default function Historify() {
       return
     }
     try {
-      const csrfToken = await fetchCSRFToken()
-      const response = await fetch('/historify/api/watchlist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
-        credentials: 'include',
-        body: JSON.stringify({ symbol: newSymbol.trim().toUpperCase(), exchange: newExchange }),
-      })
-      const data = await response.json()
-      if (data.status === 'success') {
-        toast.success(data.message)
-        setNewSymbol('')
-        loadWatchlist()
-        loadStats()
-      } else {
-        toast.error(data.message || 'Failed to add symbol')
-      }
+      await historifyCommands.addWatchlist(newSymbol.trim().toUpperCase(), newExchange)
+      toast.success(`Added ${newSymbol.trim().toUpperCase()} to watchlist`)
+      setNewSymbol('')
+      loadWatchlist()
+      loadStats()
     } catch (error) {
       console.error('Error adding to watchlist:', error)
       toast.error('Failed to add symbol')
@@ -642,21 +614,10 @@ export default function Historify() {
 
   const removeFromWatchlist = async (symbol: string, exchange: string) => {
     try {
-      const csrfToken = await fetchCSRFToken()
-      const response = await fetch('/historify/api/watchlist', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
-        credentials: 'include',
-        body: JSON.stringify({ symbol, exchange }),
-      })
-      const data = await response.json()
-      if (data.status === 'success') {
-        toast.success(data.message)
-        loadWatchlist()
-        loadStats()
-      } else {
-        toast.error(data.message || 'Failed to remove symbol')
-      }
+      await historifyCommands.removeWatchlist(symbol, exchange)
+      toast.success(`Removed ${symbol} from watchlist`)
+      loadWatchlist()
+      loadStats()
     } catch (error) {
       console.error('Error removing from watchlist:', error)
       toast.error('Failed to remove symbol')
@@ -668,7 +629,7 @@ export default function Historify() {
     const symbols = lines
       .map((line) => {
         const [symbol, exchange] = line.split(',').map((s) => s.trim().toUpperCase())
-        return { symbol, exchange: exchange || 'NSE' }
+        return { symbol, exchange: exchange || 'NASDAQ' }
       })
       .filter((s) => s.symbol)
 
@@ -679,23 +640,12 @@ export default function Historify() {
 
     setIsBulkAdding(true)
     try {
-      const csrfToken = await fetchCSRFToken()
-      const response = await fetch('/historify/api/watchlist/bulk', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
-        credentials: 'include',
-        body: JSON.stringify({ symbols }),
-      })
-      const data = await response.json()
-      if (data.status === 'success') {
-        toast.success(`Added ${data.added} symbols`)
-        setBulkAddDialogOpen(false)
-        setBulkAddText('')
-        loadWatchlist()
-        loadStats()
-      } else {
-        toast.error(data.message || 'Failed to bulk add symbols')
-      }
+      const added = await historifyCommands.bulkAddWatchlist(symbols)
+      toast.success(`Added ${added} symbols`)
+      setBulkAddDialogOpen(false)
+      setBulkAddText('')
+      loadWatchlist()
+      loadStats()
     } catch (error) {
       console.error('Error bulk adding:', error)
       toast.error('Failed to bulk add symbols')
@@ -775,28 +725,19 @@ export default function Historify() {
       return
     }
     try {
-      const csrfToken = await fetchCSRFToken()
-      const response = await fetch('/historify/api/jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
-        credentials: 'include',
-        body: JSON.stringify({
-          job_type: jobType,
-          symbols,
-          interval: selectedInterval,
-          start_date: startDate,
-          end_date: endDate,
-          incremental: incrementalDownload,
-        }),
+      const result = await historifyCommands.createJob({
+        job_type: jobType,
+        symbols,
+        interval: selectedInterval,
+        start_date: startDate,
+        end_date: endDate,
+        incremental: incrementalDownload,
       })
-      const data = await response.json()
-      if (data.status === 'success') {
-        toast.success(`Job started: ${data.total_symbols} symbols`)
-        loadJobs()
-        setActiveTab('jobs')
-      } else {
-        toast.error(data.message || 'Failed to create job')
-      }
+      toast.success(result.message || `Job started: ${result.total_symbols} symbols`)
+      loadJobs()
+      loadCatalog()
+      loadStats()
+      setActiveTab('jobs')
     } catch (error) {
       console.error('Error creating job:', error)
       toast.error('Failed to create job')
@@ -812,140 +753,33 @@ export default function Historify() {
     await createDownloadJob(symbols, 'watchlist')
   }
 
-  const pauseJob = async (jobId: string) => {
-    try {
-      const csrfToken = await fetchCSRFToken()
-      const response = await fetch(`/historify/api/jobs/${jobId}/pause`, {
-        method: 'POST',
-        headers: { 'X-CSRFToken': csrfToken },
-        credentials: 'include',
-      })
-      const data = await response.json()
-      if (data.status === 'success') {
-        toast.success('Job paused')
-        loadJobs()
-      } else {
-        toast.error(data.message || 'Failed to pause job')
-      }
-    } catch (error) {
-      console.error('Error pausing job:', error)
-      toast.error('Failed to pause job')
-    }
+  // Out-of-scope stubs — pause/resume/cancel/retry/delete-job and delete-catalog-data are not
+  // wired to Tauri commands in this phase. Buttons are visible but will show a toast instead.
+  const pauseJob = async (_jobId: string) => {
+    toast.info('Job pause is not yet available in desktop mode')
   }
 
-  const resumeJob = async (jobId: string) => {
-    try {
-      const csrfToken = await fetchCSRFToken()
-      const response = await fetch(`/historify/api/jobs/${jobId}/resume`, {
-        method: 'POST',
-        headers: { 'X-CSRFToken': csrfToken },
-        credentials: 'include',
-      })
-      const data = await response.json()
-      if (data.status === 'success') {
-        toast.success('Job resumed')
-        loadJobs()
-      } else {
-        toast.error(data.message || 'Failed to resume job')
-      }
-    } catch (error) {
-      console.error('Error resuming job:', error)
-      toast.error('Failed to resume job')
-    }
+  const resumeJob = async (_jobId: string) => {
+    toast.info('Job resume is not yet available in desktop mode')
   }
 
-  const cancelJob = async (jobId: string) => {
-    try {
-      const csrfToken = await fetchCSRFToken()
-      const response = await fetch(`/historify/api/jobs/${jobId}/cancel`, {
-        method: 'POST',
-        headers: { 'X-CSRFToken': csrfToken },
-        credentials: 'include',
-      })
-      const data = await response.json()
-      if (data.status === 'success') {
-        toast.success('Job cancellation requested')
-        loadJobs()
-      } else {
-        toast.error(data.message || 'Failed to cancel job')
-      }
-    } catch (error) {
-      console.error('Error cancelling job:', error)
-      toast.error('Failed to cancel job')
-    }
+  const cancelJob = async (_jobId: string) => {
+    toast.info('Job cancel is not yet available in desktop mode')
   }
 
-  const retryJob = async (jobId: string) => {
-    try {
-      const csrfToken = await fetchCSRFToken()
-      const response = await fetch(`/historify/api/jobs/${jobId}/retry`, {
-        method: 'POST',
-        headers: { 'X-CSRFToken': csrfToken },
-        credentials: 'include',
-      })
-      const data = await response.json()
-      if (data.status === 'success') {
-        toast.success(`Retrying ${data.retry_count} failed items`)
-        loadJobs()
-      } else {
-        toast.error(data.message || 'Failed to retry job')
-      }
-    } catch (error) {
-      console.error('Error retrying job:', error)
-      toast.error('Failed to retry job')
-    }
+  const retryJob = async (_jobId: string) => {
+    toast.info('Job retry is not yet available in desktop mode')
   }
 
-  const deleteJob = async (jobId: string) => {
-    try {
-      const csrfToken = await fetchCSRFToken()
-      const response = await fetch(`/historify/api/jobs/${jobId}`, {
-        method: 'DELETE',
-        headers: { 'X-CSRFToken': csrfToken },
-        credentials: 'include',
-      })
-      const data = await response.json()
-      if (data.status === 'success') {
-        toast.success('Job deleted')
-        loadJobs()
-        if (selectedJob?.id === jobId) {
-          setSelectedJob(null)
-        }
-      } else {
-        toast.error(data.message || 'Failed to delete job')
-      }
-    } catch (error) {
-      console.error('Error deleting job:', error)
-      toast.error('Failed to delete job')
-    }
+  const deleteJob = async (_jobId: string) => {
+    toast.info('Job delete is not yet available in desktop mode')
   }
 
-  // Delete data
+  // Delete catalog data — out of scope for this phase
   const handleDeleteData = async () => {
-    if (!deleteTarget) return
-    try {
-      const csrfToken = await fetchCSRFToken()
-      const response = await fetch('/historify/api/delete', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
-        credentials: 'include',
-        body: JSON.stringify(deleteTarget),
-      })
-      const data = await response.json()
-      if (data.status === 'success') {
-        toast.success(data.message)
-        loadCatalog()
-        loadStats()
-      } else {
-        toast.error(data.message || 'Failed to delete data')
-      }
-    } catch (error) {
-      console.error('Error deleting data:', error)
-      toast.error('Failed to delete data')
-    } finally {
-      setDeleteDialogOpen(false)
-      setDeleteTarget(null)
-    }
+    setDeleteDialogOpen(false)
+    setDeleteTarget(null)
+    toast.info('Catalog data delete is not yet available in desktop mode')
   }
 
   // CSV Upload
@@ -961,91 +795,16 @@ export default function Historify() {
     }
   }
 
+  // CSV upload — out of scope for this phase (no Tauri command yet)
   const uploadCSVData = async () => {
-    if (!uploadFile) {
-      toast.warning('Please select a CSV or Parquet file')
-      return
-    }
-    if (!uploadSymbol.trim()) {
-      toast.warning('Please enter a symbol')
-      return
-    }
-    setIsUploading(true)
-    try {
-      const csrfToken = await fetchCSRFToken()
-      const formData = new FormData()
-      formData.append('file', uploadFile)
-      formData.append('symbol', uploadSymbol.trim().toUpperCase())
-      formData.append('exchange', uploadExchange)
-      formData.append('interval', uploadInterval)
-
-      const response = await fetch('/historify/api/upload', {
-        method: 'POST',
-        headers: { 'X-CSRFToken': csrfToken },
-        credentials: 'include',
-        body: formData,
-      })
-      const data = await response.json()
-      if (data.status === 'success') {
-        toast.success(`${data.message}`)
-        setUploadDialogOpen(false)
-        setUploadFile(null)
-        setUploadSymbol('')
-        if (fileInputRef.current) fileInputRef.current.value = ''
-        loadCatalog()
-        loadStats()
-      } else {
-        toast.error(data.message || 'Failed to upload data')
-      }
-    } catch (error) {
-      console.error('Error uploading CSV:', error)
-      toast.error('Failed to upload CSV')
-    } finally {
-      setIsUploading(false)
-    }
+    setUploadDialogOpen(false)
+    toast.info('CSV import is not yet available in desktop mode')
   }
 
-  // Export operations
+  // Bulk export — out of scope for this phase (no Tauri command yet)
   const handleBulkExport = async () => {
-    setIsExporting(true)
-    try {
-      const csrfToken = await fetchCSRFToken()
-      const symbols =
-        exportSymbols === 'selected'
-          ? Array.from(catalogSelectedSymbols).map((key) => {
-              const [symbol, exchange] = key.split(':')
-              return { symbol, exchange }
-            })
-          : null // null means export all symbols
-
-      // Convert Set to array for API
-      const intervalsArray = Array.from(exportIntervals)
-
-      const response = await fetch('/historify/api/export/bulk', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
-        credentials: 'include',
-        body: JSON.stringify({
-          format: exportFormat === 'csv' && intervalsArray.length > 1 ? 'zip' : exportFormat, // Force ZIP if multiple intervals
-          symbols,
-          intervals: intervalsArray, // Pass multiple intervals
-          compression: 'zstd',
-        }),
-      })
-      const data = await response.json()
-      if (data.status === 'success') {
-        toast.success(`${data.message}`)
-        window.location.href = '/historify/api/export/bulk/download'
-        setExportDialogOpen(false)
-      } else {
-        toast.error(data.message || 'Failed to export data')
-      }
-    } catch (error) {
-      console.error('Error exporting data:', error)
-      toast.error('Failed to export data')
-    } finally {
-      setIsExporting(false)
-    }
+    setExportDialogOpen(false)
+    toast.info('Bulk export is not yet available in desktop mode')
   }
 
   // Helper functions

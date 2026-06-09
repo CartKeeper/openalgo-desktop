@@ -28,6 +28,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { authApi } from '@/api/auth'
+import { historifyCommands } from '@/api/tauri-client'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -117,7 +118,9 @@ export default function HistorifyCharts() {
 
   // Symbol selection
   const [selectedSymbol, setSelectedSymbol] = useState(urlSymbol || '')
-  const [selectedExchange, setSelectedExchange] = useState(searchParams.get('exchange') || 'NSE')
+  const [selectedExchange, setSelectedExchange] = useState(
+    searchParams.get('exchange') || 'NASDAQ'
+  )
   const [selectedInterval, setSelectedInterval] = useState(searchParams.get('interval') || 'D')
   const [symbolSearchOpen, setSymbolSearchOpen] = useState(false)
   const [symbolSearch, setSymbolSearch] = useState('')
@@ -480,11 +483,8 @@ export default function HistorifyCharts() {
 
   const loadCatalog = async () => {
     try {
-      const response = await fetch('/historify/api/catalog', { credentials: 'include' })
-      const data = await response.json()
-      if (data.status === 'success') {
-        setCatalog(data.data || [])
-      }
+      const data = await historifyCommands.getCatalog()
+      setCatalog(data || [])
     } catch (error) {
       console.error('Error loading catalog:', error)
     }
@@ -495,26 +495,29 @@ export default function HistorifyCharts() {
 
     setIsLoading(true)
     try {
-      const params = new URLSearchParams({
+      const rows = await historifyCommands.getMarketData({
         symbol: selectedSymbol,
         exchange: selectedExchange,
-        interval: effectiveInterval,
-        start_date: startDate,
-        end_date: endDate,
+        timeframe: effectiveInterval,
+        from_date: startDate,
+        to_date: endDate,
       })
 
-      const response = await fetch(`/historify/api/data?${params}`, { credentials: 'include' })
-      const data = await response.json()
+      // Backend returns timestamp as a "YYYY-MM-DD HH:MM:SS" string (DuckDB CAST).
+      // WKWebView's Date parser rejects the space-separated form, so normalise to
+      // ISO (T separator) before converting to the Unix-seconds the chart expects.
+      const mapped: OHLCVData[] = (rows || []).map((r) => ({
+        timestamp: Math.floor(new Date(r.timestamp.replace(' ', 'T')).getTime() / 1000),
+        open: r.open,
+        high: r.high,
+        low: r.low,
+        close: r.close,
+        volume: r.volume,
+      }))
 
-      if (data.status === 'success') {
-        setChartData(data.data || [])
-        if (data.count === 0) {
-          toast.info(
-            'No data available for this range. Make sure 1m data is downloaded for custom intervals.'
-          )
-        }
-      } else {
-        toast.error(data.message || 'Failed to load chart data')
+      setChartData(mapped)
+      if (mapped.length === 0) {
+        toast.info('No data available for this range. Download data from the Historify page first.')
       }
     } catch (error) {
       console.error('Error loading chart data:', error)

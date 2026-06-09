@@ -183,7 +183,7 @@ export function ActionReviewModal({
   cloneNameRequired = false,
   applyButtonLabel,
 }: ActionReviewModalProps = {}) {
-  const { items, isReviewOpen, isSubmitting, lastResults, updateItem, removeItem, close } =
+  const { items, isReviewOpen, isSubmitting, lastResults, fundsNotice, updateItem, removeItem, close } =
     useActionQueueStore()
   const setSubmitting = useActionQueueStore((s) => s.setSubmitting)
   const setResults = useActionQueueStore((s) => s.setResults)
@@ -447,6 +447,14 @@ export function ActionReviewModal({
             ))
           )}
         </div>
+
+        {!showResults && fundsNotice && items.length > 0 && (
+          <div className="shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
+            <p className="text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+              {fundsNotice}
+            </p>
+          </div>
+        )}
 
         {showGateB && isLive && (
           <div className="shrink-0 rounded-lg border border-red-500/40 bg-red-500/5 p-3 space-y-2">

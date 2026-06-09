@@ -14,6 +14,8 @@ use crate::providers::fred::FredClient;
 use crate::providers::yahoo::YahooClient;
 use crate::providers::types::ScreenerFilters;
 use crate::state::AppState;
+use chrono::{Datelike, Timelike, Utc, Weekday};
+use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -40,7 +42,7 @@ pub struct CopilotService;
 impl CopilotService {
     /// Build the system prompt for the financial research copilot
     pub fn build_system_prompt() -> String {
-        r#"You are an AI Research Copilot for OpenAlgo Desktop, a professional trading and market analysis platform. You are a knowledgeable financial analyst assistant.
+        let base = r#"You are an AI Research Copilot for OpenAlgo Desktop, a professional trading and market analysis platform. You are a knowledgeable financial analyst assistant.
 
 ## RESPONSIBLE TRADING ADVICE — HIGHEST PRIORITY (overrides any conflicting guidance below)
 
@@ -48,11 +50,10 @@ Your job is to help the user make informed decisions — NOT to maximize their w
 
 CORE RULE: Never sound more certain than the data justifies. Present the distribution of outcomes, not a target. Treating variance as opportunity is a failure, not a feature.
 
-ORDER OF EVERY RECOMMENDATION RESPONSE (do not reorder):
-1. Context & risk framing — the user's budget, time horizon, and what their chosen risk level means statistically (higher variance, NOT higher expected return). Do NOT name any ticker before this block.
-2. Confirmation status (see GATES).
-3. Picks, only if appropriate — each with inline source + timestamp, a momentum flag, and dollar downside.
-4. A plain AI self-disclosure line.
+LEAD WITH THE ANSWER. Do not preface responses with a risk lecture or with qualifying questions. A recommendation response is:
+1. The pick(s) — each with inline source + timestamp, a momentum flag, and a realistic dollar downside.
+2. One short, factual risk note (what the chosen risk level means statistically: higher variance, NOT higher expected return). Brief — not a gate, not a wall of warnings.
+3. A plain one-line AI self-disclosure.
 
 CONTENT RULES:
 - Do not invent rules that sound systematic (e.g. "exit if volume drops below 10M") unless grounded and sourced. Do not dress guesses as analysis.
@@ -66,11 +67,11 @@ REFERENCES:
 - Any interpretive claim ("strong momentum," "room to run") must be backed by a stated base rate or omitted. Interpretation is not data.
 - Every recommendation includes a plain note that this output is AI-generated, can be confidently wrong, and is not based on the user's full financial picture.
 
-GATES (interactive — never passive disclaimers):
-- BEFORE producing ANY specific pick, confirm with the user: (a) can they afford to lose this money entirely, (b) their time horizon, (c) a maximum total-account loss they will accept. If their answers indicate essential savings, a short horizon, or low loss tolerance, do NOT present aggressive or high-volatility options at all — offer lower-variance framing instead. If you do not yet know these, ASK before naming any ticker.
-- The app shows a final dollar-downside acknowledgment before any order is placed (Gate B). Reinforce it; never imply an order is safe or certain.
+NO INTERROGATION:
+- The user owns this account and has already made their own suitability decisions. NEVER ask affordability, time-horizon, or maximum-loss questions as a precondition to analyzing a symbol or producing a pick, and NEVER withhold a pick waiting for those answers. Answer the request directly. Only ask about the user's situation if THEY ask you to tailor advice to it.
+- The app still shows a final dollar-downside acknowledgment before any order is actually placed (Gate B). That is the safety step — reinforce it rather than front-loading questions.
 
-TONE: Calm, plain, specific about uncertainty. No hype words. It is correct and expected for you to talk a user OUT of a trade, or to decline to surface "hot" picks, when their stated situation does not support the risk.
+TONE: Calm, plain, specific about uncertainty. No hype words. You may flag when a setup looks risky and state the downside, but still give the user the pick they asked for — do not refuse to surface it or replace it with questions.
 
 HONEST LIMITATION: Do not imply that any framing makes intraday-spike day-trading a reliable way to grow a small account. Make the risk and your own uncertainty visible — do not make a stacked bet look favorable.
 
@@ -126,16 +127,18 @@ You have access to these data retrieval tools:
 12. **get_market_overview** - Sector performance, today's gainers, losers, and most active stocks. Use when users ask about market conditions, what's up/down today, or sector trends.
 13. **get_index_constituents** - Companies in the S&P 500, Nasdaq 100, or Dow Jones 30. Use when users ask about what's in an index or want a list of companies in a specific index.
 14. **get_broker_account** - Get the currently connected broker account info (broker name, account ID, user ID, live/paper mode). Use ONLY when the user asks about their broker account, connection status, or account details.
-15. **list_clients** - List all clients in the client management system with their names, IDs, and account info. Use ONLY when the user asks about clients or needs to find a specific client.
-16. **get_client_portfolio** - Look up a client's portfolio from the local client management system. Returns positions (symbols, quantities, avg price, P&L) and recent trades. Use when the user asks about a specific client's portfolio, holdings, or trades. Search by name (partial match works).
-17. **get_client_scenario** - Retrieve a sandbox what-if scenario with positions and live market prices. Use when the user asks you to analyze a scenario portfolio.
-18. **apply_scenario_trades** - Apply a batch of simulated trades to a sandbox scenario. Use when you have specific trade recommendations and the user wants them applied. Each trade adjusts position quantity and recalculates weighted-average cost basis.
+15. **get_my_portfolio** - Get the USER'S OWN live portfolio on their connected broker (their actual current positions, holdings, and available cash). This is the source of truth for what the user personally owns. Call this WHENEVER the user asks about "my account", "my portfolio", "my positions", what they hold, how their account is doing, or wants recommendations about their own holdings. Do NOT use get_client_portfolio for the user's own account — that tool is for other people's client accounts.
+16. **list_clients** - List all clients in the client management system with their names, IDs, and account info. Use ONLY when the user asks about clients or needs to find a specific client.
+17. **get_client_portfolio** - Look up a client's portfolio from the local client management system. Returns positions (symbols, quantities, avg price, P&L) and recent trades. Use when the user asks about a specific client's portfolio, holdings, or trades. Search by name (partial match works).
+18. **get_client_scenario** - Retrieve a sandbox what-if scenario with positions and live market prices. Use when the user asks you to analyze a scenario portfolio.
+19. **apply_scenario_trades** - Apply a batch of simulated trades to a sandbox scenario. Use when you have specific trade recommendations and the user wants them applied. Each trade adjusts position quantity and recalculates weighted-average cost basis.
 
 ## CRITICAL RULES
 - NEVER say "I don't have access to" any tool listed above. You DO have these tools. USE THEM.
 - NEVER give a text-only response when you could call a tool instead. If the user asks about a topic and ANY of your tools could provide relevant data, call the tool FIRST.
 - When a user asks about Congress, politicians, or government and markets — immediately call get_congressional_trades. Do NOT just describe what you could do — DO IT.
 - When a user asks about any stock, sector, or market — immediately call relevant tools (quotes, screener, news, etc.). Do NOT offer to look things up — just look them up.
+- When the user refers to THEIR OWN account, portfolio, positions, or holdings ("my account", "my portfolio", "what I own", "how am I doing", "my account is falling") — you MUST call get_my_portfolio FIRST and base your answer on the ACTUAL holdings it returns. NEVER analyze, name, or recommend action on symbols the user does not actually hold as if they were in their portfolio, and NEVER substitute general market movers (gainers/losers) for the user's real positions. If get_my_portfolio returns no positions, say so plainly rather than inventing holdings.
 
 ## Account Type Restrictions
 - When analyzing a client scenario, check the `account_type` and `short_selling_restricted` fields in the response from get_client_scenario.
@@ -173,15 +176,17 @@ Rules for ACTIONS_JSON:
 - "orderType" must be one of: "MARKET", "LIMIT", "SL", "SL-M", "TRAILING_STOP"
 - "product" should be "CNC" for delivery/investment positions
 - "price" should be 0 for MARKET orders, otherwise the target limit price
-- "triggerPrice" is optional, for SL/SL-M stop loss orders
+- STOP ORDERS (SL / SL-M): "triggerPrice" is the stop (trigger) level; for SL, "price" is the limit. The stop must sit on the correct side of the market AND the limit must be fillable when it triggers:
+  - Protective SELL stop on a long: triggerPrice BELOW the current price; for SL, "price" (limit) must be AT or BELOW triggerPrice. NEVER set the limit above the stop on a sell — it can never fill (e.g. stop 82 / limit 98 is broken). When unsure, prefer SL-M (stop-market) so the protective exit always fills.
+  - BUY stop (breakout entry): triggerPrice ABOVE the current price; for SL, "price" (limit) must be AT or ABOVE triggerPrice.
+  - A stop order has exactly ONE stop level. Do not put a take-profit or a different SMA in the limit field — that field is only the protective limit just past the stop.
 - "trailPrice" or "trailPercent" is for TRAILING_STOP orders (dollar amount or percentage)
 - "exchange" should be the stock's primary exchange (e.g., "NASDAQ", "NYSE")
 - "rationale" is a brief 1-sentence reason for the trade
 - Include ALL recommended trades in a single ACTIONS_JSON block
 - This block is invisible to the user — it is parsed programmatically by the app
 - ALWAYS write your full prose analysis FIRST, then add the ACTIONS_JSON block at the very end
-- Your prose MUST follow the RESPONSIBLE TRADING ADVICE ordering: risk/context framing first (before any ticker), a momentum flag and realistic dollar downside adjacent to each pick, and an AI self-disclosure line. A pick in ACTIONS_JSON without that framing in the prose is non-compliant — add the framing or drop the pick.
-- Do NOT produce picks at all until the user has confirmed they can afford to lose the money, their time horizon, and a maximum total-account loss (Gate A). If those are unknown, ask first instead of emitting ACTIONS_JSON.
+- When the user asks for trade ideas, EMIT the pick(s) with an ACTIONS_JSON block. Do NOT respond with qualifying questions instead of picks. Each pick still carries a momentum flag, a realistic dollar downside, and a one-line AI self-disclosure — but lead with the pick, not a risk lecture or a questionnaire.
 - If you have NO concrete trade recommendations, do NOT include an ACTIONS_JSON block
 
 CRITICAL — Position-aware constraints:
@@ -189,7 +194,45 @@ CRITICAL — Position-aware constraints:
 - NEVER recommend selling more shares than the user actually holds — match or stay under the portfolio quantity
 - For stop loss (SL, SL-M) and trailing stop orders on existing positions, the quantity MUST equal the position's current quantity, not an arbitrary number
 - For BUY recommendations (new positions or adding to existing), use reasonable quantities appropriate to the stock price (e.g., 5-10 shares for $100+ stocks, 10-25 for $20-$100 stocks)
-- If the user's portfolio data is provided in the conversation, treat it as the source of truth for what they own"#.to_string()
+- If the user's portfolio data is provided in the conversation, treat it as the source of truth for what they own"#.to_string();
+
+        format!("{base}\n\n{time}", base = base, time = Self::current_time_context())
+    }
+
+    /// Build a ground-truth "current time" block in America/New_York so the model
+    /// never invents the time. Without this the copilot hallucinates an "as of"
+    /// timestamp (e.g. claiming "2:18 PM ET" at 10:26 AM), which poisons every
+    /// "intraday"/"today" claim downstream. Holidays are not resolved here — we
+    /// say so rather than guess.
+    fn current_time_context() -> String {
+        let now_et = Utc::now().with_timezone(&New_York);
+        let minutes = now_et.hour() * 60 + now_et.minute();
+        let is_weekend = matches!(now_et.weekday(), Weekday::Sat | Weekday::Sun);
+        let session = if is_weekend {
+            "the U.S. market is CLOSED (weekend)"
+        } else if minutes < 4 * 60 {
+            "the U.S. market is CLOSED (overnight)"
+        } else if minutes < 9 * 60 + 30 {
+            "it is PRE-MARKET (the regular session opens at 9:30 AM ET)"
+        } else if minutes < 16 * 60 {
+            "the U.S. market is OPEN (regular session, 9:30 AM – 4:00 PM ET)"
+        } else if minutes < 20 * 60 {
+            "it is AFTER-HOURS (the regular session closed at 4:00 PM ET)"
+        } else {
+            "the U.S. market is CLOSED (the after-hours session ended at 8:00 PM ET)"
+        };
+
+        format!(
+            "## CURRENT TIME — USE THIS, NEVER GUESS THE TIME (overrides any other time reference)\n\
+The current date and time is {date}, {time} ET. Right now {session}.\n\
+- Use THIS as \"now\" for every \"as of\" timestamp and every \"intraday\", \"today\", \"this morning\", or \"this afternoon\" reference. NEVER invent, estimate, or assume the current time.\n\
+- If the market is not in its regular session, say so plainly — do NOT describe pre-market, after-hours, or prior-close prices as live \"intraday\" action.\n\
+- Quote-tool timestamps may be delayed or from the prior close. Reconcile them against the current time above and state the explicit as-of (including the delay) for every price you cite.\n\
+- Market holidays are NOT accounted for in the session label above; if the date is a U.S. market holiday, treat the regular session as closed.",
+            date = now_et.format("%A, %B %-d, %Y"),
+            time = now_et.format("%-I:%M %p"),
+            session = session,
+        )
     }
 
     /// Execute a tool call by routing to the appropriate provider
@@ -213,6 +256,7 @@ CRITICAL — Position-aware constraints:
             "get_market_overview" => Self::tool_get_market_overview(tool_input, state).await,
             "get_index_constituents" => Self::tool_get_index_constituents(tool_input, state).await,
             "get_broker_account" => Self::tool_get_broker_account(tool_input, state).await,
+            "get_my_portfolio" => Self::tool_get_my_portfolio(tool_input, state).await,
             "list_clients" => Self::tool_list_clients(tool_input, state).await,
             "get_client_portfolio" => Self::tool_get_client_portfolio(tool_input, state).await,
             "get_client_scenario" => Self::tool_get_client_scenario(tool_input, state).await,
@@ -239,6 +283,25 @@ CRITICAL — Position-aware constraints:
         let client = AnthropicClient::new((*state.http_client).clone());
         let tools = build_tool_definitions();
         let system_prompt = Self::build_system_prompt();
+
+        // Append the account's available cash so BUY recommendations are sized to
+        // funds the account actually holds. Best-effort: if funds can't be read we
+        // leave the prompt unchanged — the frontend applies a hard affordability
+        // cap on the parsed recommendations regardless. Routes to sandbox cash in
+        // analyze (paper) mode, matching where the orders would actually execute.
+        let system_prompt = match crate::services::FundsService::get_funds(state, None).await {
+            Ok(result) if result.funds.available_cash > 0.0 => format!(
+                "{prompt}\n\n## CRITICAL — Cash budget for BUY recommendations\n\
+The account currently has ${cash:.2} in available cash. Before recommending ANY buy you MUST confirm it fits this budget:\n\
+- The TOTAL cost of ALL BUY orders in your ACTIONS_JSON block (for each buy: quantity × the price it will fill at — the limit price for LIMIT orders, the current market price for MARKET orders) MUST NOT exceed ${cash:.2}.\n\
+- Treat available cash as one shared budget across all buys. Size each buy's whole-share quantity so the cumulative cost of every buy stays within ${cash:.2}.\n\
+- If a pick does not fit the remaining cash, reduce its quantity to what remains; if not even one whole share fits, omit that buy entirely.\n\
+- This cash budget constrains BUY orders only. SELL and stop orders are unaffected.",
+                prompt = system_prompt,
+                cash = result.funds.available_cash,
+            ),
+            _ => system_prompt,
+        };
 
         // Build conversation with the new user message
         let mut conversation = conversation_history;
@@ -783,6 +846,93 @@ CRITICAL — Position-aware constraints:
         }
     }
 
+    /// Get the user's OWN live portfolio: real positions, holdings, and available
+    /// cash on the connected broker (or the sandbox in analyze mode). This is the
+    /// source of truth for what the user personally owns — distinct from the
+    /// client-management tools, which read other people's accounts.
+    async fn tool_get_my_portfolio(
+        _input: &serde_json::Value,
+        state: &AppState,
+    ) -> Result<serde_json::Value> {
+        use crate::services::{FundsService, HoldingsService, PositionService};
+
+        // Positions (intraday / open trading positions, includes Alpaca stock).
+        let (positions, mode): (Vec<serde_json::Value>, String) =
+            match PositionService::get_positions(state, None).await {
+                Ok(result) => {
+                    let mode = result.mode.clone();
+                    let items = result
+                        .positions
+                        .iter()
+                        .map(|p| {
+                            serde_json::json!({
+                                "symbol": p.symbol,
+                                "exchange": p.exchange,
+                                "product": p.product,
+                                "quantity": p.quantity,
+                                "average_price": p.average_price,
+                                "last_price": p.ltp,
+                                "unrealized_pnl": p.unrealized_pnl,
+                                "pnl": p.pnl,
+                            })
+                        })
+                        .collect();
+                    (items, mode)
+                }
+                Err(e) => {
+                    return Ok(serde_json::json!({
+                        "error": true,
+                        "message": format!("Could not read your live positions: {}. Is a broker connected?", e),
+                    }));
+                }
+            };
+
+        // Longer-term holdings (delivery holdings; may be empty for some brokers).
+        let holdings: Vec<serde_json::Value> = match HoldingsService::get_holdings(state, None).await
+        {
+            Ok(result) => result
+                .holdings
+                .iter()
+                .map(|h| {
+                    serde_json::json!({
+                        "symbol": h.symbol,
+                        "exchange": h.exchange,
+                        "quantity": h.quantity,
+                        "average_price": h.average_price,
+                        "last_price": h.ltp,
+                        "current_value": h.current_value,
+                        "pnl": h.pnl,
+                        "pnl_percentage": h.pnl_percentage,
+                    })
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+
+        // Available cash sizes any BUY recommendations.
+        let available_cash = FundsService::get_funds(state, None)
+            .await
+            .ok()
+            .map(|r| r.funds.available_cash);
+
+        let is_empty = positions.is_empty() && holdings.is_empty();
+
+        Ok(serde_json::json!({
+            "mode": mode,
+            "positions": positions,
+            "position_count": positions.len(),
+            "holdings": holdings,
+            "holding_count": holdings.len(),
+            "available_cash": available_cash,
+            "is_empty": is_empty,
+            "note": if is_empty {
+                "The user's connected account currently holds no positions or holdings. Do NOT invent holdings — say the account is empty and base any buy ideas on the available cash only."
+            } else {
+                "These are the user's ACTUAL holdings — the source of truth. Only recommend SELL/stop orders on symbols listed here, and size BUYs to available_cash."
+            },
+        }))
+    }
+
     async fn tool_list_clients(
         _input: &serde_json::Value,
         state: &AppState,
@@ -1282,6 +1432,11 @@ CRITICAL — Position-aware constraints:
                 } else {
                     "No broker connected".to_string()
                 }
+            }
+            "get_my_portfolio" => {
+                let pos = result.get("position_count").and_then(|v| v.as_i64()).unwrap_or(0);
+                let hold = result.get("holding_count").and_then(|v| v.as_i64()).unwrap_or(0);
+                format!("Retrieved your portfolio ({} positions, {} holdings)", pos, hold)
             }
             "list_clients" => {
                 let count = result.get("count").and_then(|v| v.as_i64()).unwrap_or(0);

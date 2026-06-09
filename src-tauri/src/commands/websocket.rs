@@ -49,8 +49,17 @@ pub async fn websocket_connect(state: State<'_, AppState>) -> Result<bool> {
         .ok_or_else(|| crate::error::AppError::Auth("No auth tokens found".to_string()))?;
 
     let _auth_token = tokens.0;
-    let feed_token = tokens.1
-        .ok_or_else(|| crate::error::AppError::Auth("No feed token found".to_string()))?;
+
+    // Brokers that authenticate the data stream with an API key + secret (Alpaca)
+    // have no feed token, so only the feed-token brokers require one here.
+    let uses_api_secret = matches!(broker_id.as_str(), "alpaca");
+    let feed_token = if uses_api_secret {
+        tokens.1.unwrap_or_default()
+    } else {
+        tokens
+            .1
+            .ok_or_else(|| crate::error::AppError::Auth("No feed token found".to_string()))?
+    };
 
     // Get API key from SQLite for WebSocket authentication
     let creds = state.sqlite.get_broker_credentials(&broker_id)?
@@ -58,12 +67,23 @@ pub async fn websocket_connect(state: State<'_, AppState>) -> Result<bool> {
     // creds = (api_key_enc, api_key_nonce, api_secret_enc, api_secret_nonce, client_id)
     let api_key = state.security.decrypt(&creds.0, &creds.1)?;
 
+    // Decrypt the API secret for key+secret brokers; empty for feed-token brokers.
+    let api_secret = match (uses_api_secret, &creds.2, &creds.3) {
+        (true, Some(enc), Some(nonce)) => state.security.decrypt(enc, nonce)?,
+        (true, _, _) => {
+            return Err(crate::error::AppError::Auth(
+                "No API secret found for broker".to_string(),
+            ))
+        }
+        _ => String::new(),
+    };
+
     // Connect (clone the Arc — connect takes `self: Arc<Self>` so it can hand the
     // connection to a supervisor task that owns a reference for auto-reconnect).
     state
         .websocket
         .clone()
-        .connect(&broker_id, &client_id, &api_key, &feed_token)
+        .connect(&broker_id, &client_id, &api_key, &feed_token, &api_secret)
         .await?;
 
     Ok(true)

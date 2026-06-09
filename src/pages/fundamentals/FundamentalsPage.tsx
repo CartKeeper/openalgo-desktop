@@ -353,14 +353,20 @@ export default function FundamentalsPage() {
       setProfile(null)
       setKeyMetricsLatest(null)
       try {
-        const [profileResult, metricsResult] = await Promise.all([
+        // FMP /stable splits metrics across key-metrics and ratios; merge both
+        // so the Overview can show P/E, P/B, margins (ratios) alongside
+        // EV/EBITDA, ROE (key-metrics).
+        const [profileResult, metricsResult, ratiosResult] = await Promise.all([
           providerCommands.getCompanyProfile(selectedSymbol!),
           providerCommands.getKeyMetrics(selectedSymbol!, 'annual', 1),
+          providerCommands.getRatios(selectedSymbol!, 'annual', 1),
         ])
         if (cancelled) return
         setProfile(profileResult)
-        if (metricsResult && metricsResult.length > 0) {
-          setKeyMetricsLatest(metricsResult[0] as Record<string, unknown>)
+        const km = (metricsResult?.[0] ?? {}) as Record<string, unknown>
+        const rt = (ratiosResult?.[0] ?? {}) as Record<string, unknown>
+        if (metricsResult?.length || ratiosResult?.length) {
+          setKeyMetricsLatest({ ...km, ...rt })
         }
       } catch (err) {
         if (!cancelled) {
@@ -395,7 +401,7 @@ export default function FundamentalsPage() {
             operatingIncome: pick(r, 'operatingIncome'),
             netIncome: pick(r, 'netIncome'),
             eps: pick(r, 'eps'),
-            epsdiluted: pick(r, 'epsdiluted'),
+            epsdiluted: pick(r, 'epsDiluted'),
             ebitda: pick(r, 'ebitda'),
           }))
         )
@@ -463,11 +469,11 @@ export default function FundamentalsPage() {
           (raw as Record<string, unknown>[]).map((r) => ({
             date: pickStr(r, 'date'),
             operatingCashFlow: pick(r, 'operatingCashFlow'),
-            netCashUsedForInvestingActivites: pick(r, 'netCashUsedForInvestingActivites'),
-            netCashUsedProvidedByFinancingActivities: pick(r, 'netCashUsedProvidedByFinancingActivities'),
+            netCashUsedForInvestingActivites: pick(r, 'netCashProvidedByInvestingActivities'),
+            netCashUsedProvidedByFinancingActivities: pick(r, 'netCashProvidedByFinancingActivities'),
             freeCashFlow: pick(r, 'freeCashFlow'),
             capitalExpenditure: pick(r, 'capitalExpenditure'),
-            dividendsPaid: pick(r, 'dividendsPaid'),
+            dividendsPaid: pick(r, 'netDividendsPaid'),
           }))
         )
       } catch (err) {
@@ -492,21 +498,32 @@ export default function FundamentalsPage() {
       setLoadingRatios(true)
       setRatiosData([])
       try {
-        const raw = await providerCommands.getKeyMetrics(selectedSymbol!, ratiosPeriod, 5)
+        // Merge key-metrics + ratios by date (FMP /stable split them apart).
+        const [kmRaw, rtRaw] = await Promise.all([
+          providerCommands.getKeyMetrics(selectedSymbol!, ratiosPeriod, 5),
+          providerCommands.getRatios(selectedSymbol!, ratiosPeriod, 5),
+        ])
         if (cancelled) return
+        const rtByDate = new Map(
+          (rtRaw as Record<string, unknown>[]).map((x) => [String(x.date), x])
+        )
+        const merged = (kmRaw as Record<string, unknown>[]).map((m) => ({
+          ...m,
+          ...(rtByDate.get(String(m.date)) ?? {}),
+        }))
         setRatiosData(
-          (raw as Record<string, unknown>[]).map((r) => ({
+          merged.map((r) => ({
             date: pickStr(r, 'date'),
-            peRatio: pick(r, 'peRatio'),
-            pbRatio: pick(r, 'pbRatio'),
+            peRatio: pick(r, 'priceToEarningsRatio'),
+            pbRatio: pick(r, 'priceToBookRatio'),
             priceToSalesRatio: pick(r, 'priceToSalesRatio'),
-            enterpriseValueOverEBITDA: pick(r, 'enterpriseValueOverEBITDA'),
-            roe: pick(r, 'roe'),
+            enterpriseValueOverEBITDA: pick(r, 'evToEBITDA'),
+            roe: pick(r, 'returnOnEquity'),
             returnOnTangibleAssets: pick(r, 'returnOnTangibleAssets'),
             grossProfitMargin: pick(r, 'grossProfitMargin'),
             operatingProfitMargin: pick(r, 'operatingProfitMargin'),
             netProfitMargin: pick(r, 'netProfitMargin'),
-            debtToEquity: pick(r, 'debtToEquity'),
+            debtToEquity: pick(r, 'debtToEquityRatio'),
             currentRatio: pick(r, 'currentRatio'),
             revenuePerShare: pick(r, 'revenuePerShare'),
             bookValuePerShare: pick(r, 'bookValuePerShare'),
@@ -769,24 +786,24 @@ export default function FundamentalsPage() {
                   />
                   <StatCard
                     label="P/E Ratio"
-                    value={keyMetricsLatest ? formatNumber(pick(keyMetricsLatest, 'peRatio')) : '--'}
+                    value={keyMetricsLatest ? formatNumber(pick(keyMetricsLatest, 'priceToEarningsRatio')) : '--'}
                   />
                   <StatCard
                     label="P/B Ratio"
-                    value={keyMetricsLatest ? formatNumber(pick(keyMetricsLatest, 'pbRatio')) : '--'}
+                    value={keyMetricsLatest ? formatNumber(pick(keyMetricsLatest, 'priceToBookRatio')) : '--'}
                   />
                   <StatCard
                     label="EV/EBITDA"
                     value={
                       keyMetricsLatest
-                        ? formatNumber(pick(keyMetricsLatest, 'enterpriseValueOverEBITDA'))
+                        ? formatNumber(pick(keyMetricsLatest, 'evToEBITDA'))
                         : '--'
                     }
                   />
                   <StatCard
                     label="ROE"
                     value={
-                      keyMetricsLatest ? formatPercent(pick(keyMetricsLatest, 'roe')) : '--'
+                      keyMetricsLatest ? formatPercent(pick(keyMetricsLatest, 'returnOnEquity')) : '--'
                     }
                   />
                   <StatCard

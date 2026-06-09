@@ -131,6 +131,11 @@ enum ConnectionEnd {
     Intentional,
 }
 
+/// Alpaca market-data stream URL. The trailing feed segment selects the data
+/// tier: `iex` (free real-time), `sip` (paid full-market), or `delayed_sip`
+/// (free, 15-min delayed, full-market). Change this one constant to switch tiers.
+const ALPACA_STREAM_URL: &str = "wss://stream.data.alpaca.markets/v2/delayed_sip";
+
 /// Credentials needed to (re)establish a broker WebSocket connection.
 #[derive(Clone)]
 struct ConnectionCredentials {
@@ -138,6 +143,10 @@ struct ConnectionCredentials {
     client_id: String,
     api_key: String,
     feed_token: String,
+    /// API secret — required by brokers (e.g. Alpaca) that authenticate the data
+    /// stream with a key+secret JSON message rather than a feed token. Empty for
+    /// brokers that don't use it.
+    api_secret: String,
 }
 
 /// Subscription request
@@ -199,6 +208,7 @@ impl WebSocketManager {
         client_id: &str,
         api_key: &str,
         feed_token: &str,
+        api_secret: &str,
     ) -> Result<()> {
         // Tear down any existing connection first (this bumps the generation,
         // stopping the previous supervisor).
@@ -211,6 +221,7 @@ impl WebSocketManager {
             client_id: client_id.to_string(),
             api_key: api_key.to_string(),
             feed_token: feed_token.to_string(),
+            api_secret: api_secret.to_string(),
         };
 
         *self.state.write() = ConnectionState::Connecting;
@@ -265,6 +276,7 @@ impl WebSocketManager {
                 creds.api_key, creds.feed_token
             ),
             "fyers" => "wss://socket.fyers.in/hsm/v1-5/prod".to_string(),
+            "alpaca" => ALPACA_STREAM_URL.to_string(),
             _ => return Err(AppError::Broker(format!("Unknown broker: {}", broker_id))),
         };
 
@@ -302,6 +314,20 @@ impl WebSocketManager {
             let auth_msg = create_fyers_auth_message(&creds.feed_token, "openalgo-desktop");
             write.send(Message::Binary(auth_msg)).await?;
             info!("Sent Fyers authentication message");
+        }
+
+        // Alpaca authenticates the data stream with a key+secret JSON message sent
+        // immediately after the socket opens. The server replies with a
+        // {"T":"success","msg":"authenticated"} text frame (handled in the loop);
+        // subscribe messages sent afterwards are queued behind it server-side.
+        if broker_id == "alpaca" {
+            let auth_msg = serde_json::json!({
+                "action": "auth",
+                "key": creds.api_key,
+                "secret": creds.api_secret,
+            });
+            write.send(Message::Text(auth_msg.to_string())).await?;
+            info!("Sent Alpaca authentication message");
         }
 
         Ok((write, read))
@@ -554,6 +580,13 @@ async fn run_message_loop(
 ) -> ConnectionEnd {
     let mut heartbeat_interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
 
+    // Alpaca streams trades, quotes and bars as SEPARATE JSON messages, but the
+    // frontend replaces (not merges) the tick for a symbol on each event. So we
+    // keep the last-known full tick per symbol here and emit the merged copy on
+    // every update, ensuring an incoming quote never wipes the last trade price.
+    // Per-connection; reset on reconnect (a fresh full picture rebuilds quickly).
+    let mut alpaca_ticks: HashMap<String, MarketTick> = HashMap::new();
+
     loop {
         tokio::select! {
             // Handle incoming messages
@@ -568,10 +601,24 @@ async fn run_message_loop(
                         }
                     }
                     Some(Ok(Message::Text(text))) => {
-                        debug!("Received text message: {}", text);
+                        if broker == "alpaca" {
+                            let ticks = parse_alpaca_ticks(&text, token_map, &mut alpaca_ticks);
+                            for tick in ticks {
+                                if let Err(e) = app_handle.emit("market_tick", &tick) {
+                                    warn!("Failed to emit tick: {}", e);
+                                }
+                            }
+                        } else {
+                            debug!("Received text message: {}", text);
+                        }
                     }
-                    Some(Ok(Message::Ping(_data))) => {
-                        debug!("Received ping, sending pong");
+                    Some(Ok(Message::Ping(data))) => {
+                        // Reply with a pong so servers that require it (e.g. Alpaca)
+                        // don't drop the connection. Split sink means tungstenite
+                        // won't auto-respond, so we send it explicitly.
+                        if let Err(e) = write.send(Message::Pong(data)).await {
+                            warn!("Failed to send pong: {}", e);
+                        }
                     }
                     Some(Ok(Message::Pong(_))) => {
                         debug!("Received pong");
@@ -657,6 +704,118 @@ fn parse_broker_ticks(broker: &str, data: &[u8], token_map: &TokenMap) -> Vec<Ma
         "fyers" => parse_fyers_ticks(data, token_map),
         _ => vec![],
     }
+}
+
+/// Parse one or more Alpaca data-stream JSON messages. A single text frame
+/// carries a JSON array of messages (trades/quotes/bars/control). Trade, quote
+/// and bar updates for a symbol are merged into a per-symbol cache so every
+/// emitted tick is a complete snapshot (an incoming quote never wipes the last
+/// trade price). Returns the ticks to emit this frame.
+fn parse_alpaca_ticks(
+    text: &str,
+    token_map: &TokenMap,
+    cache: &mut HashMap<String, MarketTick>,
+) -> Vec<MarketTick> {
+    let msgs: Vec<serde_json::Value> = match serde_json::from_str(text) {
+        Ok(serde_json::Value::Array(arr)) => arr,
+        Ok(other) => vec![other], // lenient if a lone object is ever sent
+        Err(_) => return vec![],
+    };
+
+    let mut out = Vec::new();
+    for m in msgs {
+        let t = m.get("T").and_then(|v| v.as_str()).unwrap_or("");
+        match t {
+            "t" | "q" | "b" => {}
+            "error" => {
+                warn!(
+                    "Alpaca stream error {}: {}",
+                    m.get("code").and_then(|v| v.as_i64()).unwrap_or(0),
+                    m.get("msg").and_then(|v| v.as_str()).unwrap_or("")
+                );
+                continue;
+            }
+            // success / subscription / other control frames — nothing to emit.
+            _ => continue,
+        }
+
+        let symbol = match m.get("S").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+
+        // Resolve the (symbol, exchange) we subscribed under so the emitted key
+        // matches the frontend's `${exchange}:${symbol}` (token == symbol here).
+        let (sym, exchange) = token_map
+            .read()
+            .get(&symbol)
+            .cloned()
+            .unwrap_or((symbol.clone(), "US".to_string()));
+
+        let tick = cache.entry(symbol.clone()).or_insert_with(|| MarketTick {
+            symbol: sym,
+            exchange,
+            token: symbol.clone(),
+            ..Default::default()
+        });
+
+        match t {
+            "t" => {
+                // Trade: p = price, t = RFC3339 timestamp.
+                if let Some(p) = m.get("p").and_then(|v| v.as_f64()) {
+                    tick.ltp = p;
+                }
+                if let Some(ts) = m.get("t").and_then(|v| v.as_str()) {
+                    tick.timestamp = parse_rfc3339_millis(ts);
+                }
+            }
+            "q" => {
+                // Quote: bp/ap = bid/ask price, bs/as = bid/ask size.
+                if let Some(bp) = m.get("bp").and_then(|v| v.as_f64()) {
+                    tick.bid = bp;
+                }
+                if let Some(ap) = m.get("ap").and_then(|v| v.as_f64()) {
+                    tick.ask = ap;
+                }
+                if let Some(bs) = m.get("bs").and_then(|v| v.as_i64()) {
+                    tick.bid_qty = bs;
+                }
+                if let Some(asz) = m.get("as").and_then(|v| v.as_i64()) {
+                    tick.ask_qty = asz;
+                }
+                if let Some(ts) = m.get("t").and_then(|v| v.as_str()) {
+                    tick.timestamp = parse_rfc3339_millis(ts);
+                }
+            }
+            "b" => {
+                // Minute bar: o/h/l/c = OHLC, v = volume. The stream carries no
+                // prior-day close, so `change` is left to the REST quote path
+                // rather than computed from an intraday bar (which would be wrong).
+                if let Some(o) = m.get("o").and_then(|v| v.as_f64()) { tick.open = o; }
+                if let Some(h) = m.get("h").and_then(|v| v.as_f64()) { tick.high = h; }
+                if let Some(l) = m.get("l").and_then(|v| v.as_f64()) { tick.low = l; }
+                if let Some(c) = m.get("c").and_then(|v| v.as_f64()) {
+                    tick.close = c;
+                    if tick.ltp == 0.0 {
+                        tick.ltp = c; // seed LTP from the bar until a trade arrives
+                    }
+                }
+                if let Some(v) = m.get("v").and_then(|v| v.as_i64()) { tick.volume = v; }
+            }
+            _ => {}
+        }
+
+        out.push(tick.clone());
+    }
+
+    out
+}
+
+/// Parse an RFC3339 timestamp into epoch milliseconds, falling back to now.
+fn parse_rfc3339_millis(ts: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or_else(|_| chrono::Utc::now().timestamp_millis())
 }
 
 /// Parse Angel One binary tick (little-endian)
@@ -1100,6 +1259,7 @@ fn create_subscribe_message(broker: &str, requests: &[SubscriptionRequest]) -> M
         "angel" => create_angel_subscribe(requests),
         "zerodha" => create_zerodha_subscribe(requests),
         "fyers" => create_fyers_subscribe(requests),
+        "alpaca" => create_alpaca_subscribe(requests),
         _ => Message::Text("{}".to_string()),
     }
 }
@@ -1110,8 +1270,35 @@ fn create_unsubscribe_message(broker: &str, symbols: &[(String, String)]) -> Mes
         "angel" => create_angel_unsubscribe(symbols),
         "zerodha" => create_zerodha_unsubscribe(symbols),
         "fyers" => create_fyers_unsubscribe(symbols),
+        "alpaca" => create_alpaca_unsubscribe(symbols),
         _ => Message::Text("{}".to_string()),
     }
+}
+
+/// Alpaca subscribe (JSON). Tokens are the plain symbols (e.g. "AAPL"). We
+/// subscribe to trades (drives LTP), quotes (bid/ask) and 1-min bars (OHLCV).
+fn create_alpaca_subscribe(requests: &[SubscriptionRequest]) -> Message {
+    let symbols: Vec<String> = requests.iter().map(|r| r.token.clone()).collect();
+    let msg = serde_json::json!({
+        "action": "subscribe",
+        "trades": symbols,
+        "quotes": symbols,
+        "bars": symbols,
+    });
+    Message::Text(msg.to_string())
+}
+
+/// Alpaca unsubscribe (JSON). `symbols` is a list of (exchange, token); the
+/// token is the plain symbol.
+fn create_alpaca_unsubscribe(symbols: &[(String, String)]) -> Message {
+    let syms: Vec<String> = symbols.iter().map(|(_, token)| token.clone()).collect();
+    let msg = serde_json::json!({
+        "action": "unsubscribe",
+        "trades": syms,
+        "quotes": syms,
+        "bars": syms,
+    });
+    Message::Text(msg.to_string())
 }
 
 /// Angel One subscribe (JSON)
@@ -1379,5 +1566,102 @@ mod reconnect_tests {
     fn backoff_attempt_zero_is_safe() {
         // attempt is always >= 1 in practice, but guard against underflow.
         assert_eq!(reconnect_backoff_secs(0), 1);
+    }
+}
+
+#[cfg(test)]
+mod alpaca_tests {
+    use super::{parse_alpaca_ticks, MarketTick};
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn token_map() -> super::TokenMap {
+        let m = Arc::new(RwLock::new(HashMap::new()));
+        m.write()
+            .insert("AAPL".to_string(), ("AAPL".to_string(), "US".to_string()));
+        m
+    }
+
+    #[test]
+    fn parses_trade_into_ltp_with_resolved_exchange() {
+        let tm = token_map();
+        let mut cache: HashMap<String, MarketTick> = HashMap::new();
+        let frame = r#"[{"T":"t","S":"AAPL","p":150.25,"s":10,"t":"2024-01-02T15:30:00.123456789Z"}]"#;
+        let ticks = parse_alpaca_ticks(frame, &tm, &mut cache);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].symbol, "AAPL");
+        assert_eq!(ticks[0].exchange, "US");
+        assert_eq!(ticks[0].token, "AAPL");
+        assert_eq!(ticks[0].ltp, 150.25);
+        assert!(ticks[0].timestamp > 0);
+    }
+
+    #[test]
+    fn quote_after_trade_does_not_clobber_ltp() {
+        // The key correctness property: trades and quotes arrive as separate
+        // frames, and a quote must not reset the last trade price to zero.
+        let tm = token_map();
+        let mut cache: HashMap<String, MarketTick> = HashMap::new();
+
+        parse_alpaca_ticks(r#"[{"T":"t","S":"AAPL","p":150.25}]"#, &tm, &mut cache);
+        let after_quote = parse_alpaca_ticks(
+            r#"[{"T":"q","S":"AAPL","bp":150.20,"ap":150.30,"bs":2,"as":3}]"#,
+            &tm,
+            &mut cache,
+        );
+
+        assert_eq!(after_quote.len(), 1);
+        let t = &after_quote[0];
+        assert_eq!(t.ltp, 150.25, "quote wiped the trade price");
+        assert_eq!(t.bid, 150.20);
+        assert_eq!(t.ask, 150.30);
+        assert_eq!(t.bid_qty, 2);
+        assert_eq!(t.ask_qty, 3);
+    }
+
+    #[test]
+    fn bar_seeds_ltp_and_ohlcv() {
+        let tm = token_map();
+        let mut cache: HashMap<String, MarketTick> = HashMap::new();
+        let frame = r#"[{"T":"b","S":"AAPL","o":149.0,"h":151.0,"l":148.5,"c":150.5,"v":12345}]"#;
+        let ticks = parse_alpaca_ticks(frame, &tm, &mut cache);
+        assert_eq!(ticks.len(), 1);
+        let t = &ticks[0];
+        assert_eq!(t.open, 149.0);
+        assert_eq!(t.high, 151.0);
+        assert_eq!(t.low, 148.5);
+        assert_eq!(t.close, 150.5);
+        assert_eq!(t.volume, 12345);
+        assert_eq!(t.ltp, 150.5, "bar close should seed ltp when no trade yet");
+    }
+
+    #[test]
+    fn control_and_error_frames_emit_nothing() {
+        let tm = token_map();
+        let mut cache: HashMap<String, MarketTick> = HashMap::new();
+        assert!(parse_alpaca_ticks(
+            r#"[{"T":"success","msg":"authenticated"}]"#,
+            &tm,
+            &mut cache
+        )
+        .is_empty());
+        assert!(parse_alpaca_ticks(
+            r#"[{"T":"error","code":402,"msg":"auth failed"}]"#,
+            &tm,
+            &mut cache
+        )
+        .is_empty());
+        assert!(parse_alpaca_ticks("not json", &tm, &mut cache).is_empty());
+    }
+
+    #[test]
+    fn unknown_symbol_falls_back_to_us_exchange() {
+        let tm = token_map(); // only AAPL registered
+        let mut cache: HashMap<String, MarketTick> = HashMap::new();
+        let ticks = parse_alpaca_ticks(r#"[{"T":"t","S":"TSLA","p":700.0}]"#, &tm, &mut cache);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].exchange, "US");
+        assert_eq!(ticks[0].symbol, "TSLA");
     }
 }

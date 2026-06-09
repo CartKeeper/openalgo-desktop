@@ -544,7 +544,7 @@ export const brokerCommands = {
   getBrokerStatus: () => tauriInvoke<BrokerStatus>('get_broker_status'),
 
   setActiveBroker: (brokerId: string) =>
-    tauriInvoke<void>('set_active_broker', { broker_id: brokerId }),
+    tauriInvoke<void>('set_active_broker', { brokerId }),
 
   getAvailableBrokers: () => tauriInvoke<BrokerInfo[]>('get_available_brokers'),
 }
@@ -559,11 +559,13 @@ export const orderCommands = {
   placeOrder: (order: OrderRequest, expectedAnalyzeMode?: boolean) =>
     tauriInvoke<OrderResponse>('place_order', { order, expectedAnalyzeMode }),
 
+  // Tauri v2 converts snake_case Rust params (order_id) to camelCase JS keys
+  // (orderId). Sending order_id fails with "missing required key orderId".
   modifyOrder: (orderId: string, order: ModifyOrderRequest) =>
-    tauriInvoke<OrderResponse>('modify_order', { order_id: orderId, order }),
+    tauriInvoke<OrderResponse>('modify_order', { orderId, order }),
 
   cancelOrder: (orderId: string, variety?: string) =>
-    tauriInvoke<OrderResponse>('cancel_order', { order_id: orderId, variety }),
+    tauriInvoke<OrderResponse>('cancel_order', { orderId, variety }),
 
   getOrderBook: () => tauriInvoke<Order[]>('get_order_book'),
 
@@ -735,7 +737,7 @@ export const settingsCommands = {
     tauriInvoke<void>('save_broker_credentials', { request }),
 
   deleteBrokerCredentials: (brokerId: string) =>
-    tauriInvoke<void>('delete_broker_credentials', { broker_id: brokerId }),
+    tauriInvoke<void>('delete_broker_credentials', { brokerId }),
 
   getAnalyzeMode: () => tauriInvoke<AnalyzerModeStatus>('get_analyze_mode'),
 
@@ -765,7 +767,7 @@ export const sandboxCommands = {
     tauriInvoke<void>('update_sandbox_ltp', { request: { exchange, symbol, ltp } }),
 
   cancelSandboxOrder: (orderId: string) =>
-    tauriInvoke<{ success: boolean; order_id: string }>('cancel_sandbox_order', { order_id: orderId }),
+    tauriInvoke<{ success: boolean; order_id: string }>('cancel_sandbox_order', { orderId }),
 
   getSandboxConfig: () => tauriInvoke<SandboxConfig>('get_sandbox_config'),
 
@@ -780,6 +782,67 @@ export const sandboxCommands = {
 }
 
 // ============================================================================
+// Historify Commands — Types
+// ============================================================================
+
+export interface HistorifyWatchlistItem {
+  id: number
+  symbol: string
+  exchange: string
+  name?: string
+  added_at: string
+}
+
+export interface HistorifyStats {
+  database_size_mb: number
+  total_records: number
+  total_symbols: number
+  watchlist_count: number
+}
+
+export interface HistorifyCatalogItem {
+  symbol: string
+  exchange: string
+  interval: string
+  first_timestamp: number
+  last_timestamp: number
+  record_count: number
+  first_date?: string
+  last_date?: string
+}
+
+export interface HistorifyDownloadJob {
+  id: string
+  job_type: string
+  status: string
+  total_symbols: number
+  completed_symbols: number
+  failed_symbols: number
+  interval: string
+  start_date: string
+  end_date: string
+  created_at: string
+  started_at?: string
+  completed_at?: string
+  error_message?: string
+}
+
+export interface CreateJobRequest {
+  job_type?: string
+  symbols: { symbol: string; exchange: string }[]
+  interval: string
+  start_date: string
+  end_date: string
+  incremental?: boolean
+}
+
+export interface StorageIntervals {
+  storage_intervals: string[]
+  computed_intervals: string[]
+  all_intervals: string[]
+}
+
+// ============================================================================
 // Historify Commands
 // ============================================================================
 
@@ -790,6 +853,39 @@ export const historifyCommands = {
   downloadHistoricalData: (request: MarketDataQuery) =>
     tauriInvoke<{ success: boolean; rows_downloaded: number; message: string }>(
       'download_historical_data',
+      { request }
+    ),
+
+  getWatchlist: () =>
+    tauriInvoke<HistorifyWatchlistItem[]>('historify_get_watchlist'),
+
+  addWatchlist: (symbol: string, exchange: string) =>
+    tauriInvoke<HistorifyWatchlistItem>('historify_add_watchlist', { request: { symbol, exchange } }),
+
+  removeWatchlist: (symbol: string, exchange: string) =>
+    tauriInvoke<boolean>('historify_remove_watchlist', { request: { symbol, exchange } }),
+
+  bulkAddWatchlist: (symbols: { symbol: string; exchange: string }[]) =>
+    tauriInvoke<number>('historify_bulk_add_watchlist', { request: { symbols } }),
+
+  getCatalog: () =>
+    tauriInvoke<HistorifyCatalogItem[]>('historify_get_catalog'),
+
+  getStats: () =>
+    tauriInvoke<HistorifyStats>('historify_get_stats'),
+
+  getStorageIntervals: () =>
+    tauriInvoke<StorageIntervals>('historify_get_storage_intervals'),
+
+  getExchanges: () =>
+    tauriInvoke<string[]>('historify_get_exchanges'),
+
+  getJobs: (limit?: number) =>
+    tauriInvoke<HistorifyDownloadJob[]>('historify_get_jobs', { limit }),
+
+  createJob: (request: CreateJobRequest) =>
+    tauriInvoke<{ success: boolean; job_id: number; total_symbols: number; message: string }>(
+      'historify_create_job',
       { request }
     ),
 }
@@ -921,10 +1017,28 @@ export interface ScreenerFilters {
   limit?: number
 }
 
+export interface MarketMover {
+  symbol: string
+  name?: string | null
+  change?: number | null
+  price?: number | null
+  change_percent?: number | null
+}
+
+export interface FmpQuote {
+  symbol: string
+  name?: string | null
+  price?: number | null
+  change?: number | null
+  change_percent?: number | null
+  volume?: number | null
+  previous_close?: number | null
+}
+
 export const providerCommands = {
   // API key management
   saveProviderApiKey: (provider: string, apiKey: string) =>
-    tauriInvoke<void>('save_provider_api_key', { provider, api_key: apiKey }),
+    tauriInvoke<void>('save_provider_api_key', { provider, apiKey }),
 
   deleteProviderApiKey: (provider: string) =>
     tauriInvoke<boolean>('delete_provider_api_key', { provider }),
@@ -953,6 +1067,14 @@ export const providerCommands = {
   getCompanyProfile: (symbol: string) =>
     tauriInvoke<CompanyProfile | null>('get_company_profile', { symbol }),
 
+  getMarketGainers: () => tauriInvoke<MarketMover[]>('get_market_gainers'),
+  getMarketLosers: () => tauriInvoke<MarketMover[]>('get_market_losers'),
+  getMarketMostActive: () => tauriInvoke<MarketMover[]>('get_market_most_active'),
+
+  // Batch quote for indices / commodities / crypto, e.g. "^GSPC,^DJI,GCUSD,BTCUSD"
+  getBatchQuote: (symbols: string) =>
+    tauriInvoke<FmpQuote[]>('get_batch_quote', { symbols }),
+
   getIncomeStatement: (symbol: string, period: string, limit?: number) =>
     tauriInvoke<unknown[]>('get_income_statement', { symbol, period, limit }),
 
@@ -965,6 +1087,11 @@ export const providerCommands = {
   getKeyMetrics: (symbol: string, period: string, limit?: number) =>
     tauriInvoke<unknown[]>('get_key_metrics', { symbol, period, limit }),
 
+  // FMP /stable/ratios — P/E, P/B, margins, dividend yield, etc. (FMP moved these
+  // out of key-metrics). Merge with getKeyMetrics by index for a full metric set.
+  getRatios: (symbol: string, period: string, limit?: number) =>
+    tauriInvoke<unknown[]>('get_ratios', { symbol, period, limit }),
+
   getStockNews: (symbols?: string, limit?: number) =>
     tauriInvoke<unknown[]>('get_stock_news', { symbols, limit }),
 
@@ -975,7 +1102,7 @@ export const providerCommands = {
     tauriInvoke<unknown[]>('get_price_targets', { symbol }),
 
   getEconomicCalendar: (fromDate: string, toDate: string) =>
-    tauriInvoke<unknown[]>('get_economic_calendar', { from_date: fromDate, to_date: toDate }),
+    tauriInvoke<unknown[]>('get_economic_calendar', { fromDate, toDate }),
 
   screenStocks: (filters: ScreenerFilters) =>
     tauriInvoke<unknown[]>('screen_stocks', { filters }),
@@ -995,7 +1122,7 @@ export const providerCommands = {
 
   // FRED (requires API key)
   getFredSeries: (seriesId: string, observationStart?: string, observationEnd?: string) =>
-    tauriInvoke<unknown[]>('get_fred_series', { series_id: seriesId, observation_start: observationStart, observation_end: observationEnd }),
+    tauriInvoke<unknown[]>('get_fred_series', { seriesId, observationStart, observationEnd }),
 
   searchFredSeries: (query: string, limit?: number) =>
     tauriInvoke<unknown[]>('search_fred_series', { query, limit }),
@@ -1033,7 +1160,7 @@ export const portfolioCommands = {
     tauriInvoke<PortfolioPosition[]>('get_portfolio_positions'),
 
   importCsv: (csvContent: string) =>
-    tauriInvoke<number>('import_portfolio_csv', { csv_content: csvContent }),
+    tauriInvoke<number>('import_portfolio_csv', { csvContent }),
 
   exportCsv: () =>
     tauriInvoke<string>('export_portfolio_csv'),

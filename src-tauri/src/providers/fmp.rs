@@ -53,119 +53,69 @@ impl FmpClient {
     }
 
     /// Get income statements
-    pub async fn get_income_statement(&self, symbol: &str, period: &str, limit: i32) -> Result<Vec<IncomeStatement>, ProviderError> {
+    // Fundamentals are returned as raw FMP /stable JSON passthrough. The frontend
+    // reads FMP's own camelCase field names via pick(); mapping into typed structs
+    // silently dropped or renamed fields (FMP's stable API renamed many of them and
+    // moved P/E, P/B, margins, dividend yield out of key-metrics into /ratios).
+    pub async fn get_income_statement(&self, symbol: &str, period: &str, limit: i32) -> Result<Vec<serde_json::Value>, ProviderError> {
         let url = format!(
             "{}/income-statement?symbol={}&period={}&limit={}&apikey={}",
             FMP_BASE_URL, symbol, period, limit, self.api_key
         );
-        let resp = self.fetch_fmp_json(&url).await?;
-
-        Ok(resp.iter().map(|item| IncomeStatement {
-            date: item["date"].as_str().unwrap_or("").to_string(),
-            period: item["period"].as_str().unwrap_or(period).to_string(),
-            revenue: item["revenue"].as_f64(),
-            cost_of_revenue: item["costOfRevenue"].as_f64(),
-            gross_profit: item["grossProfit"].as_f64(),
-            operating_expenses: item["operatingExpenses"].as_f64(),
-            operating_income: item["operatingIncome"].as_f64(),
-            net_income: item["netIncome"].as_f64(),
-            eps: item["eps"].as_f64(),
-            eps_diluted: item["epsdiluted"].as_f64(),
-            ebitda: item["ebitda"].as_f64(),
-            weighted_avg_shares: item["weightedAverageShsOut"].as_f64(),
-            weighted_avg_shares_diluted: item["weightedAverageShsOutDil"].as_f64(),
-        }).collect())
+        self.fetch_fmp_json(&url).await
     }
 
     /// Get balance sheets
-    pub async fn get_balance_sheet(&self, symbol: &str, period: &str, limit: i32) -> Result<Vec<BalanceSheet>, ProviderError> {
+    pub async fn get_balance_sheet(&self, symbol: &str, period: &str, limit: i32) -> Result<Vec<serde_json::Value>, ProviderError> {
         let url = format!(
             "{}/balance-sheet-statement?symbol={}&period={}&limit={}&apikey={}",
             FMP_BASE_URL, symbol, period, limit, self.api_key
         );
-        let resp = self.fetch_fmp_json(&url).await?;
-
-        Ok(resp.iter().map(|item| BalanceSheet {
-            date: item["date"].as_str().unwrap_or("").to_string(),
-            period: item["period"].as_str().unwrap_or(period).to_string(),
-            total_assets: item["totalAssets"].as_f64(),
-            total_current_assets: item["totalCurrentAssets"].as_f64(),
-            cash_and_equivalents: item["cashAndCashEquivalents"].as_f64(),
-            total_liabilities: item["totalLiabilities"].as_f64(),
-            total_current_liabilities: item["totalCurrentLiabilities"].as_f64(),
-            long_term_debt: item["longTermDebt"].as_f64(),
-            total_equity: item["totalStockholdersEquity"].as_f64(),
-            retained_earnings: item["retainedEarnings"].as_f64(),
-            total_debt: item["totalDebt"].as_f64(),
-            net_debt: item["netDebt"].as_f64(),
-        }).collect())
+        self.fetch_fmp_json(&url).await
     }
 
     /// Get cash flow statements
-    pub async fn get_cash_flow(&self, symbol: &str, period: &str, limit: i32) -> Result<Vec<CashFlowStatement>, ProviderError> {
+    pub async fn get_cash_flow(&self, symbol: &str, period: &str, limit: i32) -> Result<Vec<serde_json::Value>, ProviderError> {
         let url = format!(
             "{}/cash-flow-statement?symbol={}&period={}&limit={}&apikey={}",
             FMP_BASE_URL, symbol, period, limit, self.api_key
         );
-        let resp = self.fetch_fmp_json(&url).await?;
-
-        Ok(resp.iter().map(|item| CashFlowStatement {
-            date: item["date"].as_str().unwrap_or("").to_string(),
-            period: item["period"].as_str().unwrap_or(period).to_string(),
-            operating_cash_flow: item["operatingCashFlow"].as_f64(),
-            investing_cash_flow: item["netCashUsedForInvestingActivites"].as_f64(),
-            financing_cash_flow: item["netCashUsedProvidedByFinancingActivities"].as_f64(),
-            net_change_in_cash: item["netChangeInCash"].as_f64(),
-            free_cash_flow: item["freeCashFlow"].as_f64(),
-            capital_expenditure: item["capitalExpenditure"].as_f64(),
-            dividends_paid: item["dividendsPaid"].as_f64(),
-            stock_repurchased: item["commonStockRepurchased"].as_f64(),
-        }).collect())
+        self.fetch_fmp_json(&url).await
     }
 
     /// Get key financial metrics
-    pub async fn get_key_metrics(&self, symbol: &str, period: &str, limit: i32) -> Result<Vec<KeyMetrics>, ProviderError> {
+    pub async fn get_key_metrics(&self, symbol: &str, period: &str, limit: i32) -> Result<Vec<serde_json::Value>, ProviderError> {
         let url = format!(
             "{}/key-metrics?symbol={}&period={}&limit={}&apikey={}",
             FMP_BASE_URL, symbol, period, limit, self.api_key
         );
-        let resp = self.fetch_fmp_json(&url).await?;
-
-        Ok(resp.iter().map(|item| KeyMetrics {
-            date: item["date"].as_str().unwrap_or("").to_string(),
-            period: item["period"].as_str().unwrap_or(period).to_string(),
-            pe_ratio: item["peRatio"].as_f64(),
-            pb_ratio: item["pbRatio"].as_f64(),
-            ps_ratio: item["priceToSalesRatio"].as_f64(),
-            ev_to_ebitda: item["enterpriseValueOverEBITDA"].as_f64(),
-            debt_to_equity: item["debtToEquity"].as_f64(),
-            current_ratio: item["currentRatio"].as_f64(),
-            roe: item["roe"].as_f64(),
-            roa: item["returnOnTangibleAssets"].as_f64(),
-            gross_margin: item["grossProfitMargin"].as_f64(),
-            operating_margin: item["operatingProfitMargin"].as_f64(),
-            net_margin: item["netIncomePerShare"].as_f64().map(|_| 0.0), // placeholder
-            dividend_yield: item["dividendYield"].as_f64(),
-            payout_ratio: item["payoutRatio"].as_f64(),
-            revenue_per_share: item["revenuePerShare"].as_f64(),
-            book_value_per_share: item["bookValuePerShare"].as_f64(),
-            free_cash_flow_per_share: item["freeCashFlowPerShare"].as_f64(),
-            market_cap: item["marketCap"].as_f64(),
-            enterprise_value: item["enterpriseValue"].as_f64(),
-        }).collect())
+        self.fetch_fmp_json(&url).await
     }
 
-    /// Get stock news (uses fmp-articles endpoint on stable API)
+    /// Financial ratios (FMP /stable/ratios). The stable API moved P/E, P/B,
+    /// margins, dividend yield, debt-to-equity, etc. here, out of key-metrics.
+    pub async fn get_ratios(&self, symbol: &str, period: &str, limit: i32) -> Result<Vec<serde_json::Value>, ProviderError> {
+        let url = format!(
+            "{}/ratios?symbol={}&period={}&limit={}&apikey={}",
+            FMP_BASE_URL, symbol, period, limit, self.api_key
+        );
+        self.fetch_fmp_json(&url).await
+    }
+
+    /// Get stock news (FMP /stable news endpoints — the legacy stock-news /
+    /// fmp-articles paths 404 on /stable). With symbols → /stable/news/stock
+    /// (note: param is `symbols`, not `tickers`); without → /stable/news/stock-latest.
     pub async fn get_stock_news(&self, symbols: Option<&str>, limit: i32) -> Result<Vec<NewsArticle>, ProviderError> {
         let url = if let Some(syms) = symbols {
-            format!("{}/stock-news?tickers={}&limit={}&apikey={}", FMP_BASE_URL, syms, limit, self.api_key)
+            format!("{}/news/stock?symbols={}&limit={}&apikey={}", FMP_BASE_URL, syms, limit, self.api_key)
         } else {
-            format!("{}/fmp-articles?limit={}&apikey={}", FMP_BASE_URL, limit, self.api_key)
+            format!("{}/news/stock-latest?page=0&limit={}&apikey={}", FMP_BASE_URL, limit, self.api_key)
         };
         let resp = self.fetch_fmp_json(&url).await?;
 
         Ok(resp.iter().map(|item| {
-            // Handle both stock-news and fmp-articles response formats
+            // Both endpoints share the same article schema; the .or_else fallbacks
+            // keep older field names working too.
             let url_val = item["url"].as_str()
                 .or_else(|| item["link"].as_str())
                 .unwrap_or("").to_string();
@@ -582,17 +532,18 @@ impl FmpClient {
     }
 
     pub async fn get_market_gainers(&self) -> Result<Vec<MarketMover>, ProviderError> {
-        let url = format!("{}/stock-market-gainers?apikey={}", FMP_BASE_URL, self.api_key);
+        // FMP /stable renamed the movers endpoints (stock-market-gainers -> biggest-gainers etc.)
+        let url = format!("{}/biggest-gainers?apikey={}", FMP_BASE_URL, self.api_key);
         self.fetch_market_movers(&url).await
     }
 
     pub async fn get_market_losers(&self) -> Result<Vec<MarketMover>, ProviderError> {
-        let url = format!("{}/stock-market-losers?apikey={}", FMP_BASE_URL, self.api_key);
+        let url = format!("{}/biggest-losers?apikey={}", FMP_BASE_URL, self.api_key);
         self.fetch_market_movers(&url).await
     }
 
     pub async fn get_market_most_active(&self) -> Result<Vec<MarketMover>, ProviderError> {
-        let url = format!("{}/stock-market-most-active?apikey={}", FMP_BASE_URL, self.api_key);
+        let url = format!("{}/most-actives?apikey={}", FMP_BASE_URL, self.api_key);
         self.fetch_market_movers(&url).await
     }
 
@@ -727,7 +678,9 @@ impl FmpClient {
             name: item["name"].as_str().map(String::from),
             price: item["price"].as_f64(),
             change: item["change"].as_f64(),
-            change_percent: item["changesPercentage"].as_f64(),
+            // The /stable quote endpoint uses changePercentage (no 's'); older
+            // endpoints used changesPercentage. Accept either.
+            change_percent: item["changePercentage"].as_f64().or_else(|| item["changesPercentage"].as_f64()),
             day_low: item["dayLow"].as_f64(),
             day_high: item["dayHigh"].as_f64(),
             year_low: item["yearLow"].as_f64(),
@@ -764,25 +717,56 @@ impl FmpClient {
         if let Some(ref v) = filters.country { params.push(format!("country={}", v)); }
         if let Some(ref v) = filters.exchange { params.push(format!("exchange={}", v)); }
         if let Some(v) = filters.is_etf { params.push(format!("isEtf={}", v)); }
-        if let Some(v) = filters.limit { params.push(format!("limit={}", v)); }
 
-        let url = format!("{}/stock-screener?{}", FMP_BASE_URL, params.join("&"));
+        // Dividend yield is filtered client-side below (FMP has no yield filter),
+        // so when a yield minimum is set we fetch a larger pool and truncate to
+        // the user's requested count afterward — otherwise the post-filter would
+        // shrink a 50-row fetch down to a handful.
+        let user_limit = filters.limit.unwrap_or(50);
+        let fetch_limit = if filters.dividend_yield_min.is_some() {
+            (user_limit.saturating_mul(20)).clamp(user_limit, 1000)
+        } else {
+            user_limit
+        };
+        params.push(format!("limit={}", fetch_limit));
+
+        // FMP's stable API renamed the screener endpoint stock-screener -> company-screener.
+        let url = format!("{}/company-screener?{}", FMP_BASE_URL, params.join("&"));
         let resp = self.fetch_fmp_json(&url).await?;
 
-        Ok(resp.iter().map(|item| ScreenerResult {
-            symbol: item["symbol"].as_str().unwrap_or("").to_string(),
-            company_name: item["companyName"].as_str().unwrap_or("").to_string(),
-            exchange: item["exchangeShortName"].as_str().unwrap_or("").to_string(),
-            sector: item["sector"].as_str().map(String::from),
-            industry: item["industry"].as_str().map(String::from),
-            market_cap: item["marketCap"].as_f64(),
-            price: item["price"].as_f64(),
-            change_percent: None,
-            volume: item["volume"].as_i64(),
-            pe_ratio: None,
-            beta: item["beta"].as_f64(),
-            dividend_yield: None,
-            country: item["country"].as_str().map(String::from),
-        }).collect())
+        let mut results: Vec<ScreenerResult> = resp.iter().map(|item| {
+            let price = item["price"].as_f64();
+            // FMP's screener exposes the annual dividend (a dollar amount), not the
+            // yield. Derive yield = annual dividend / price * 100 so it can be shown
+            // and filtered (the API has no server-side yield filter).
+            let dividend_yield = match (item["lastAnnualDividend"].as_f64(), price) {
+                (Some(d), Some(p)) if p > 0.0 => Some(d / p * 100.0),
+                _ => None,
+            };
+            ScreenerResult {
+                symbol: item["symbol"].as_str().unwrap_or("").to_string(),
+                company_name: item["companyName"].as_str().unwrap_or("").to_string(),
+                exchange: item["exchangeShortName"].as_str().unwrap_or("").to_string(),
+                sector: item["sector"].as_str().map(String::from),
+                industry: item["industry"].as_str().map(String::from),
+                market_cap: item["marketCap"].as_f64(),
+                price,
+                change_percent: None,
+                volume: item["volume"].as_i64(),
+                pe_ratio: None,
+                beta: item["beta"].as_f64(),
+                dividend_yield,
+                country: item["country"].as_str().map(String::from),
+            }
+        }).collect();
+
+        // FMP can't filter by dividend yield server-side, so honor the user's
+        // minimum here (only keep rows with a computed yield at or above it).
+        if let Some(min_yield) = filters.dividend_yield_min {
+            results.retain(|r| r.dividend_yield.map(|y| y >= min_yield).unwrap_or(false));
+            results.truncate(user_limit as usize);
+        }
+
+        Ok(results)
     }
 }

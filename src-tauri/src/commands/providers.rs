@@ -127,7 +127,7 @@ pub async fn get_income_statement(
     symbol: String,
     period: String,
     limit: Option<i32>,
-) -> Result<Vec<IncomeStatement>, AppError> {
+) -> Result<Vec<serde_json::Value>, AppError> {
     let client = get_fmp_client(&state).await?;
     Ok(client.get_income_statement(&symbol, &period, limit.unwrap_or(4)).await?)
 }
@@ -139,7 +139,7 @@ pub async fn get_balance_sheet(
     symbol: String,
     period: String,
     limit: Option<i32>,
-) -> Result<Vec<BalanceSheet>, AppError> {
+) -> Result<Vec<serde_json::Value>, AppError> {
     let client = get_fmp_client(&state).await?;
     Ok(client.get_balance_sheet(&symbol, &period, limit.unwrap_or(4)).await?)
 }
@@ -151,7 +151,7 @@ pub async fn get_cash_flow(
     symbol: String,
     period: String,
     limit: Option<i32>,
-) -> Result<Vec<CashFlowStatement>, AppError> {
+) -> Result<Vec<serde_json::Value>, AppError> {
     let client = get_fmp_client(&state).await?;
     Ok(client.get_cash_flow(&symbol, &period, limit.unwrap_or(4)).await?)
 }
@@ -163,9 +163,22 @@ pub async fn get_key_metrics(
     symbol: String,
     period: String,
     limit: Option<i32>,
-) -> Result<Vec<KeyMetrics>, AppError> {
+) -> Result<Vec<serde_json::Value>, AppError> {
     let client = get_fmp_client(&state).await?;
     Ok(client.get_key_metrics(&symbol, &period, limit.unwrap_or(4)).await?)
+}
+
+/// Get financial ratios from FMP (P/E, P/B, margins, dividend yield, etc. —
+/// FMP's stable API serves these from /ratios, not /key-metrics)
+#[tauri::command]
+pub async fn get_ratios(
+    state: State<'_, AppState>,
+    symbol: String,
+    period: String,
+    limit: Option<i32>,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let client = get_fmp_client(&state).await?;
+    Ok(client.get_ratios(&symbol, &period, limit.unwrap_or(4)).await?)
 }
 
 /// Get stock news from FMP
