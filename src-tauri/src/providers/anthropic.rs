@@ -493,6 +493,15 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "get_my_portfolio".to_string(),
+            description: "Get the user's OWN live portfolio on their connected broker account (e.g. Alpaca) — their actual current holdings and available cash. Returns each open position (symbol, quantity, average price, last price, unrealized P&L), any longer-term holdings, the available cash for new buys, and the mode (live/paper/analyze). This is the SOURCE OF TRUTH for what the user personally owns. Use this WHENEVER the user asks about \"my account\", \"my portfolio\", \"my positions\", what they hold, how their account is doing, or wants recommendations about their own holdings. Do NOT confuse this with get_client_portfolio (that is for other people's client accounts).".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        },
+        ToolDefinition {
             name: "list_clients".to_string(),
             description: "List all clients in the client management system. Returns each client's name, ID, broker, account ID, and account type. Use when the user asks about their clients, wants to see who is in the system, or needs to find a specific client.".to_string(),
             input_schema: serde_json::json!({

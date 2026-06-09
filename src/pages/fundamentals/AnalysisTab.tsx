@@ -19,6 +19,7 @@ import { providerCommands } from '@/api/tauri-client'
 import { ActionReviewModal } from '@/components/trading/ActionReviewModal'
 import { PlaceOrderDialog } from '@/components/trading/PlaceOrderDialog'
 import { parseActionsFromMarkdown } from '@/lib/parseActions'
+import { useAffordableActions } from '@/hooks/useAffordableActions'
 import { useActionQueueStore } from '@/stores/actionQueueStore'
 import type { OrderRecommendation } from '@/types/actionQueue'
 import { Badge } from '@/components/ui/badge'
@@ -779,10 +780,11 @@ function AssistantMessage({
   message: ChatMessage
   onBuild: (items: OrderRecommendation[]) => void
 }) {
-  const actions = useMemo(
+  const rawActions = useMemo(
     () => parseActionsFromMarkdown(message.content, 'copilot'),
     [message.content]
   )
+  const { actions, notice: fundsNotice } = useAffordableActions(rawActions)
   return (
     <div className="space-y-2">
       <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed">
@@ -798,16 +800,21 @@ function AssistantMessage({
           ))}
         </div>
       )}
-      {actions.length > 0 && (
-        <div className="flex items-center justify-between gap-3 border-t border-border pt-2">
-          <p className="text-xs text-muted-foreground">
-            {actions.length} suggested trade{actions.length !== 1 ? 's' : ''}. You confirm size and
-            the dollar risk before anything is placed.
-          </p>
-          <Button size="sm" className="h-9 shrink-0" onClick={() => onBuild(actions)}>
-            <ShoppingCart className="mr-1.5 h-4 w-4" />
-            Build {actions.length} trade{actions.length !== 1 ? 's' : ''}
-          </Button>
+      {(actions.length > 0 || fundsNotice) && (
+        <div className="space-y-2 border-t border-border pt-2">
+          {fundsNotice && <p className="text-xs text-muted-foreground">{fundsNotice}</p>}
+          {actions.length > 0 && (
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs text-muted-foreground">
+                {actions.length} suggested trade{actions.length !== 1 ? 's' : ''}. You confirm size
+                and the dollar risk before anything is placed.
+              </p>
+              <Button size="sm" className="h-9 shrink-0" onClick={() => onBuild(actions)}>
+                <ShoppingCart className="mr-1.5 h-4 w-4" />
+                Build {actions.length} trade{actions.length !== 1 ? 's' : ''}
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </div>

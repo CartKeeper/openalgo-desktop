@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { capBuysToAvailableCash } from '@/lib/affordability'
+import { reconcileRecommendationsWithAccount } from '@/lib/affordability'
 import type { BasketOrderResult, OrderRecommendation } from '@/types/actionQueue'
 
 interface ActionQueueStore {
@@ -12,9 +12,9 @@ interface ActionQueueStore {
 
   setItemsAndOpen: (items: OrderRecommendation[]) => void
   /**
-   * Live-account path: confirm the account's available cash covers the BUY
-   * recommendations (capping quantities cumulatively) BEFORE opening review.
-   * Use this for any flow that places real/paper orders on the user's account.
+   * Live-account path: reconcile recommendations against the account BEFORE
+   * opening review — cap BUYs cumulatively to available cash and cap SELLs/stops
+   * to actually-held shares. Use this for any flow that places real/paper orders.
    */
   setItemsAndOpenWithFundsCheck: (items: OrderRecommendation[]) => Promise<void>
   updateItem: (id: string, patch: Partial<OrderRecommendation>) => void
@@ -37,7 +37,7 @@ export const useActionQueueStore = create<ActionQueueStore>()((set) => ({
     set({ items, isReviewOpen: true, lastResults: null, fundsNotice: null }),
 
   setItemsAndOpenWithFundsCheck: async (items) => {
-    const { items: capped, notice } = await capBuysToAvailableCash(items)
+    const { items: capped, notice } = await reconcileRecommendationsWithAccount(items)
     set({ items: capped, isReviewOpen: true, lastResults: null, fundsNotice: notice })
   },
 

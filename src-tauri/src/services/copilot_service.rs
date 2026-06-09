@@ -127,16 +127,18 @@ You have access to these data retrieval tools:
 12. **get_market_overview** - Sector performance, today's gainers, losers, and most active stocks. Use when users ask about market conditions, what's up/down today, or sector trends.
 13. **get_index_constituents** - Companies in the S&P 500, Nasdaq 100, or Dow Jones 30. Use when users ask about what's in an index or want a list of companies in a specific index.
 14. **get_broker_account** - Get the currently connected broker account info (broker name, account ID, user ID, live/paper mode). Use ONLY when the user asks about their broker account, connection status, or account details.
-15. **list_clients** - List all clients in the client management system with their names, IDs, and account info. Use ONLY when the user asks about clients or needs to find a specific client.
-16. **get_client_portfolio** - Look up a client's portfolio from the local client management system. Returns positions (symbols, quantities, avg price, P&L) and recent trades. Use when the user asks about a specific client's portfolio, holdings, or trades. Search by name (partial match works).
-17. **get_client_scenario** - Retrieve a sandbox what-if scenario with positions and live market prices. Use when the user asks you to analyze a scenario portfolio.
-18. **apply_scenario_trades** - Apply a batch of simulated trades to a sandbox scenario. Use when you have specific trade recommendations and the user wants them applied. Each trade adjusts position quantity and recalculates weighted-average cost basis.
+15. **get_my_portfolio** - Get the USER'S OWN live portfolio on their connected broker (their actual current positions, holdings, and available cash). This is the source of truth for what the user personally owns. Call this WHENEVER the user asks about "my account", "my portfolio", "my positions", what they hold, how their account is doing, or wants recommendations about their own holdings. Do NOT use get_client_portfolio for the user's own account — that tool is for other people's client accounts.
+16. **list_clients** - List all clients in the client management system with their names, IDs, and account info. Use ONLY when the user asks about clients or needs to find a specific client.
+17. **get_client_portfolio** - Look up a client's portfolio from the local client management system. Returns positions (symbols, quantities, avg price, P&L) and recent trades. Use when the user asks about a specific client's portfolio, holdings, or trades. Search by name (partial match works).
+18. **get_client_scenario** - Retrieve a sandbox what-if scenario with positions and live market prices. Use when the user asks you to analyze a scenario portfolio.
+19. **apply_scenario_trades** - Apply a batch of simulated trades to a sandbox scenario. Use when you have specific trade recommendations and the user wants them applied. Each trade adjusts position quantity and recalculates weighted-average cost basis.
 
 ## CRITICAL RULES
 - NEVER say "I don't have access to" any tool listed above. You DO have these tools. USE THEM.
 - NEVER give a text-only response when you could call a tool instead. If the user asks about a topic and ANY of your tools could provide relevant data, call the tool FIRST.
 - When a user asks about Congress, politicians, or government and markets — immediately call get_congressional_trades. Do NOT just describe what you could do — DO IT.
 - When a user asks about any stock, sector, or market — immediately call relevant tools (quotes, screener, news, etc.). Do NOT offer to look things up — just look them up.
+- When the user refers to THEIR OWN account, portfolio, positions, or holdings ("my account", "my portfolio", "what I own", "how am I doing", "my account is falling") — you MUST call get_my_portfolio FIRST and base your answer on the ACTUAL holdings it returns. NEVER analyze, name, or recommend action on symbols the user does not actually hold as if they were in their portfolio, and NEVER substitute general market movers (gainers/losers) for the user's real positions. If get_my_portfolio returns no positions, say so plainly rather than inventing holdings.
 
 ## Account Type Restrictions
 - When analyzing a client scenario, check the `account_type` and `short_selling_restricted` fields in the response from get_client_scenario.
@@ -254,6 +256,7 @@ The current date and time is {date}, {time} ET. Right now {session}.\n\
             "get_market_overview" => Self::tool_get_market_overview(tool_input, state).await,
             "get_index_constituents" => Self::tool_get_index_constituents(tool_input, state).await,
             "get_broker_account" => Self::tool_get_broker_account(tool_input, state).await,
+            "get_my_portfolio" => Self::tool_get_my_portfolio(tool_input, state).await,
             "list_clients" => Self::tool_list_clients(tool_input, state).await,
             "get_client_portfolio" => Self::tool_get_client_portfolio(tool_input, state).await,
             "get_client_scenario" => Self::tool_get_client_scenario(tool_input, state).await,
@@ -843,6 +846,93 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
         }
     }
 
+    /// Get the user's OWN live portfolio: real positions, holdings, and available
+    /// cash on the connected broker (or the sandbox in analyze mode). This is the
+    /// source of truth for what the user personally owns — distinct from the
+    /// client-management tools, which read other people's accounts.
+    async fn tool_get_my_portfolio(
+        _input: &serde_json::Value,
+        state: &AppState,
+    ) -> Result<serde_json::Value> {
+        use crate::services::{FundsService, HoldingsService, PositionService};
+
+        // Positions (intraday / open trading positions, includes Alpaca stock).
+        let (positions, mode): (Vec<serde_json::Value>, String) =
+            match PositionService::get_positions(state, None).await {
+                Ok(result) => {
+                    let mode = result.mode.clone();
+                    let items = result
+                        .positions
+                        .iter()
+                        .map(|p| {
+                            serde_json::json!({
+                                "symbol": p.symbol,
+                                "exchange": p.exchange,
+                                "product": p.product,
+                                "quantity": p.quantity,
+                                "average_price": p.average_price,
+                                "last_price": p.ltp,
+                                "unrealized_pnl": p.unrealized_pnl,
+                                "pnl": p.pnl,
+                            })
+                        })
+                        .collect();
+                    (items, mode)
+                }
+                Err(e) => {
+                    return Ok(serde_json::json!({
+                        "error": true,
+                        "message": format!("Could not read your live positions: {}. Is a broker connected?", e),
+                    }));
+                }
+            };
+
+        // Longer-term holdings (delivery holdings; may be empty for some brokers).
+        let holdings: Vec<serde_json::Value> = match HoldingsService::get_holdings(state, None).await
+        {
+            Ok(result) => result
+                .holdings
+                .iter()
+                .map(|h| {
+                    serde_json::json!({
+                        "symbol": h.symbol,
+                        "exchange": h.exchange,
+                        "quantity": h.quantity,
+                        "average_price": h.average_price,
+                        "last_price": h.ltp,
+                        "current_value": h.current_value,
+                        "pnl": h.pnl,
+                        "pnl_percentage": h.pnl_percentage,
+                    })
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+
+        // Available cash sizes any BUY recommendations.
+        let available_cash = FundsService::get_funds(state, None)
+            .await
+            .ok()
+            .map(|r| r.funds.available_cash);
+
+        let is_empty = positions.is_empty() && holdings.is_empty();
+
+        Ok(serde_json::json!({
+            "mode": mode,
+            "positions": positions,
+            "position_count": positions.len(),
+            "holdings": holdings,
+            "holding_count": holdings.len(),
+            "available_cash": available_cash,
+            "is_empty": is_empty,
+            "note": if is_empty {
+                "The user's connected account currently holds no positions or holdings. Do NOT invent holdings — say the account is empty and base any buy ideas on the available cash only."
+            } else {
+                "These are the user's ACTUAL holdings — the source of truth. Only recommend SELL/stop orders on symbols listed here, and size BUYs to available_cash."
+            },
+        }))
+    }
+
     async fn tool_list_clients(
         _input: &serde_json::Value,
         state: &AppState,
@@ -1342,6 +1432,11 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
                 } else {
                     "No broker connected".to_string()
                 }
+            }
+            "get_my_portfolio" => {
+                let pos = result.get("position_count").and_then(|v| v.as_i64()).unwrap_or(0);
+                let hold = result.get("holding_count").and_then(|v| v.as_i64()).unwrap_or(0);
+                format!("Retrieved your portfolio ({} positions, {} holdings)", pos, hold)
             }
             "list_clients" => {
                 let count = result.get("count").and_then(|v| v.as_i64()).unwrap_or(0);

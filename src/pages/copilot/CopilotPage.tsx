@@ -16,7 +16,7 @@ import {
   Trash2,
   Wrench,
 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { ActionReviewModal } from '@/components/trading/ActionReviewModal'
@@ -28,6 +28,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { ReportBuilderDialog } from '@/components/reports/ReportBuilderDialog'
 import { parseActionsFromMarkdown } from '@/lib/parseActions'
 import { renderMarkdown, formatToolName, extractTickers } from '@/lib/markdown'
+import { useAffordableActions } from '@/hooks/useAffordableActions'
 import { useActionQueueStore } from '@/stores/actionQueueStore'
 import { useCopilotStore } from '@/stores/copilotStore'
 import { useReportsStore } from '@/stores/reportsStore'
@@ -121,7 +122,11 @@ function MessageBubble({
 }) {
   const isUser = message.role === 'user'
   const tickers = !isUser ? extractTickers(message.content) : []
-  const actions = !isUser ? parseActionsFromMarkdown(message.content, 'copilot') : []
+  const rawActions = useMemo(
+    () => (!isUser ? parseActionsFromMarkdown(message.content, 'copilot') : []),
+    [isUser, message.content]
+  )
+  const { actions, notice: fundsNotice } = useAffordableActions(rawActions)
   const reviewWithFundsCheck = useActionQueueStore((s) => s.setItemsAndOpenWithFundsCheck)
 
   return (
@@ -144,18 +149,23 @@ function MessageBubble({
         {/* Stock action bar */}
         {tickers.length > 0 && <StockActionBar tickers={tickers} />}
 
-        {/* Action recommendations */}
-        {actions.length > 0 && (
-          <div className="mt-3 pt-3 border-t border-border/40">
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 gap-1.5 text-[12px]"
-              onClick={() => reviewWithFundsCheck(actions)}
-            >
-              <ShoppingCart className="h-3.5 w-3.5" />
-              Review {actions.length} trade{actions.length !== 1 ? 's' : ''}
-            </Button>
+        {/* Action recommendations (capped to available cash before display) */}
+        {(actions.length > 0 || fundsNotice) && (
+          <div className="mt-3 pt-3 border-t border-border/40 space-y-2">
+            {fundsNotice && (
+              <p className="text-[12px] leading-[1.4] text-muted-foreground">{fundsNotice}</p>
+            )}
+            {actions.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-[12px]"
+                onClick={() => reviewWithFundsCheck(actions)}
+              >
+                <ShoppingCart className="h-3.5 w-3.5" />
+                Review {actions.length} trade{actions.length !== 1 ? 's' : ''}
+              </Button>
+            )}
           </div>
         )}
 
