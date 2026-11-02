@@ -189,7 +189,7 @@ pub async fn generate_briefing(
 /// Example ACTIONS_JSON shown to the model: a funded rotation, then a cancel-and-replace protection group.
 const ACTIONS_EXAMPLE: &str = r#"[
   { "symbol": "PFE", "exchange": "NYSE", "side": "SELL", "quantity": 11, "orderType": "MARKET", "product": "CNC", "price": 0, "validity": "DAY", "group": "rotation-1", "role": "fund", "rationale": "Dormant: +1.2% net over 30 days, analysts see +2% upside. We've made what we can." },
-  { "symbol": "BAC", "exchange": "NYSE", "side": "BUY", "quantity": 13, "orderType": "MARKET", "product": "CNC", "price": 0, "validity": "DAY", "group": "rotation-1", "role": "buy", "rationale": "Consensus target $58 (+15%), 14 analysts; +6% over 30 days; funded by PFE proceeds + cash." },
+  { "symbol": "BAC", "exchange": "NYSE", "side": "BUY", "quantity": 13, "orderType": "MARKET", "product": "CNC", "price": 0, "validity": "DAY", "group": "rotation-1", "role": "buy", "rationale": "Consensus target $58 (+12%), 14 analysts; +6% over 30 days; funded by PFE proceeds + cash." },
   { "symbol": "BAC", "exchange": "NYSE", "side": "SELL", "quantity": 13, "orderType": "TRAILING_STOP", "product": "CNC", "price": 0, "trailPercent": 4.2, "validity": "GTC", "group": "rotation-1", "role": "protect", "rationale": "Trail 4.2%: BAC moves 2.1% on a normal day." },
   { "symbol": "NVDA", "exchange": "NASDAQ", "side": "SELL", "group": "protect-NVDA", "role": "cancel", "cancelOrderId": "3f9c2b1e-7a4d-4c8e-9b0f-5d6e7a8b9c01", "rationale": "Cancel the DAY stop at $192 so the GTC trailing stop can replace it." },
   { "symbol": "NVDA", "exchange": "NASDAQ", "side": "SELL", "quantity": 4, "orderType": "TRAILING_STOP", "product": "CNC", "price": 0, "trailPercent": 9.9, "validity": "GTC", "group": "protect-NVDA", "role": "protect", "rationale": "Trail 9.9%: NVDA moves 3.3% on a normal day and analysts see 40% upside, so it gets room." }
@@ -385,6 +385,14 @@ mod briefing_prompt_tests {
         assert!(p.contains(sentence));
         // It sits with the rotation ordering rule.
         assert!(p.find("A rotation is one group, in this order").unwrap() < p.find(sentence).unwrap());
+    }
+
+    #[test]
+    fn example_trail_matches_its_upside() {
+        // The BAC protect trails 2x its 2.1% swing, which the trail rule allows only below 15% upside.
+        assert!(ACTIONS_EXAMPLE.contains("Consensus target $58 (+12%)"));
+        assert!(ACTIONS_EXAMPLE.contains(r#""trailPercent": 4.2"#));
+        assert!(!ACTIONS_EXAMPLE.contains("+15%"));
     }
 
     #[test]
