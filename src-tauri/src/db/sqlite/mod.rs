@@ -17,6 +17,7 @@ mod latency_logs;
 mod traffic_logs;
 mod provider_keys;
 mod portfolio;
+mod ride;
 mod reports;
 mod watchlist;
 pub mod alerts;
@@ -929,6 +930,30 @@ impl SqliteDb {
     pub fn export_portfolio_positions(&self) -> Result<Vec<crate::providers::types::PortfolioPosition>> {
         let conn = self.conn.lock();
         portfolio::export_positions(&conn)
+    }
+
+    /// Ride entry date for a symbol+quantity lot (Task 5 wires this)
+    pub fn get_ride_entry(&self, symbol: &str, quantity: f64) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        ride::get_ride_entry(&conn, symbol, quantity)
+    }
+
+    /// Store or refresh a ride entry date (Task 5 wires this)
+    pub fn upsert_ride_entry(&self, symbol: &str, quantity: f64, entered_at: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        ride::upsert_ride_entry(&conn, symbol, quantity, entered_at)
+    }
+
+    /// When a protective stop proposal was dismissed for a symbol+quantity (Task 5 wires this)
+    pub fn is_protection_dismissed(&self, symbol: &str, quantity: f64) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        ride::is_protection_dismissed(&conn, symbol, quantity)
+    }
+
+    /// Record a protective stop proposal dismissal (Task 5 wires this)
+    pub fn record_protection_dismissal(&self, symbol: &str, quantity: f64) -> Result<()> {
+        let conn = self.conn.lock();
+        ride::record_protection_dismissal(&conn, symbol, quantity)
     }
 
     /// Get generic mode flag

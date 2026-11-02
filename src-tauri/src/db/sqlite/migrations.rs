@@ -72,6 +72,8 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "054_holdings_market_value", ADD_HOLDINGS_MARKET_VALUE)?;
     run_migration(conn, "055_symtoken_fractionable", ADD_SYMTOKEN_FRACTIONABLE)?;
     run_migration(conn, "056_backtest_runs", CREATE_BACKTEST_RUNS_TABLE)?;
+    run_migration(conn, "057_ride_entries", CREATE_RIDE_ENTRIES_TABLE)?;
+    run_migration(conn, "058_dismissed_protection", CREATE_DISMISSED_PROTECTION_TABLE)?;
 
     tracing::info!("Database migrations completed");
     Ok(())
@@ -933,4 +935,23 @@ CREATE TABLE client_compliance_violations (
 );
 CREATE INDEX IF NOT EXISTS idx_compliance_client ON client_compliance_violations(client_id);
 CREATE INDEX IF NOT EXISTS idx_compliance_resolved ON client_compliance_violations(resolved);
+"#;
+
+const CREATE_RIDE_ENTRIES_TABLE: &str = r#"
+CREATE TABLE ride_entries (
+    symbol TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    entered_at TEXT NOT NULL,
+    computed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (symbol, quantity)
+);
+"#;
+
+const CREATE_DISMISSED_PROTECTION_TABLE: &str = r#"
+CREATE TABLE dismissed_protection (
+    symbol TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    dismissed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (symbol, quantity)
+);
 "#;
