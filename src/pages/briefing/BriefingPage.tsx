@@ -9,9 +9,11 @@ import {
   Loader2,
   Play,
   RefreshCw,
+  Route,
   ShoppingCart,
   Shield,
   Target,
+  Trophy,
   TrendingDown,
   TrendingUp,
   Zap,
@@ -29,6 +31,7 @@ import { useReportsStore } from '@/stores/reportsStore'
 import { useAuthStore } from '@/stores/authStore'
 import { tradingApi } from '@/api/trading'
 import type { HoldingsStats } from '@/types/trading'
+import type { RideReport } from '@/api/tauri-client'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -42,6 +45,7 @@ import { cn } from '@/lib/utils'
 interface BriefingResponse {
   response_text: string
   tool_calls_made: Array<{ tool_name: string; result_summary: string }>
+  ride_report: RideReport
 }
 
 interface BriefingSection {
@@ -299,6 +303,10 @@ const SECTION_META: Record<string, { icon: React.ReactNode }> = {
   'deep dives': { icon: <Target className="h-5 w-5" /> },
   'new stock corner': { icon: <TrendingUp className="h-5 w-5" /> },
   'stock corner': { icon: <TrendingUp className="h-5 w-5" /> },
+  'scoreboard': { icon: <Trophy className="h-5 w-5" /> },
+  'ride report': { icon: <Route className="h-5 w-5" /> },
+  'rotation': { icon: <RefreshCw className="h-5 w-5" /> },
+  'protection': { icon: <Shield className="h-5 w-5" /> },
 }
 
 function parseSections(text: string): BriefingSection[] {
@@ -410,6 +418,8 @@ export default function BriefingPage() {
   const [error, setError] = useState<string | null>(null)
   const [generatedAt, setGeneratedAt] = useState<string | null>(null)
   const [rawText, setRawText] = useState('')
+  // Retained for the Protection/Ride Report cards (not rendered yet).
+  const [, setRideReport] = useState<RideReport | null>(null)
   const [isSaving, setIsSaving] = useState(false)
   const [rawActions, setRawActions] = useState<OrderRecommendation[]>([])
   // Reconcile the AI's buy recs against the account's live cash BEFORE display —
@@ -451,6 +461,7 @@ export default function BriefingPage() {
     setSections([])
     setToolCalls([])
     setRawText('')
+    setRideReport(null)
     setRawActions([])
 
     try {
@@ -468,6 +479,7 @@ export default function BriefingPage() {
       setSections(parsed)
       setToolCalls(tools)
       setRawText(response.response_text)
+      setRideReport(response.ride_report)
       setGeneratedAt(
         new Date().toLocaleTimeString('en-US', {
           hour: 'numeric',

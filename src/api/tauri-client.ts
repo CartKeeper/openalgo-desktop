@@ -1057,6 +1057,17 @@ export interface FmpQuote {
   previous_close?: number | null
 }
 
+// ============================================================================
+// Briefing Ride Report (mirrors Rust `RideReport` and friends; snake_case JSON)
+// ============================================================================
+
+export type RideStatus = 'too_new' | 'falling' | 'dormant' | 'flat_with_upside' | 'pulling_back' | 'climbing'
+export type TrailReason = 'two_times_swing' | 'three_times_swing_high_upside' | 'unknown_swing_floor'
+export interface ExistingStop { order_id: string; order_type: string; quantity: number; validity: string; trail_percent: number | null; trigger_price: number }
+export interface RidePosition { symbol: string; exchange: string; quantity: number; avg_cost: number; price: number; pnl_pct: number; entered_at: string | null; age_trading_days: number | null; net_move_30d_pct: number | null; daily_swing_pct: number | null; consensus_target: number | null; upside_pct: number | null; targets_last_90d: number | null; target_source: string | null; status: RideStatus; protected: boolean; protection_known: boolean; working_sells: ExistingStop[]; proposed_trail_pct: number; trail_reason: TrailReason; protection_dismissed_at: string | null }
+export interface Scoreboard { equity_now: number; equity_1w: number | null; equity_1m: number | null; as_of: string }
+export interface RideReport { positions: RidePosition[]; scoreboard: Scoreboard | null; paper_mode: boolean; generated_at: string }
+
 export const providerCommands = {
   // API key management
   saveProviderApiKey: (provider: string, apiKey: string) =>
