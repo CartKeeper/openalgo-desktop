@@ -579,6 +579,9 @@ export const orderCommands = {
 
   getOrderBook: () => tauriInvoke<Order[]>('get_order_book'),
 
+  // Working orders only (the broker's open-orders list, not the last-100 order book).
+  getOpenOrders: () => tauriInvoke<Order[]>('get_open_orders'),
+
   getTradeBook: () => tauriInvoke<Order[]>('get_trade_book'),
   placeBasketOrder: (orders: OrderRequest[], expectedAnalyzeMode?: boolean) =>
     tauriInvoke<PlaceOrderResult[]>('place_basket_order', { orders, expectedAnalyzeMode }),

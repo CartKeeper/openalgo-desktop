@@ -86,6 +86,18 @@ pub async fn get_order_book(state: State<'_, AppState>) -> Result<Vec<Order>> {
     Ok(result.orders)
 }
 
+/// Get open (working) orders
+///
+/// Routes to sandbox open orders in analyze mode. Unlike the order book, this
+/// is not limited to the most recent orders, so an old working GTC stop is
+/// always listed.
+#[tauri::command]
+pub async fn get_open_orders(state: State<'_, AppState>) -> Result<Vec<Order>> {
+    let result = OrderbookService::get_open_orders(&state, None).await?;
+    tracing::info!("Open orders retrieved in {} mode", result.mode);
+    Ok(result.orders)
+}
+
 /// Get trade book
 ///
 /// Routes to sandbox trades in analyze mode.

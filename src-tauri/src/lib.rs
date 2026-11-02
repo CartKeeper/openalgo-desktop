@@ -126,6 +126,7 @@ pub fn run() {
             commands::orders::modify_order,
             commands::orders::cancel_order,
             commands::orders::get_order_book,
+            commands::orders::get_open_orders,
             commands::orders::get_trade_book,
             commands::orders::place_basket_order,
             commands::orders::place_strategy_basket,

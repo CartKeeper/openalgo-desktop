@@ -6,14 +6,14 @@ const getFunds = vi.fn()
 const getPositions = vi.fn()
 const getHoldings = vi.fn()
 const getQuote = vi.fn()
-const getOrderBook = vi.fn()
+const getOpenOrders = vi.fn()
 
 vi.mock('@/api/tauri-client', () => ({
   fundsCommands: { getFunds: () => getFunds() },
   positionCommands: { getPositions: () => getPositions() },
   holdingsCommands: { getHoldings: () => getHoldings() },
   quoteCommands: { getQuote: (...a: unknown[]) => getQuote(...a) },
-  orderCommands: { getOrderBook: () => getOrderBook() },
+  orderCommands: { getOpenOrders: () => getOpenOrders() },
 }))
 
 import { reconcileRecommendationsWithAccount } from './affordability'
@@ -45,7 +45,7 @@ beforeEach(() => {
   getPositions.mockResolvedValue([])
   getHoldings.mockResolvedValue([])
   getQuote.mockResolvedValue([])
-  getOrderBook.mockResolvedValue([])
+  getOpenOrders.mockResolvedValue([])
 })
 
 describe('reconcileRecommendationsWithAccount — buys vs cash', () => {
@@ -119,7 +119,7 @@ const quotes = (map: Record<string, number>) =>
   getQuote.mockResolvedValue(Object.entries(map).map(([symbol, ltp]) => ({ symbol, ltp })))
 
 const orderBook = (list: Array<{ order_id: string; status: string }>) =>
-  getOrderBook.mockResolvedValue(list)
+  getOpenOrders.mockResolvedValue(list)
 
 // A rotation: market-sell PFE to fund a BAC buy, then protect BAC.
 const fundSell = (overrides: Partial<OrderRecommendation> = {}) =>
@@ -319,7 +319,7 @@ describe('reconcileRecommendationsWithAccount — sell proceeds, protect and can
   })
 
   it('keeps cancel items with a verify notice when the order book cannot be read', async () => {
-    getOrderBook.mockRejectedValue(new Error('offline'))
+    getOpenOrders.mockRejectedValue(new Error('offline'))
     const { items, notice } = await reconcileRecommendationsWithAccount([
       rec({ symbol: 'PFE', side: 'SELL', orderType: 'MARKET', price: 0, quantity: 0, role: 'cancel', group: 'r1', cancelOrderId: 'ord-1' }),
     ])
@@ -332,7 +332,7 @@ describe('reconcileRecommendationsWithAccount — sell proceeds, protect and can
     await reconcileRecommendationsWithAccount([
       rec({ symbol: 'AAPL', side: 'SELL', orderType: 'LIMIT', price: 100, quantity: 5 }),
     ])
-    expect(getOrderBook).not.toHaveBeenCalled()
+    expect(getOpenOrders).not.toHaveBeenCalled()
   })
 
   it('does not double-count proceeds when two sells hit the same symbol', async () => {

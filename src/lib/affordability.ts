@@ -98,10 +98,14 @@ async function readQuotePrices(items: OrderRecommendation[]): Promise<Map<string
   return prices
 }
 
-/** Ids of broker orders that are still open, or null if the order book couldn't be read. */
+/**
+ * Ids of broker orders that are still open, or null if the open orders couldn't be read.
+ * Reads the broker's open orders (not the recent-orders window, where an old working
+ * GTC stop can scroll out of view and look closed).
+ */
 async function readOpenOrderIds(): Promise<Set<string> | null> {
   try {
-    const orders = await orderCommands.getOrderBook()
+    const orders = await orderCommands.getOpenOrders()
     if (!Array.isArray(orders)) return null
     return new Set(orders.filter((o) => OPEN_ORDER_STATUSES.has(o.status)).map((o) => o.order_id))
   } catch {
