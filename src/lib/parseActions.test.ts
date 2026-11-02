@@ -117,4 +117,12 @@ describe('parseActionsFromMarkdown strategy fields', () => {
     const recs = parseActionsFromMarkdown(block([market, limit, untyped, protectItem, slm]), 'briefing')
     expect(recs.map((r) => `${r.symbol}:${r.orderType}`)).toEqual(['BAC:TRAILING_STOP', 'PFE:SL-M'])
   })
+
+  it('reads every ACTIONS_JSON block and skips a block that is not an array', () => {
+    const text = `${block([fundItem])}<!-- ACTIONS_JSON\n{"symbol":"X"}\n-->\n${block([protectItem])}`
+    const recs = parseActionsFromMarkdown(text, 'briefing')
+    expect(recs.map((r) => r.symbol)).toEqual(['PFE', 'BAC'])
+    // Repeat calls start from the top of the text each time.
+    expect(parseActionsFromMarkdown(text, 'briefing')).toHaveLength(2)
+  })
 })

@@ -27,8 +27,8 @@ function normalizeStopOrder(rec: OrderRecommendation): OrderRecommendation {
 
   // The stop is triggerPrice; if the AI only supplied one value (in price),
   // that value IS the stop.
-  let stop = rec.triggerPrice && rec.triggerPrice > 0 ? rec.triggerPrice : rec.price
-  let limit = rec.triggerPrice && rec.triggerPrice > 0 ? rec.price : 0
+  const stop = rec.triggerPrice && rec.triggerPrice > 0 ? rec.triggerPrice : rec.price
+  const limit = rec.triggerPrice && rec.triggerPrice > 0 ? rec.price : 0
   if (!stop || stop <= 0) return rec // no usable stop level — let validation reject it
 
   if (rec.orderType === 'SL-M') {
@@ -54,12 +54,9 @@ export function parseActionsFromMarkdown(
   source: OrderRecommendation['source']
 ): OrderRecommendation[] {
   const results: OrderRecommendation[] = []
-  let match: RegExpExecArray | null
 
-  // Reset regex state for each call
-  ACTIONS_REGEX.lastIndex = 0
-
-  while ((match = ACTIONS_REGEX.exec(text)) !== null) {
+  // matchAll iterates a copy of the regex, so every call starts from the top.
+  for (const match of text.matchAll(ACTIONS_REGEX)) {
     try {
       const parsed = JSON.parse(match[1])
       if (!Array.isArray(parsed)) continue
