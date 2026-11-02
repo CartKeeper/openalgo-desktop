@@ -895,13 +895,13 @@ impl Broker for AngelBroker {
     async fn get_quote(
         &self,
         auth_token: &str,
-        symbols: Vec<(String, String)>,
+        symbols: Vec<QuoteSymbol>,
     ) -> Result<Vec<Quote>> {
         // Group symbols by exchange
         let mut exchange_tokens: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
 
-        for (symbol, exchange) in &symbols {
+        for QuoteSymbol { symbol, exchange } in &symbols {
             // TODO: Get token from symbol cache
             // For now, using symbol as placeholder
             let api_exchange = match exchange.as_str() {
@@ -988,7 +988,7 @@ impl Broker for AngelBroker {
         symbol: &str,
     ) -> Result<MarketDepth> {
         // Use the same quote endpoint with FULL mode for depth
-        let quotes = self.get_quote(auth_token, vec![(symbol.to_string(), exchange.to_string())]).await?;
+        let quotes = self.get_quote(auth_token, vec![QuoteSymbol { exchange: exchange.to_string(), symbol: symbol.to_string() }]).await?;
 
         if quotes.is_empty() {
             return Ok(MarketDepth {

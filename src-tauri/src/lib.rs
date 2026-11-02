@@ -42,6 +42,32 @@ pub fn run() {
             // Initialize application state
             let app_state = AppState::new(app.handle())?;
 
+            // Seed bundled provider keys on first run.
+            // BAKED_ANTHROPIC_KEY is injected at build time via option_env!; it is None for
+            // normal dev builds (so behavior is unchanged) and Some(key) only for distribution
+            // builds. Never overwrites a key the user already configured in Settings > Providers.
+            if let Some(baked_anthropic) = option_env!("BAKED_ANTHROPIC_KEY") {
+                if !baked_anthropic.is_empty() {
+                    match app_state
+                        .sqlite
+                        .get_provider_key("anthropic", &app_state.security)
+                    {
+                        Ok(None) => match app_state.sqlite.save_provider_key(
+                            "anthropic",
+                            baked_anthropic,
+                            &app_state.security,
+                        ) {
+                            Ok(()) => tracing::info!("Seeded bundled Anthropic API key"),
+                            Err(e) => tracing::warn!("Failed to seed bundled Anthropic key: {}", e),
+                        },
+                        Ok(Some(_)) => {
+                            tracing::debug!("Anthropic key already configured; skipping seed")
+                        }
+                        Err(e) => tracing::warn!("Could not check Anthropic key state: {}", e),
+                    }
+                }
+            }
+
             // Get webhook config before managing state
             let webhook_config = app_state.sqlite.get_webhook_config().ok();
 

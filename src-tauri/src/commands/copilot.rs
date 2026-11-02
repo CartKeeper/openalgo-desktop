@@ -127,12 +127,73 @@ pub async fn generate_briefing(
         portfolio_context.1.join(", ")
     };
 
+    // Available cash sizes every BUY recommendation. This is the broker's settled,
+    // spendable buying power — open-order reservations and unsettled funds are
+    // already excluded. Best-effort: if it can't be read we fall back to a generic,
+    // cash-aware instruction and the frontend's hard affordability cap still
+    // drops/reduces unaffordable buys before display. Routes to sandbox cash in
+    // analyze (paper) mode, matching where orders execute.
+    let cash_budget = match crate::services::FundsService::get_funds(&state, None).await {
+        Ok(result) if result.funds.available_cash > 0.0 => Some(result.funds.available_cash),
+        _ => None,
+    };
+    let cash_line = match cash_budget {
+        Some(cash) => format!("Available cash for new buys: ${:.2} (settled funds — money reserved by the open orders below is already excluded)", cash),
+        None => "Available cash for new buys: unavailable — size buys conservatively and assume a tight budget.".to_string(),
+    };
+
+    // Open (working) orders — committed money and existing protection. Without
+    // this the briefing double-spends reserved cash and recommends duplicate stops.
+    let open_orders_block = match crate::services::OrderbookService::get_orderbook(&state, None).await {
+        Ok(result) => {
+            let open: Vec<String> = result
+                .orders
+                .iter()
+                .filter(|o| matches!(o.status.as_str(), "OPEN" | "PARTIALLY_FILLED" | "PENDING"))
+                .map(|o| {
+                    let pending_qty = if o.pending_quantity > 0.0 {
+                        o.pending_quantity
+                    } else {
+                        o.quantity - o.filled_quantity
+                    };
+                    format!(
+                        "  {} {} x{} {} @ {}{} | placed {}",
+                        o.side.to_uppercase(),
+                        o.symbol,
+                        pending_qty,
+                        o.order_type,
+                        if o.price > 0.0 { format!("${:.2}", o.price) } else { "market".to_string() },
+                        if o.trigger_price > 0.0 { format!(" (trigger ${:.2})", o.trigger_price) } else { String::new() },
+                        o.order_timestamp,
+                    )
+                })
+                .collect();
+            if open.is_empty() {
+                "No open orders.".to_string()
+            } else {
+                format!(
+                    "{}\n\nThese orders are WORKING at the broker right now. Pending BUY orders keep their cost reserved (already excluded from available cash). Do NOT recommend a duplicate stop for a position that already has one above. If a pending BUY looks stale (placed days ago, far from the market), you may recommend cancelling it to free its reserved cash — mention this in Risk Radar.",
+                    open.join("\n")
+                )
+            }
+        }
+        Err(_) => "Open orders could not be read.".to_string(),
+    };
+
     // Build the briefing prompt
     let briefing_prompt = format!(
         r#"Generate a comprehensive 10-Minute Market Briefing. This is an autonomous briefing — gather ALL data yourself using tools, then present a complete analysis.
 
 ## Current Portfolio
 {portfolio}
+
+## Account Budget
+{cash_line}
+
+Every BUY you recommend — whether a New Stock Corner pick or adding to an existing position — MUST fit this cash budget. Treat it as ONE shared budget across all buys: size each buy's WHOLE-share quantity so the cumulative cost of every buy (quantity × the price it will fill at) stays within the available cash. NEVER recommend a buy quantity the account cannot afford.
+
+## Open Orders (already working at the broker)
+{open_orders}
 
 ## Instructions
 
@@ -166,11 +227,12 @@ Underperformers in the portfolio. For each: what's going wrong, potential counte
 Pick the 1-2 most important positions (biggest movers or highest risk) and provide a deeper analysis: fundamentals snapshot, recent news impact, insider sentiment if available, and your stance (bullish/bearish/neutral with reasoning).
 
 ## New Stock Corner
-Present 3-5 stocks that are NOT in the current portfolio but worth watching. For each pick:
+Present 3-5 stocks that are NOT in the current portfolio but worth watching. These are research/watchlist ideas first — present every pick regardless of price, even ones the budget can't cover. For each pick:
 - **Ticker & Name** with current price
 - **Why it's interesting** — catalyst, sector momentum, technical setup, or fundamental story (1-2 sentences)
 - **Risk level** — Low / Medium / High
 - **Suggested entry** — price level or condition to watch for
+- **Affordability** — state plainly whether at least one whole share fits the cash budget. If even one share does NOT fit, label it "Watch only — exceeds cash budget" and do NOT emit a BUY action for it (see below).
 
 Focus on variety: mix sectors, market caps, and styles (growth, value, momentum). Avoid overlapping with existing portfolio holdings. These should be fresh ideas the user probably isn't already tracking.
 
@@ -193,9 +255,15 @@ CRITICAL — Position-aware constraints:
 - NEVER recommend SELL for a symbol that is NOT in the portfolio above — you can only sell what the user actually holds
 - NEVER recommend selling more shares than the user holds — match or stay under the portfolio quantity shown above
 - For stop loss (SL, SL-M) and trailing stop orders on existing positions, the quantity MUST match the position's current quantity exactly
-- For BUY recommendations (New Stock Corner picks or adding to existing positions), use reasonable quantities appropriate to the stock price (e.g., 5-10 shares for $100+ stocks, 10-25 for $20-$100 stocks)
+
+CRITICAL — Cash budget for BUY actions (see ## Account Budget above):
+- Every BUY in this block MUST fit the available cash budget. Size each buy's WHOLE-share quantity (no fractional shares) so the CUMULATIVE cost of all buys (quantity × fill price) stays within the available cash.
+- If a pick does not fit the remaining cash, reduce its quantity to what remains; if not even one whole share fits, DO NOT include a BUY action for it — leave it as a watch-only idea in the New Stock Corner section.
+- This budget constrains BUY actions only; SELL and stop orders are unaffected.
 - The portfolio data above is the source of truth for what the user owns and how many shares"#,
         portfolio = portfolio_context.0,
+        cash_line = cash_line,
+        open_orders = open_orders_block,
         symbols = symbol_list,
     );
 

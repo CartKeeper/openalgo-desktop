@@ -22,6 +22,8 @@ import { toast } from 'sonner'
 import { ActionReviewModal } from '@/components/trading/ActionReviewModal'
 import type { ToolCallInfo } from '@/stores/copilotStore'
 import { parseActionsFromMarkdown } from '@/lib/parseActions'
+import { useAffordableActions } from '@/hooks/useAffordableActions'
+import type { OrderRecommendation } from '@/types/actionQueue'
 import { useActionQueueStore } from '@/stores/actionQueueStore'
 import { useReportsStore } from '@/stores/reportsStore'
 import { useAuthStore } from '@/stores/authStore'
@@ -409,7 +411,11 @@ export default function BriefingPage() {
   const [generatedAt, setGeneratedAt] = useState<string | null>(null)
   const [rawText, setRawText] = useState('')
   const [isSaving, setIsSaving] = useState(false)
-  const [actionCount, setActionCount] = useState(0)
+  const [rawActions, setRawActions] = useState<OrderRecommendation[]>([])
+  // Reconcile the AI's buy recs against the account's live cash BEFORE display —
+  // unaffordable buys are dropped/reduced here, matching the copilot chat, so the
+  // count and the "Review" list never surface a trade the account can't fund.
+  const { actions: affordableActions, notice: fundsNotice } = useAffordableActions(rawActions)
   const [portfolioStats, setPortfolioStats] = useState<HoldingsStats | null>(null)
   const [isStatsLoading, setIsStatsLoading] = useState(true)
   const navigate = useNavigate()
@@ -445,6 +451,7 @@ export default function BriefingPage() {
     setSections([])
     setToolCalls([])
     setRawText('')
+    setRawActions([])
 
     try {
       const response = await invoke<BriefingResponse>('generate_briefing')
@@ -456,8 +463,7 @@ export default function BriefingPage() {
 
       const parsed = parseSections(response.response_text)
 
-      const actions = parseActionsFromMarkdown(response.response_text, 'briefing')
-      setActionCount(actions.length)
+      setRawActions(parseActionsFromMarkdown(response.response_text, 'briefing'))
 
       setSections(parsed)
       setToolCalls(tools)
@@ -642,18 +648,15 @@ export default function BriefingPage() {
 
         {sections.length > 0 && (
           <>
-            {actionCount > 0 && (
+            {affordableActions.length > 0 && (
               <Button
                 variant="outline"
                 size="sm"
                 className="h-10 gap-2"
-                onClick={() => {
-                  const actions = parseActionsFromMarkdown(rawText, 'briefing')
-                  if (actions.length > 0) reviewWithFundsCheck(actions)
-                }}
+                onClick={() => reviewWithFundsCheck(affordableActions)}
               >
                 <ShoppingCart className="h-4 w-4" />
-                Review {actionCount} Action{actionCount !== 1 ? 's' : ''}
+                Review {affordableActions.length} Action{affordableActions.length !== 1 ? 's' : ''}
               </Button>
             )}
             <Button
@@ -675,6 +678,11 @@ export default function BriefingPage() {
           </span>
         )}
       </div>
+
+      {/* Affordability notice — describes any buys reduced/dropped to fit cash */}
+      {sections.length > 0 && fundsNotice && (
+        <p className="text-xs leading-[1.4] text-muted-foreground">{fundsNotice}</p>
+      )}
 
       {/* Tool Activity */}
       {toolCalls.length > 0 && <ToolActivity tools={toolCalls} />}

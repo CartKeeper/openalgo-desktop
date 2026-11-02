@@ -209,6 +209,16 @@ pub struct BrokerWatchlist {
     pub symbols: Vec<String>,
 }
 
+/// A symbol to fetch a quote for. Named fields on purpose: this was previously
+/// an anonymous (String, String) tuple whose order ("(exchange, symbol)") six
+/// of seven broker adapters silently read backwards — querying brokers for a
+/// ticker literally named "US" and returning nothing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuoteSymbol {
+    pub exchange: String,
+    pub symbol: String,
+}
+
 /// Quote
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Quote {

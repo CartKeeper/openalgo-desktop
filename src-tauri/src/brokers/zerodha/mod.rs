@@ -741,12 +741,12 @@ impl Broker for ZerodhaBroker {
     async fn get_quote(
         &self,
         auth_token: &str,
-        symbols: Vec<(String, String)>,
+        symbols: Vec<QuoteSymbol>,
     ) -> Result<Vec<Quote>> {
         // Build query string with multiple 'i' parameters
         let query_params: Vec<String> = symbols
             .iter()
-            .map(|(symbol, exchange)| {
+            .map(|QuoteSymbol { symbol, exchange }| {
                 let api_exchange = match exchange.as_str() {
                     "NSE_INDEX" => "NSE",
                     "BSE_INDEX" => "BSE",
@@ -777,7 +777,7 @@ impl Broker for ZerodhaBroker {
 
         Ok(symbols
             .iter()
-            .filter_map(|(symbol, exchange)| {
+            .filter_map(|QuoteSymbol { symbol, exchange }| {
                 let api_exchange = match exchange.as_str() {
                     "NSE_INDEX" => "NSE",
                     "BSE_INDEX" => "BSE",

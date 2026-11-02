@@ -46,6 +46,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { quoteCommands } from '@/api/tauri-client'
+import { OrderTypeBadge } from '@/components/trading/OrderTypeBadge'
 import { cn, formatQty, sanitizeCSV } from '@/lib/utils'
 // Note: AlertDialog still used for Cancel All Orders
 import { useOrderEventRefresh } from '@/hooks/useOrderEventRefresh'
@@ -124,6 +126,32 @@ export default function OrderBook() {
     setStatusFilter([])
   }
 
+  // Live prices for symbols with working orders, keyed EXCHANGE:SYMBOL — shown
+  // in the Current column so the user can see where a stock trades relative to
+  // a stop's trigger. Best-effort: quote failures leave the column blank.
+  const [livePrices, setLivePrices] = useState<Record<string, number>>({})
+
+  const fetchLivePrices = useCallback(async (orders: Order[]) => {
+    const working = orders.filter((o) =>
+      ['open', 'pending', 'trigger pending'].includes(o.order_status)
+    )
+    if (working.length === 0) return
+    const unique = new Map<string, { exchange: string; symbol: string }>()
+    for (const o of working) {
+      unique.set(`${o.exchange}:${o.symbol}`, { exchange: o.exchange, symbol: o.symbol })
+    }
+    try {
+      const quotes = await quoteCommands.getQuote([...unique.values()])
+      const next: Record<string, number> = {}
+      for (const q of quotes) {
+        if (q.ltp > 0) next[`${q.exchange}:${q.symbol}`] = q.ltp
+      }
+      setLivePrices((prev) => ({ ...prev, ...next }))
+    } catch {
+      // Quotes are supplementary — keep whatever we had.
+    }
+  }, [])
+
   const fetchOrders = useCallback(
     async (showRefresh = false) => {
       if (showRefresh) setIsRefreshing(true)
@@ -134,6 +162,7 @@ export default function OrderBook() {
           setOrders(response.data.orders || [])
           setStats(response.data.statistics)
           setError(null)
+          fetchLivePrices(response.data.orders || [])
         } else {
           setError(response.message || 'Failed to fetch orders')
         }
@@ -144,7 +173,7 @@ export default function OrderBook() {
         setIsRefreshing(false)
       }
     },
-    [apiKey]
+    [apiKey, fetchLivePrices]
   )
 
   useEffect(() => {
@@ -499,6 +528,7 @@ export default function OrderBook() {
                     <TableHead className="w-[70px]">Action</TableHead>
                     <TableHead className="w-[70px] text-right">Qty</TableHead>
                     <TableHead className="w-[100px] text-right">Price</TableHead>
+                    <TableHead className="w-[100px] text-right">Current</TableHead>
                     <TableHead className="w-[100px] text-right">Trigger</TableHead>
                     <TableHead className="w-[80px]">Type</TableHead>
                     <TableHead className="w-[70px]">Product</TableHead>
@@ -531,13 +561,32 @@ export default function OrderBook() {
                         </TableCell>
                         <TableCell className="text-right font-mono">{formatQty(order.quantity)}</TableCell>
                         <TableCell className="text-right font-mono">
-                          {formatCurrency(order.price)}
+                          {order.price > 0 ? (
+                            formatCurrency(order.price)
+                          ) : (
+                            // No fixed price by design: MARKET / SL-M orders fill
+                            // at the best available price when they execute.
+                            <span className="text-muted-foreground" title="Fills at the market price when executed">
+                              MKT
+                            </span>
+                          )}
                         </TableCell>
                         <TableCell className="text-right font-mono">
-                          {formatCurrency(order.trigger_price)}
+                          {livePrices[`${order.exchange}:${order.symbol}`] !== undefined ? (
+                            formatCurrency(livePrices[`${order.exchange}:${order.symbol}`])
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right font-mono">
+                          {order.trigger_price > 0 ? (
+                            formatCurrency(order.trigger_price)
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
                         </TableCell>
                         <TableCell>
-                          <Badge variant="secondary">{order.pricetype}</Badge>
+                          <OrderTypeBadge pricetype={order.pricetype} />
                         </TableCell>
                         <TableCell>
                           <Badge variant="outline">{order.product}</Badge>
@@ -617,9 +666,7 @@ export default function OrderBook() {
             <div className="flex items-center gap-3 pt-2 border-t">
               <div className="flex items-center gap-2">
                 <span className="text-xs text-muted-foreground">Type:</span>
-                <Badge variant="secondary" className="text-xs">
-                  {modifyForm.pricetype}
-                </Badge>
+                <OrderTypeBadge pricetype={modifyForm.pricetype} className="text-xs" />
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-muted-foreground">Product:</span>

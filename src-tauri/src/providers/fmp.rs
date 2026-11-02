@@ -522,13 +522,44 @@ impl FmpClient {
     }
 
     pub async fn get_sector_performance(&self) -> Result<Vec<SectorPerformance>, ProviderError> {
-        let url = format!("{}/sector-performance?apikey={}", FMP_BASE_URL, self.api_key);
-        let items = self.fetch_fmp_json(&url).await?;
-        Ok(items.iter().map(|item| SectorPerformance {
-            sector: item["sector"].as_str().unwrap_or("").to_string(),
-            change_percentage: item["changesPercentage"].as_f64()
-                .or_else(|| item["changesPercentage"].as_str().and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())),
-        }).collect())
+        // FMP's /stable API replaced the legacy `/sector-performance` endpoint
+        // (which returned the current day implicitly) with
+        // `/sector-performance-snapshot`, which REQUIRES a `date` (YYYY-MM-DD)
+        // and returns one row per sector for that calendar day. A snapshot only
+        // exists for trading days, and today's may not be populated pre-market,
+        // so we start from "today" in America/New_York and walk back until a
+        // date returns data. The 7-day cap covers a weekend plus a multi-day
+        // holiday without looping forever.
+        let pct = |v: &serde_json::Value| -> Option<f64> {
+            v.as_f64().or_else(|| {
+                v.as_str().and_then(|s| s.trim().trim_end_matches('%').trim().parse::<f64>().ok())
+            })
+        };
+
+        let mut day = chrono::Utc::now().with_timezone(&chrono_tz::America::New_York).date_naive();
+        for _ in 0..7 {
+            let url = format!(
+                "{}/sector-performance-snapshot?date={}&apikey={}",
+                FMP_BASE_URL,
+                day.format("%Y-%m-%d"),
+                self.api_key
+            );
+            let items = self.fetch_fmp_json(&url).await?;
+            if !items.is_empty() {
+                return Ok(items.iter().map(|item| SectorPerformance {
+                    sector: item["sector"].as_str().unwrap_or("").to_string(),
+                    // /stable serves the daily sector average as `averageChange`;
+                    // older payloads used `changesPercentage` (sometimes "1.23%").
+                    change_percentage: pct(&item["averageChange"])
+                        .or_else(|| pct(&item["changesPercentage"])),
+                }).collect());
+            }
+            day = day.pred_opt().unwrap_or(day);
+        }
+
+        Err(ProviderError::ApiError(
+            "FMP sector-performance-snapshot returned no data for the last 7 days".to_string(),
+        ))
     }
 
     pub async fn get_market_gainers(&self) -> Result<Vec<MarketMover>, ProviderError> {

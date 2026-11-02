@@ -26,6 +26,13 @@ const DEFAULT_RISING_STAR_INTERVAL_SECS: u64 = 600;
 /// Default minimum % change for rising star candidates.
 const DEFAULT_RISING_STAR_MIN_CHANGE_PCT: f64 = 8.0;
 
+/// Maximum number of rising-star alerts emitted per scan (top movers only).
+const RISING_STAR_MAX_PER_SCAN: usize = 3;
+
+/// Per-symbol cooldown for rising-star alerts (seconds). The same symbol will
+/// not re-fire a rising-star toast again until this much time has elapsed.
+const RISING_STAR_PER_SYMBOL_COOLDOWN_SECS: i64 = 4 * 60 * 60; // 4 hours
+
 /// Default cooldown for alert configs (minutes).
 const DEFAULT_COOLDOWN_MINUTES: i64 = 30;
 
@@ -77,6 +84,10 @@ impl AlertMonitor {
             // Mutable state kept across cycles.
             let mut previous_prices: HashMap<String, f64> = HashMap::new();
             let mut cycles_since_rising_star: u64 = 0;
+            // Tracks the last unix timestamp (seconds) a rising-star alert was
+            // emitted for each symbol, so the same mover does not re-fire every
+            // scan. See RISING_STAR_PER_SYMBOL_COOLDOWN_SECS.
+            let mut rising_star_last_emitted: HashMap<String, i64> = HashMap::new();
 
             loop {
                 // --- Determine check interval ---
@@ -186,6 +197,7 @@ impl AlertMonitor {
                         &rt,
                         &state,
                         &watchlist_symbols,
+                        &mut rising_star_last_emitted,
                     );
                 }
             }
@@ -222,6 +234,7 @@ impl AlertMonitor {
         rt: &tokio::runtime::Runtime,
         state: &AppState,
         watchlist_symbols: &[String],
+        last_emitted: &mut HashMap<String, i64>,
     ) {
         // FMP key is required for this feature.
         let fmp_key = match state
@@ -262,8 +275,11 @@ impl AlertMonitor {
         };
 
         let min_change = DEFAULT_RISING_STAR_MIN_CHANGE_PCT;
+        let now = Utc::now().timestamp();
 
+        // --- Build the candidate list (filtered, deduped, cooldown-respecting) ---
         let mut seen = HashSet::new();
+        let mut candidates: Vec<(&crate::providers::types::MarketMover, f64)> = Vec::new();
 
         for mover in gainers.iter().chain(most_active.iter()) {
             if mover.symbol.is_empty() {
@@ -285,6 +301,26 @@ impl AlertMonitor {
                 _ => continue,
             };
 
+            // Per-symbol cooldown: skip if this symbol fired recently.
+            if let Some(&last) = last_emitted.get(&mover.symbol) {
+                if now - last < RISING_STAR_PER_SYMBOL_COOLDOWN_SECS {
+                    continue;
+                }
+            }
+
+            candidates.push((mover, change_pct));
+        }
+
+        // --- Keep only the top movers by % change, capped per scan ---
+        candidates.sort_by(|a, b| {
+            b.1.abs()
+                .partial_cmp(&a.1.abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        candidates.truncate(RISING_STAR_MAX_PER_SCAN);
+
+        // --- Emit the selected alerts and record their timestamps ---
+        for (mover, change_pct) in candidates {
             let metadata = serde_json::json!({
                 "price": mover.price,
                 "change": mover.change,
@@ -311,6 +347,7 @@ impl AlertMonitor {
             };
 
             self.emit_alert(&alert);
+            last_emitted.insert(mover.symbol.clone(), now);
         }
     }
 }

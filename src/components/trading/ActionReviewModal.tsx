@@ -2,8 +2,9 @@ import { Check, Copy, Loader2, ShoppingCart, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { emit } from '@tauri-apps/api/event'
-import { settingsCommands } from '@/api/tauri-client'
+import { fundsCommands, settingsCommands } from '@/api/tauri-client'
 import { tradingApi } from '@/api/trading'
+import { reconcileRecommendationsWithAccount } from '@/lib/affordability'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -194,6 +195,9 @@ export function ActionReviewModal({
   // Execution mode read from the SAME authority the order routes on
   // (get_analyze_mode). null = not yet read → treated as LIVE (fail safe).
   const [liveMode, setLiveMode] = useState<boolean | null>(null)
+  // Settled, spendable balance shown next to the basket cost so the user always
+  // knows what they can actually spend. null = couldn't read (line is hidden).
+  const [availableCash, setAvailableCash] = useState<number | null>(null)
 
   // Read the authoritative mode when the modal opens on the live path. We do NOT
   // trust any cached/themeStore value — only get_analyze_mode, the same flag the
@@ -218,6 +222,24 @@ export function ActionReviewModal({
   useEffect(() => {
     setAcknowledged(false)
   }, [liveMode])
+
+  // Read the spendable balance when the order-placing modal opens (routes to
+  // sandbox funds in analyze mode — same source the orders execute against).
+  useEffect(() => {
+    if (!isReviewOpen || onApply) return
+    let cancelled = false
+    fundsCommands
+      .getFunds()
+      .then((f) => {
+        if (!cancelled) setAvailableCash(f.available_cash)
+      })
+      .catch(() => {
+        if (!cancelled) setAvailableCash(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isReviewOpen, onApply])
 
   const handlePlaceAll = async () => {
     if (items.length === 0) return
@@ -264,6 +286,29 @@ export function ActionReviewModal({
     if (freshLive && !acknowledged) {
       setSubmitting(false)
       return
+    }
+
+    // Funds re-check at SUBMIT time — the deterministic backstop. Quantities can
+    // be edited upward in this modal, and cash/prices move while it sits open, so
+    // re-reconcile against the broker NOW. If anything no longer fits, adjust the
+    // list and force a re-review instead of letting the broker reject mid-basket
+    // (which would fill the early orders and bounce the rest).
+    try {
+      const { items: revalidated, notice } = await reconcileRecommendationsWithAccount(items)
+      const changed =
+        revalidated.length !== items.length ||
+        revalidated.some((r, i) => r.id !== items[i].id || r.quantity !== items[i].quantity)
+      if (changed) {
+        useActionQueueStore.setState({ items: revalidated, fundsNotice: notice })
+        setSubmitting(false)
+        toast.warning(
+          'Your spendable funds changed — quantities were adjusted to what the account can afford. Review and place again.'
+        )
+        return
+      }
+    } catch {
+      // Best-effort: if the re-check itself fails, proceed — the broker is the
+      // final authority and will reject anything unaffordable.
     }
 
     try {
@@ -483,6 +528,16 @@ export function ActionReviewModal({
               )}
               AI recommendations can be confidently wrong and don't know your full finances.
             </p>
+            {availableCash !== null && (
+              <p className="text-xs text-muted-foreground">
+                Available to spend (settled): <strong className="text-foreground">{usd(availableCash)}</strong>
+                {buyCost > availableCash && (
+                  <span className="text-red-600 dark:text-red-400">
+                    {' '}— this basket's buys exceed it and will be reduced at placement.
+                  </span>
+                )}
+              </p>
+            )}
             <label className="flex items-start gap-2 text-xs cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -499,6 +554,11 @@ export function ActionReviewModal({
             <p className="text-xs text-muted-foreground leading-relaxed">
               <strong className="text-foreground">Paper (sandbox) mode.</strong> These are simulated orders
               with virtual money — no real funds are used. Switch to Live mode to trade for real.
+              {availableCash !== null && (
+                <>
+                  {' '}Sandbox cash available: <strong className="text-foreground">{usd(availableCash)}</strong>.
+                </>
+              )}
             </p>
           </div>
         )}

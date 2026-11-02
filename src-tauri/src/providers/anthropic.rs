@@ -8,7 +8,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
+const ANTHROPIC_MODEL: &str = "claude-opus-4-8";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const MAX_TOKENS: u32 = 32768;
 
@@ -494,7 +494,7 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_my_portfolio".to_string(),
-            description: "Get the user's OWN live portfolio on their connected broker account (e.g. Alpaca) — their actual current holdings and available cash. Returns each open position (symbol, quantity, average price, last price, unrealized P&L), any longer-term holdings, the available cash for new buys, and the mode (live/paper/analyze). This is the SOURCE OF TRUTH for what the user personally owns. Use this WHENEVER the user asks about \"my account\", \"my portfolio\", \"my positions\", what they hold, how their account is doing, or wants recommendations about their own holdings. Do NOT confuse this with get_client_portfolio (that is for other people's client accounts).".to_string(),
+            description: "Get the user's OWN live portfolio on their connected broker account (e.g. Alpaca) — their actual current holdings, open orders, and available cash. Returns each open position (symbol, quantity, average price, last price, unrealized P&L), any longer-term holdings, all OPEN ORDERS working at the broker (side, pending quantity, limit/trigger price, reserved cost for pending buys), the available cash for new buys (settled funds — open-order reservations already excluded), and the mode (live/paper/analyze). This is the SOURCE OF TRUTH for what the user personally owns, has committed, and can spend. Use this WHENEVER the user asks about \"my account\", \"my portfolio\", \"my positions\", what they hold, what they can spend, how their account is doing, or wants recommendations about their own holdings. Do NOT confuse this with get_client_portfolio (that is for other people's client accounts).".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {},

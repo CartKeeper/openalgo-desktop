@@ -127,7 +127,7 @@ You have access to these data retrieval tools:
 12. **get_market_overview** - Sector performance, today's gainers, losers, and most active stocks. Use when users ask about market conditions, what's up/down today, or sector trends.
 13. **get_index_constituents** - Companies in the S&P 500, Nasdaq 100, or Dow Jones 30. Use when users ask about what's in an index or want a list of companies in a specific index.
 14. **get_broker_account** - Get the currently connected broker account info (broker name, account ID, user ID, live/paper mode). Use ONLY when the user asks about their broker account, connection status, or account details.
-15. **get_my_portfolio** - Get the USER'S OWN live portfolio on their connected broker (their actual current positions, holdings, and available cash). This is the source of truth for what the user personally owns. Call this WHENEVER the user asks about "my account", "my portfolio", "my positions", what they hold, how their account is doing, or wants recommendations about their own holdings. Do NOT use get_client_portfolio for the user's own account — that tool is for other people's client accounts.
+15. **get_my_portfolio** - Get the USER'S OWN live portfolio on their connected broker: actual current positions, holdings, OPEN ORDERS (working buys/sells/stops), and available cash. available_cash is the settled, spendable number — funds reserved by open orders are already excluded. This is the source of truth for what the user personally owns and has committed. Call this WHENEVER the user asks about "my account", "my portfolio", "my positions", what they hold, what they can spend, how their account is doing, or wants recommendations about their own holdings. Do NOT use get_client_portfolio for the user's own account — that tool is for other people's client accounts.
 16. **list_clients** - List all clients in the client management system with their names, IDs, and account info. Use ONLY when the user asks about clients or needs to find a specific client.
 17. **get_client_portfolio** - Look up a client's portfolio from the local client management system. Returns positions (symbols, quantities, avg price, P&L) and recent trades. Use when the user asks about a specific client's portfolio, holdings, or trades. Search by name (partial match works).
 18. **get_client_scenario** - Retrieve a sandbox what-if scenario with positions and live market prices. Use when the user asks you to analyze a scenario portfolio.
@@ -909,11 +909,52 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
             Err(_) => Vec::new(),
         };
 
-        // Available cash sizes any BUY recommendations.
+        // Available cash sizes any BUY recommendations. This is the broker's
+        // settled, spendable buying power — open-order reservations and unsettled
+        // funds are already excluded.
         let available_cash = FundsService::get_funds(state, None)
             .await
             .ok()
             .map(|r| r.funds.available_cash);
+
+        // Open (working) orders — money already committed. Without these the
+        // advisor double-spends: it can't see that cash is reserved by resting
+        // limit orders, or that a stop already protects a position.
+        let open_orders: Vec<serde_json::Value> =
+            match crate::services::OrderbookService::get_orderbook(state, None).await {
+                Ok(result) => result
+                    .orders
+                    .iter()
+                    .filter(|o| {
+                        matches!(o.status.as_str(), "OPEN" | "PARTIALLY_FILLED" | "PENDING")
+                    })
+                    .map(|o| {
+                        let pending_qty = if o.pending_quantity > 0.0 {
+                            o.pending_quantity
+                        } else {
+                            o.quantity - o.filled_quantity
+                        };
+                        let reserve_price = if o.price > 0.0 { o.price } else { o.trigger_price };
+                        serde_json::json!({
+                            "symbol": o.symbol,
+                            "side": o.side,
+                            "order_type": o.order_type,
+                            "pending_quantity": pending_qty,
+                            "limit_price": o.price,
+                            "trigger_price": o.trigger_price,
+                            "status": o.status,
+                            "placed_at": o.order_timestamp,
+                            // Cash a pending BUY keeps reserved until it fills or is cancelled.
+                            "reserved_cost": if o.side.eq_ignore_ascii_case("buy") && reserve_price > 0.0 {
+                                pending_qty * reserve_price
+                            } else {
+                                0.0
+                            },
+                        })
+                    })
+                    .collect(),
+                Err(_) => Vec::new(),
+            };
 
         let is_empty = positions.is_empty() && holdings.is_empty();
 
@@ -924,11 +965,13 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
             "holdings": holdings,
             "holding_count": holdings.len(),
             "available_cash": available_cash,
+            "open_orders": open_orders,
+            "open_order_count": open_orders.len(),
             "is_empty": is_empty,
             "note": if is_empty {
                 "The user's connected account currently holds no positions or holdings. Do NOT invent holdings — say the account is empty and base any buy ideas on the available cash only."
             } else {
-                "These are the user's ACTUAL holdings — the source of truth. Only recommend SELL/stop orders on symbols listed here, and size BUYs to available_cash."
+                "These are the user's ACTUAL holdings — the source of truth. Only recommend SELL/stop orders on symbols listed here, and size BUYs to available_cash. available_cash is the settled, spendable number — funds reserved by the open_orders listed are ALREADY excluded from it, so do not subtract them again. If an open BUY order looks stale (placed days ago, far from the market), you may suggest cancelling it to free its reserved_cost for better uses; never recommend a duplicate stop for a position that already has one in open_orders."
             },
         }))
     }

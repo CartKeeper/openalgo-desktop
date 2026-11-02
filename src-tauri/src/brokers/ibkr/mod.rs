@@ -693,14 +693,14 @@ impl Broker for IbkrBroker {
     async fn get_quote(
         &self,
         auth_token: &str,
-        symbols: Vec<(String, String)>,
+        symbols: Vec<QuoteSymbol>,
     ) -> Result<Vec<Quote>> {
         let (base_url, _) = parse_ibkr_auth(auth_token)?;
 
         // IBKR requires conids for snapshots — need to search first
         let mut quotes = Vec::new();
 
-        for (symbol, _) in &symbols {
+        for QuoteSymbol { symbol, .. } in &symbols {
             // Search for conid
             let search_resp = self
                 .client
@@ -782,7 +782,7 @@ impl Broker for IbkrBroker {
         symbol: &str,
     ) -> Result<MarketDepth> {
         let quotes = self
-            .get_quote(auth_token, vec![(symbol.to_string(), "US".to_string())])
+            .get_quote(auth_token, vec![QuoteSymbol { exchange: "US".to_string(), symbol: symbol.to_string() }])
             .await?;
 
         let quote = quotes.first();

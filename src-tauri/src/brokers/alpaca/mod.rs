@@ -152,6 +152,10 @@ struct AlpacaAccount {
     daytrading_buying_power: String,
     #[serde(default)]
     regt_buying_power: String,
+    #[serde(default)]
+    non_marginable_buying_power: String,
+    #[serde(default)]
+    effective_buying_power: String,
 }
 
 /// Account activity entry. The /v2/account/activities endpoint returns a mixed
@@ -772,8 +776,10 @@ impl Broker for AlpacaBroker {
         let long_mv: f64 = account.long_market_value.parse().unwrap_or(0.0);
         let short_mv: f64 = account.short_market_value.parse().unwrap_or(0.0);
 
+        let spendable = spendable_cash(&account.non_marginable_buying_power, cash, buying_power);
+
         Ok(Funds {
-            available_cash: cash,
+            available_cash: spendable,
             used_margin: initial_margin,
             total_margin: buying_power,
             opening_balance: last_equity,
@@ -1099,11 +1105,11 @@ impl Broker for AlpacaBroker {
     async fn get_quote(
         &self,
         auth_token: &str,
-        symbols: Vec<(String, String)>,
+        symbols: Vec<QuoteSymbol>,
     ) -> Result<Vec<Quote>> {
         let (api_key, api_secret) = parse_auth_token(auth_token)?;
 
-        let symbol_list: Vec<&str> = symbols.iter().map(|(s, _)| s.as_str()).collect();
+        let symbol_list: Vec<&str> = symbols.iter().map(|q| q.symbol.as_str()).collect();
 
         let mut quotes = Vec::new();
 
@@ -1180,7 +1186,7 @@ impl Broker for AlpacaBroker {
         // Alpaca doesn't provide full market depth on basic plans
         // Return single level from latest quote
         let quotes = self
-            .get_quote(auth_token, vec![(symbol.to_string(), "US".to_string())])
+            .get_quote(auth_token, vec![QuoteSymbol { exchange: "US".to_string(), symbol: symbol.to_string() }])
             .await?;
 
         let quote = quotes.first();
@@ -1365,6 +1371,21 @@ fn map_validity(v: &str) -> &str {
     }
 }
 
+/// The balance the whole app (AI budgets, affordability caps, funds display)
+/// treats as spendable. Alpaca's `cash` is the WRONG field for that: it ignores
+/// funds reserved by open orders and unsettled sale proceeds, so orders sized to
+/// it get rejected with "insufficient buying power" (cash $1,300 vs real
+/// buying power $436 was observed live). `non_marginable_buying_power` is
+/// Alpaca's settled-only spendable number — it already nets out open-order
+/// reservations and unsettled funds (and avoids good-faith violations on cash
+/// accounts). Fall back to the most conservative of cash/buying_power only when
+/// the field is absent or unparseable.
+fn spendable_cash(non_marginable_buying_power: &str, cash: f64, buying_power: f64) -> f64 {
+    non_marginable_buying_power
+        .parse()
+        .unwrap_or_else(|_| cash.min(buying_power))
+}
+
 fn map_order_status(status: &str) -> String {
     match status {
         "new" | "accepted" | "pending_new" => "OPEN",
@@ -1521,5 +1542,32 @@ mod order_body_tests {
         let body = AlpacaBroker::build_order_body(&req(None, 0.5));
         assert_eq!(body.get("qty").and_then(|v| v.as_str()), Some("0.5"));
         assert!(body.get("notional").is_none());
+    }
+}
+
+#[cfg(test)]
+mod spendable_cash_tests {
+    use super::spendable_cash;
+
+    // The regression that produced live "insufficient buying power" rejections:
+    // cash $1300.41 while Alpaca's enforced settled buying power was $328.20
+    // (open GTC orders reserved $864, plus unsettled funds). The app MUST report
+    // the settled number, never raw cash.
+    #[test]
+    fn uses_non_marginable_buying_power_not_cash() {
+        assert_eq!(spendable_cash("328.2", 1300.41, 436.39), 328.2);
+    }
+
+    #[test]
+    fn zero_non_marginable_means_zero_not_fallback() {
+        // Fully committed account: 0 is a real answer, not a parse failure.
+        assert_eq!(spendable_cash("0", 1300.41, 436.39), 0.0);
+    }
+
+    #[test]
+    fn missing_field_falls_back_to_most_conservative() {
+        // Older/odd payloads: empty string doesn't parse — use min(cash, buying_power).
+        assert_eq!(spendable_cash("", 1300.41, 436.39), 436.39);
+        assert_eq!(spendable_cash("", 200.0, 436.39), 200.0);
     }
 }

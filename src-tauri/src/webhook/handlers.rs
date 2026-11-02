@@ -4,7 +4,7 @@
 //! - Dynamic strategy-based webhooks (/webhook/{webhook_id})
 //! - OpenAlgo SDK compatible REST API (/api/v1/*)
 
-use crate::brokers::types::{ModifyOrderRequest as BrokerModifyOrder, OrderRequest as BrokerOrderRequest};
+use crate::brokers::types::{ModifyOrderRequest as BrokerModifyOrder, OrderRequest as BrokerOrderRequest, QuoteSymbol};
 use crate::services::{
     AnalyzerService, FundsService, HoldingsService, HistoryService, OptionsService,
     OrderService, OrderbookService, PositionService, QuotesService, SmartOrderService,
@@ -1486,9 +1486,8 @@ pub async fn get_multiquotes(
         }
     };
 
-    // Convert symbols to (exchange, symbol) pairs
-    let symbols: Vec<(String, String)> = req.symbols.iter()
-        .map(|s| (s.exchange.clone(), s.symbol.clone()))
+    let symbols: Vec<QuoteSymbol> = req.symbols.iter()
+        .map(|s| QuoteSymbol { exchange: s.exchange.clone(), symbol: s.symbol.clone() })
         .collect();
 
     match QuotesService::get_multi_quotes(&app_state, symbols, Some(&req.apikey)).await {

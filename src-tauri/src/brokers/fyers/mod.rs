@@ -1055,7 +1055,7 @@ impl Broker for FyersBroker {
     async fn get_quote(
         &self,
         auth_token: &str,
-        symbols: Vec<(String, String)>,
+        symbols: Vec<QuoteSymbol>,
     ) -> Result<Vec<Quote>> {
         if symbols.is_empty() {
             return Ok(vec![]);
@@ -1064,7 +1064,7 @@ impl Broker for FyersBroker {
         // Build comma-separated symbols list
         let symbols_str: Vec<String> = symbols
             .iter()
-            .map(|(ex, sym)| format!("{}:{}", ex, sym))
+            .map(|q| format!("{}:{}", q.exchange, q.symbol))
             .collect();
         let symbols_param = symbols_str.join(",");
         let encoded_symbols = urlencoding::encode(&symbols_param);

@@ -73,7 +73,7 @@ pub trait Broker: Send + Sync {
     async fn get_quote(
         &self,
         auth_token: &str,
-        symbols: Vec<(String, String)>,
+        symbols: Vec<QuoteSymbol>,
     ) -> Result<Vec<Quote>>;
 
     /// Get market depth
