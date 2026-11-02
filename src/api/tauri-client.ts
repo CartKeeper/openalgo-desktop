@@ -7,6 +7,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { backtestApi } from './backtest'
+import type { StrategyLegResult, StrategyRole } from '@/types/actionQueue'
 
 // ============================================================================
 // Types
@@ -94,6 +95,15 @@ export interface OrderRequest {
   stop_loss_price?: number
   /** Optional stop-loss limit price (stop-limit exit). */
   stop_loss_limit_price?: number
+}
+
+/** One leg of a grouped strategy basket (cancel / fund / buy / protect / standalone). */
+export interface StrategyLeg {
+  group: string | null
+  role: StrategyRole
+  symbol: string
+  cancel_order_id?: string
+  order?: OrderRequest
 }
 
 export interface ModifyOrderRequest {
@@ -572,6 +582,18 @@ export const orderCommands = {
   getTradeBook: () => tauriInvoke<Order[]>('get_trade_book'),
   placeBasketOrder: (orders: OrderRequest[], expectedAnalyzeMode?: boolean) =>
     tauriInvoke<PlaceOrderResult[]>('place_basket_order', { orders, expectedAnalyzeMode }),
+  placeStrategyBasket: (legs: StrategyLeg[], expectedAnalyzeMode?: boolean) =>
+    tauriInvoke<StrategyLegResult[]>('place_strategy_basket', { legs, expectedAnalyzeMode }),
+}
+
+// ============================================================================
+// Ride Commands
+// ============================================================================
+
+export const rideCommands = {
+  // Records that the user dismissed a trailing-stop protection for `symbol` at `quantity`.
+  recordProtectionDismissal: (symbol: string, quantity: number) =>
+    tauriInvoke<void>('record_protection_dismissal', { symbol, quantity }),
 }
 
 // ============================================================================
