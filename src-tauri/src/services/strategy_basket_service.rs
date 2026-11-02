@@ -148,10 +148,30 @@ fn validate_leg(leg: &StrategyLeg) -> Result<()> {
                     side,
                     order.side
                 ))),
+                _ if leg.role == LegRole::Protect => validate_protect_order(leg, order),
                 _ => Ok(()),
             }
         }
     }
+}
+
+/// A protect leg must be a sell-side stop: SELL, and TRAILING_STOP, SL or SL-M.
+fn validate_protect_order(leg: &StrategyLeg, order: &OrderRequest) -> Result<()> {
+    let label = leg.group.as_deref().unwrap_or("(ungrouped)");
+    if !order.side.eq_ignore_ascii_case("SELL") {
+        return Err(AppError::Validation(format!(
+            "protect leg for {} in group {} must be a SELL order, not {}",
+            leg.symbol, label, order.side
+        )));
+    }
+    let order_type = order.order_type.to_ascii_uppercase();
+    if !matches!(order_type.as_str(), "TRAILING_STOP" | "SL" | "SL-M") {
+        return Err(AppError::Validation(format!(
+            "protect leg for {} in group {} must be a TRAILING_STOP, SL or SL-M order, not {}",
+            leg.symbol, label, order.order_type
+        )));
+    }
+    Ok(())
 }
 
 /// Group-level checks: at most one Buy, a Protect must protect that Buy's
@@ -862,14 +882,24 @@ mod plan_tests {
         .unwrap()
     }
 
+    /// A protect leg's order: a sell-side GTC trailing stop.
+    fn protect_order(symbol: &str) -> OrderRequest {
+        let mut o = order(symbol, "SELL");
+        o.order_type = "TRAILING_STOP".into();
+        o.validity = "GTC".into();
+        o.trail_percent = Some(5.0);
+        o
+    }
+
     fn leg(group: Option<&str>, role: LegRole, symbol: &str) -> StrategyLeg {
         StrategyLeg {
             group: group.map(String::from),
             cancel_order_id: if role == LegRole::Cancel { Some("abc123".to_string()) } else { None },
-            order: if role == LegRole::Cancel {
-                None
-            } else {
-                Some(order(symbol, if role == LegRole::Fund { "SELL" } else { "BUY" }))
+            order: match role {
+                LegRole::Cancel => None,
+                LegRole::Fund => Some(order(symbol, "SELL")),
+                LegRole::Protect => Some(protect_order(symbol)),
+                _ => Some(order(symbol, "BUY")),
             },
             role,
             symbol: symbol.to_string(),
@@ -1091,7 +1121,7 @@ mod plan_tests {
     #[test]
     fn protect_without_a_buy_needs_a_quantity() {
         let mut zero = leg(Some("p1"), LegRole::Protect, "PFE");
-        let mut o = order("PFE", "SELL");
+        let mut o = protect_order("PFE");
         o.quantity = 0.0;
         zero.order = Some(o);
         assert!(matches!(plan_groups(vec![zero]), Err(AppError::Validation(_))));
@@ -1101,7 +1131,7 @@ mod plan_tests {
 
         // With a buy present, the protect's own quantity is not required.
         let mut sized_by_buy = leg(Some("r1"), LegRole::Protect, "BAC");
-        let mut o = order("BAC", "SELL");
+        let mut o = protect_order("BAC");
         o.quantity = 0.0;
         sized_by_buy.order = Some(o);
         let legs = vec![leg(Some("r1"), LegRole::Buy, "BAC"), sized_by_buy];
@@ -1135,6 +1165,34 @@ mod plan_tests {
     fn protect_message_reflects_the_placed_order() {
         assert_eq!(protect_success_message("BAC", "TRAILING_STOP", "GTC"), "BAC trailing stop placed (GTC)");
         assert_eq!(protect_success_message("BAC", "SL-M", "DAY"), "BAC stop placed (DAY)");
+    }
+
+    #[test]
+    fn protect_must_be_a_sell_side_stop() {
+        let mut buy_side = leg(Some("p1"), LegRole::Protect, "PFE");
+        buy_side.order.as_mut().unwrap().side = "BUY".into();
+        match plan_groups(vec![buy_side]) {
+            Err(AppError::Validation(msg)) => {
+                assert_eq!(msg, "protect leg for PFE in group p1 must be a SELL order, not BUY")
+            }
+            other => panic!("expected validation error, got {:?}", other.map(|g| g.len())),
+        }
+
+        let mut market = leg(Some("p1"), LegRole::Protect, "PFE");
+        market.order.as_mut().unwrap().order_type = "MARKET".into();
+        match plan_groups(vec![market]) {
+            Err(AppError::Validation(msg)) => assert_eq!(
+                msg,
+                "protect leg for PFE in group p1 must be a TRAILING_STOP, SL or SL-M order, not MARKET"
+            ),
+            other => panic!("expected validation error, got {:?}", other.map(|g| g.len())),
+        }
+
+        for order_type in ["TRAILING_STOP", "SL", "SL-M"] {
+            let mut stop = leg(Some("p1"), LegRole::Protect, "PFE");
+            stop.order.as_mut().unwrap().order_type = order_type.into();
+            assert!(plan_groups(vec![stop]).is_ok(), "{} should be accepted", order_type);
+        }
     }
 
     #[test]

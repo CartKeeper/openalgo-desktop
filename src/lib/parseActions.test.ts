@@ -102,4 +102,19 @@ describe('parseActionsFromMarkdown strategy fields', () => {
     expect(rec.validity).toBe('GTC')
     expect(rec.role).toBeUndefined()
   })
+
+  it('always emits a protect as a SELL', () => {
+    const [rec] = parseActionsFromMarkdown(block([{ ...protectItem, side: 'BUY' }]), 'briefing')
+    expect(rec.role).toBe('protect')
+    expect(rec.side).toBe('SELL')
+  })
+
+  it('skips a protect that is not a TRAILING_STOP, SL or SL-M order', () => {
+    const market = { ...protectItem, symbol: 'KO', orderType: 'MARKET' }
+    const limit = { ...protectItem, symbol: 'T', orderType: 'LIMIT', price: 20 }
+    const untyped = { ...protectItem, symbol: 'F', orderType: undefined }
+    const slm = { ...protectItem, symbol: 'PFE', orderType: 'SL-M', triggerPrice: 25, trailPercent: undefined }
+    const recs = parseActionsFromMarkdown(block([market, limit, untyped, protectItem, slm]), 'briefing')
+    expect(recs.map((r) => `${r.symbol}:${r.orderType}`)).toEqual(['BAC:TRAILING_STOP', 'PFE:SL-M'])
+  })
 })

@@ -2,6 +2,9 @@ import type { OrderRecommendation, StrategyRole } from '@/types/actionQueue'
 
 const STRATEGY_ROLES: readonly StrategyRole[] = ['cancel', 'fund', 'buy', 'protect', 'standalone']
 
+/** A `protect` leg is a sell-side stop of one of these types; anything else is skipped. */
+const PROTECT_ORDER_TYPES: ReadonlySet<string> = new Set(['TRAILING_STOP', 'SL', 'SL-M'])
+
 const ACTIONS_REGEX = /<!--\s*ACTIONS_JSON\s*\n([\s\S]*?)\n\s*-->/g
 
 /**
@@ -77,6 +80,7 @@ export function parseActionsFromMarkdown(
         }
 
         const orderType = item.orderType || 'MARKET'
+        if (role === 'protect' && !PROTECT_ORDER_TYPES.has(orderType)) continue
         // Trailing stops only make sense as GTC; otherwise honor an explicit GTC, else DAY.
         const validity = orderType === 'TRAILING_STOP' || item.validity === 'GTC' ? 'GTC' : 'DAY'
 
@@ -85,7 +89,8 @@ export function parseActionsFromMarkdown(
             id: crypto.randomUUID(),
             symbol: String(item.symbol).toUpperCase(),
             exchange: item.exchange || 'US',
-            side: item.side === 'SELL' ? 'SELL' : 'BUY',
+            // A protect always protects a held (or just-bought) long, so it always sells.
+            side: role === 'protect' || item.side === 'SELL' ? 'SELL' : 'BUY',
             quantity: isCancel ? 0 : Math.max(1, Math.floor(Number(item.quantity) || 1)),
             orderType,
             product: item.product || 'CNC',
