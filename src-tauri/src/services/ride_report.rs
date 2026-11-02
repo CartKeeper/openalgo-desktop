@@ -193,6 +193,8 @@ pub struct RidePosition {
     pub target_source: Option<String>,
     pub status: RideStatus,
     pub protected: bool,
+    /// False when the open-orders read failed: `protected`/`working_sells` are then not evidence of anything.
+    pub protection_known: bool,
     pub working_sells: Vec<ExistingStop>,
     pub proposed_trail_pct: f64,
     pub trail_reason: TrailReason,
@@ -405,6 +407,8 @@ struct ReportContext<'a> {
     paper_mode: bool,
     today: NaiveDate,
     open_orders: Vec<Order>,
+    /// False when the open-orders read failed, so an empty list proves nothing.
+    open_orders_known: bool,
     fmp: Option<FmpClient>,
     yahoo: YahooClient,
     /// Fill history, fetched at most once and only if some position needs it.
@@ -551,6 +555,7 @@ impl ReportContext<'_> {
             target_source: target.as_ref().map(|t| t.source.to_string()),
             status,
             protected,
+            protection_known: self.open_orders_known,
             working_sells,
             proposed_trail_pct,
             trail_reason,
@@ -571,9 +576,9 @@ pub async fn build_ride_report(state: &AppState) -> RideReport {
     let now = Utc::now().with_timezone(&New_York);
 
     let open_orders_fetched = OrderbookService::get_open_orders(state, None).await;
-    let open_orders = ok_or_warn("open orders", "account", open_orders_fetched)
-        .map(|r| r.orders)
-        .unwrap_or_default();
+    let open_orders_result = ok_or_warn("open orders", "account", open_orders_fetched);
+    let open_orders_known = open_orders_result.is_some();
+    let open_orders = open_orders_result.map(|r| r.orders).unwrap_or_default();
     let fmp = ok_or_warn("FMP client", "account", CopilotService::get_fmp_client(state));
 
     let mut ctx = ReportContext {
@@ -581,6 +586,7 @@ pub async fn build_ride_report(state: &AppState) -> RideReport {
         paper_mode,
         today: now.date_naive(),
         open_orders,
+        open_orders_known,
         fmp,
         yahoo: YahooClient::new((*state.http_client).clone()),
         fills: None,
@@ -650,7 +656,9 @@ fn target_cell(p: &RidePosition) -> String {
 }
 
 fn protection_cell(p: &RidePosition) -> String {
-    let mut cell = if p.protected {
+    let mut cell = if !p.protection_known {
+        "unknown (open orders could not be read; do not propose or cancel stops)".to_string()
+    } else if p.protected {
         let stop = p
             .working_sells
             .iter()
@@ -900,6 +908,7 @@ mod render_tests {
             target_source: Some("fmp_consensus".to_string()),
             status: RideStatus::Climbing,
             protected: false,
+            protection_known: true,
             working_sells: vec![],
             proposed_trail_pct: 4.5,
             trail_reason: TrailReason::TwoTimesSwing,
@@ -939,6 +948,18 @@ mod render_tests {
         q.age_trading_days = None;
         let out = render_for_prompt(&report(vec![q], true));
         assert!(out.contains("paper mode: no fill history"), "{out}");
+    }
+
+    #[test]
+    fn render_marks_protection_unknown() {
+        let mut p = position();
+        p.protection_known = false;
+        let out = render_for_prompt(&report(vec![p], false));
+        assert!(
+            out.contains("unknown (open orders could not be read; do not propose or cancel stops)"),
+            "{out}"
+        );
+        assert!(!out.contains("not protected"), "{out}");
     }
 
     #[test]
