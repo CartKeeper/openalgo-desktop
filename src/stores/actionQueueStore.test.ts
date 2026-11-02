@@ -67,19 +67,33 @@ describe('actionQueueStore removeItem cascades', () => {
     await vi.waitFor(() => expect(useActionQueueStore.getState().fundsNotice).toBe('reconciled'))
   })
 
-  it('removing a protect records a dismissal with its current quantity', () => {
+  it("removing a held position's protect records a dismissal with its current quantity", () => {
+    useActionQueueStore.setState({
+      items: [
+        ...rotation(),
+        rec({ id: 'p9', symbol: 'NVDA', side: 'SELL', orderType: 'TRAILING_STOP', group: 'g9', role: 'protect' }),
+      ],
+    })
+    useActionQueueStore.getState().updateItem('p9', { quantity: 7 })
+    useActionQueueStore.getState().removeItem('p9')
+    expect(ids()).toEqual(['c1', 'f1', 'b1', 'p1'])
+    expect(dismissal).toHaveBeenCalledTimes(1)
+    expect(dismissal).toHaveBeenCalledWith('NVDA', 7)
+  })
+
+  it("removing a rotation's protect records no dismissal", () => {
     useActionQueueStore.setState({ items: rotation() })
-    useActionQueueStore.getState().updateItem('p1', { quantity: 7 })
     useActionQueueStore.getState().removeItem('p1')
     expect(ids()).toEqual(['c1', 'f1', 'b1'])
-    expect(dismissal).toHaveBeenCalledTimes(1)
-    expect(dismissal).toHaveBeenCalledWith('BAC', 7)
+    expect(dismissal).not.toHaveBeenCalled()
   })
 
   it('swallows a rejected dismissal', async () => {
     dismissal.mockRejectedValue(new Error('boom'))
-    useActionQueueStore.setState({ items: rotation() })
-    expect(() => useActionQueueStore.getState().removeItem('p1')).not.toThrow()
+    useActionQueueStore.setState({
+      items: [rec({ id: 'p9', symbol: 'NVDA', side: 'SELL', orderType: 'TRAILING_STOP', group: 'g9', role: 'protect' })],
+    })
+    expect(() => useActionQueueStore.getState().removeItem('p9')).not.toThrow()
     await vi.waitFor(() => expect(dismissal).toHaveBeenCalled())
   })
 

@@ -3,16 +3,17 @@
 use crate::error::Result;
 use rusqlite::{Connection, OptionalExtension};
 
-/// Cached entry date for a symbol+quantity lot, if computed
-pub fn get_ride_entry(conn: &Connection, symbol: &str, quantity: f64) -> Result<Option<String>> {
-    let entered_at = conn
+/// Cached entry date for a symbol+quantity lot, if computed, with when it was
+/// computed: `(entered_at, computed_at)`, `computed_at` as SQLite UTC
+pub fn get_ride_entry(conn: &Connection, symbol: &str, quantity: f64) -> Result<Option<(String, String)>> {
+    let entry = conn
         .query_row(
-            "SELECT entered_at FROM ride_entries WHERE symbol = ?1 AND quantity = ?2",
+            "SELECT entered_at, computed_at FROM ride_entries WHERE symbol = ?1 AND quantity = ?2",
             rusqlite::params![symbol, quantity],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    Ok(entered_at)
+    Ok(entry)
 }
 
 /// Store or refresh the entry date for a symbol+quantity lot
@@ -64,7 +65,10 @@ mod tests {
     fn ride_entry_roundtrip_keyed_by_symbol_and_qty() {
         let conn = setup();
         upsert_ride_entry(&conn, "PFE", 11.0, "2026-01-05").unwrap();
-        assert_eq!(get_ride_entry(&conn, "PFE", 11.0).unwrap(), Some("2026-01-05".to_string()));
+        let (entered_at, computed_at) = get_ride_entry(&conn, "PFE", 11.0).unwrap().unwrap();
+        assert_eq!(entered_at, "2026-01-05");
+        // SQLite datetime('now'): `YYYY-MM-DD HH:MM:SS`, UTC.
+        assert!(chrono::NaiveDateTime::parse_from_str(&computed_at, "%Y-%m-%d %H:%M:%S").is_ok());
         assert_eq!(get_ride_entry(&conn, "PFE", 12.0).unwrap(), None);
     }
 

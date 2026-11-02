@@ -932,8 +932,8 @@ impl SqliteDb {
         portfolio::export_positions(&conn)
     }
 
-    /// Ride entry date for a symbol+quantity lot (Task 5 wires this)
-    pub fn get_ride_entry(&self, symbol: &str, quantity: f64) -> Result<Option<String>> {
+    /// Ride entry date for a symbol+quantity lot with when it was computed: `(entered_at, computed_at)`
+    pub fn get_ride_entry(&self, symbol: &str, quantity: f64) -> Result<Option<(String, String)>> {
         let conn = self.conn.lock();
         ride::get_ride_entry(&conn, symbol, quantity)
     }

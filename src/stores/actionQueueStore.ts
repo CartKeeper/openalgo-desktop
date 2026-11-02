@@ -119,12 +119,16 @@ export const useActionQueueStore = create<ActionQueueStore>()((set, get) => ({
     })),
 
   removeItem: (id) => {
-    const { remaining, removed, protectRemovedDirectly } = cascadeRemoval(get().items, id)
+    const items = get().items
+    const { remaining, removed, protectRemovedDirectly } = cascadeRemoval(items, id)
     if (!removed) return
     const token = ++removalToken
     set({ items: remaining })
 
-    if (protectRemovedDirectly) {
+    // Only a held position's protection is remembered as declined. A rotation's protect
+    // (its group has a buy) protects shares not bought yet, so nothing is recorded.
+    const protectsHeldPosition = !items.some((item) => item.role === 'buy' && sameGroup(item, removed))
+    if (protectRemovedDirectly && protectsHeldPosition) {
       // Fire-and-forget: remember the user declined this protection. Errors are swallowed.
       void Promise.resolve(rideCommands.recordProtectionDismissal(removed.symbol, removed.quantity)).catch(
         () => undefined,

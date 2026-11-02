@@ -147,6 +147,41 @@ pub fn entry_date_from_fills(
     None
 }
 
+/// A UTC instant from an ISO timestamp or a zone-less SQLite value (`YYYY-MM-DD HH:MM:SS`, UTC).
+fn parse_utc_instant(ts: &str) -> Option<DateTime<Utc>> {
+    if let Ok(dt) = DateTime::parse_from_rfc3339(ts) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S").ok().map(|naive| naive.and_utc())
+}
+
+/// A cached entry date is stale when the symbol has a fill newer than the cache row
+/// (`computed_at`, SQLite UTC): the holding run may have changed since. No fill: fresh.
+/// Either side unparsable: stale, so the date is recomputed from fills.
+pub fn ride_entry_is_stale(computed_at: &str, newest_fill_at: Option<&str>) -> bool {
+    let Some(fill_at) = newest_fill_at else {
+        return false;
+    };
+    match (parse_utc_instant(computed_at), parse_utc_instant(fill_at)) {
+        (Some(computed), Some(fill)) => fill > computed,
+        _ => true,
+    }
+}
+
+/// A dismissal (SQLite UTC) applies only to the ride it was made on: when the ride's
+/// entry date (New York) is known, the dismissal must fall on or after it. A re-bought
+/// ride is a new ride.
+pub fn dismissal_applies(dismissed_at: &str, entered_at: Option<&str>) -> bool {
+    let Some(entered) = entered_at else {
+        return true;
+    };
+    let entered_day = entered.get(..10).unwrap_or(entered);
+    match ny_date_of_timestamp(dismissed_at) {
+        Some(dismissed_day) => dismissed_day.as_str() >= entered_day,
+        None => false,
+    }
+}
+
 /// Sessions strictly after `from_date` and up to and including `to_date`.
 pub fn count_trading_days(sessions: &[String], from_date: &str, to_date: &str) -> u32 {
     let day = |s: &str| s.get(..10).unwrap_or(s).to_string();
@@ -482,6 +517,8 @@ struct ReportContext<'a> {
     yahoo: YahooClient,
     /// Fill history, fetched at most once and only if some position needs it.
     fills: Option<Vec<AccountActivity>>,
+    /// Newest page of fills, fetched at most once, to check cached entry dates.
+    recent_fills: Option<Vec<AccountActivity>>,
 }
 
 impl ReportContext<'_> {
@@ -492,6 +529,21 @@ impl ReportContext<'_> {
             self.fills = Some(all.into_iter().filter(|a| a.activity_type == "FILL").collect());
         }
         self.fills.as_deref().unwrap_or(&[])
+    }
+
+    /// Timestamp of the symbol's newest fill on the first page of fill history.
+    async fn newest_fill_at(&mut self, symbol: &str) -> Option<String> {
+        if self.recent_fills.is_none() {
+            let fetched = ActivitiesService::get_fills(self.state, None, 1).await;
+            let page = ok_or_warn("recent fills", "account", fetched).unwrap_or_default();
+            self.recent_fills = Some(page.into_iter().filter(|a| a.activity_type == "FILL").collect());
+        }
+        self.recent_fills
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .find(|f| f.symbol.as_deref().map_or(false, |s| s.eq_ignore_ascii_case(symbol)))
+            .and_then(|f| f.date.clone())
     }
 
     /// Daily closes, ascending. FMP first, Yahoo when FMP fails or returns nothing.
@@ -506,14 +558,19 @@ impl ReportContext<'_> {
         load_target(self.fmp.as_ref(), &self.yahoo, symbol, self.today).await
     }
 
-    /// Date the current holding run began: cache, then fill history. Manual positions use `added_at`.
+    /// Date the current holding run began: cache (unless a newer fill makes it stale), then
+    /// fill history. Manual positions use `added_at`.
     async fn entry_date(&mut self, held: &HeldPosition) -> Option<String> {
         if let Some(added) = &held.added_at {
             return ny_date_of_timestamp(added);
         }
         let cached = self.state.sqlite.get_ride_entry(&held.symbol, held.quantity);
-        if let Some(date) = ok_or_warn("entry-date cache read", &held.symbol, cached).flatten() {
-            return Some(date);
+        if let Some((date, computed_at)) = ok_or_warn("entry-date cache read", &held.symbol, cached).flatten() {
+            let newest_fill_at = self.newest_fill_at(&held.symbol).await;
+            if !ride_entry_is_stale(&computed_at, newest_fill_at.as_deref()) {
+                return Some(date);
+            }
+            info!("ride report: cached entry date for {} predates its newest fill; recomputing", held.symbol);
         }
         let from_fills = entry_date_from_fills(self.fills().await, &held.symbol, held.quantity);
         let date = ny_date_of_timestamp(&from_fills?)?;
@@ -575,6 +632,7 @@ impl ReportContext<'_> {
         let dismissed = self.state.sqlite.is_protection_dismissed(&symbol, held.quantity);
         let protection_dismissed_at = ok_or_warn("dismissal lookup", &symbol, dismissed)
             .flatten()
+            .filter(|ts| dismissal_applies(ts, entered_at.as_deref()))
             .map(|ts| ny_date_of_sqlite_utc(&ts));
 
         let pnl_pct = if price > 0.0 && held.avg_cost > 0.0 {
@@ -634,6 +692,7 @@ pub async fn build_ride_report(state: &AppState) -> RideReport {
         fmp,
         yahoo: YahooClient::new((*state.http_client).clone()),
         fills: None,
+        recent_fills: None,
     };
 
     let mut positions = Vec::new();
@@ -915,6 +974,34 @@ mod rules_tests {
             entry_date_from_fills(&fills, "PFE", 4.0).as_deref(),
             Some("2026-10-20T14:30:00.123Z")
         );
+    }
+
+    #[test]
+    fn ride_entry_is_stale_when_a_fill_is_newer_than_the_cache_row() {
+        // computed_at is SQLite UTC; fills are ISO timestamps.
+        assert!(ride_entry_is_stale("2026-10-20 14:00:00", Some("2026-10-27T15:31:02.123Z")));
+        assert!(ride_entry_is_stale("2026-10-20 14:00:00", Some("2026-10-20T10:30:00-04:00"))); // 14:30 UTC
+        assert!(!ride_entry_is_stale("2026-10-20 14:00:00", Some("2026-10-20T09:30:00-04:00"))); // 13:30 UTC
+        assert!(!ride_entry_is_stale("2026-10-20 14:00:00", Some("2026-01-05T15:00:00Z")));
+        assert!(!ride_entry_is_stale("2026-10-20 14:00:00", None));
+        // Unparsable on either side: recompute.
+        assert!(ride_entry_is_stale("garbage", Some("2026-01-05T15:00:00Z")));
+        assert!(ride_entry_is_stale("2026-10-20 14:00:00", Some("not a time")));
+    }
+
+    #[test]
+    fn dismissal_applies_only_to_the_current_ride() {
+        // Dismissed (SQLite UTC) on or after the ride's entry date (New York): applies.
+        assert!(dismissal_applies("2026-10-28 15:00:00", Some("2026-10-27")));
+        assert!(dismissal_applies("2026-10-27 15:00:00", Some("2026-10-27")));
+        // Dismissed before a re-bought ride began: a new ride, the dismissal is void.
+        assert!(!dismissal_applies("2026-01-10 15:00:00", Some("2026-10-27")));
+        // 1 AM UTC on Oct 27 is still Oct 26 in New York.
+        assert!(!dismissal_applies("2026-10-27 01:00:00", Some("2026-10-27")));
+        // Entry date unknown: the dismissal stands.
+        assert!(dismissal_applies("2026-01-10 15:00:00", None));
+        // Unreadable dismissal time with a known entry: cannot show it is for this ride.
+        assert!(!dismissal_applies("garbage", Some("2026-10-27")));
     }
 
     #[test]
