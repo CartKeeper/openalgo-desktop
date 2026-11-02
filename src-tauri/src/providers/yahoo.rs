@@ -9,6 +9,7 @@ use reqwest::Client;
 
 const YAHOO_SEARCH_URL: &str = "https://query2.finance.yahoo.com/v1/finance/search";
 const YAHOO_CHART_URL: &str = "https://query2.finance.yahoo.com/v8/finance/chart";
+const YAHOO_QUOTE_SUMMARY_URL: &str = "https://query2.finance.yahoo.com/v10/finance/quoteSummary";
 
 /// Yahoo Finance API client
 pub struct YahooClient {
@@ -194,5 +195,25 @@ impl YahooClient {
         }
 
         Ok(bars)
+    }
+
+    /// Best-effort analyst target mean and analyst count. Returns `None` on any
+    /// HTTP error, non-2xx status, parse failure, or missing field.
+    pub async fn get_target_mean(&self, symbol: &str) -> Option<(f64, i32)> {
+        let url = format!("{}/{}?modules=financialData", YAHOO_QUOTE_SUMMARY_URL, symbol);
+        let resp = self.client
+            .get(&url)
+            .header("User-Agent", "Mozilla/5.0")
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let body: serde_json::Value = resp.json().await.ok()?;
+        let fd = &body["quoteSummary"]["result"][0]["financialData"];
+        let mean = fd["targetMeanPrice"]["raw"].as_f64()?;
+        let count = fd["numberOfAnalystOpinions"]["raw"].as_i64()?;
+        Some((mean, count as i32))
     }
 }

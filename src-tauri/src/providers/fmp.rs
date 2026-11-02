@@ -162,24 +162,47 @@ impl FmpClient {
         }).collect())
     }
 
-    /// Get price targets
+    /// Get recent analyst price targets (one record per analyst note)
     pub async fn get_price_targets(&self, symbol: &str) -> Result<Vec<PriceTarget>, ProviderError> {
         let url = format!(
-            "{}/price-target?symbol={}&apikey={}",
+            "{}/price-target-news?symbol={}&limit=50&apikey={}",
             FMP_BASE_URL, symbol, self.api_key
         );
         let resp = self.fetch_fmp_json(&url).await?;
 
-        Ok(resp.iter().map(|item| PriceTarget {
-            symbol: item["symbol"].as_str().unwrap_or(symbol).to_string(),
-            published_date: item["publishedDate"].as_str().map(String::from),
-            analyst_name: item["analystName"].as_str().map(String::from),
-            analyst_company: item["analystCompany"].as_str().map(String::from),
-            price_target: item["priceTarget"].as_f64(),
-            adj_price_target: item["adjPriceTarget"].as_f64(),
-            price_when_posted: item["priceWhenPosted"].as_f64(),
-            news_title: item["newsTitle"].as_str().map(String::from),
-        }).collect())
+        Ok(resp.iter().map(|item| map_price_target_news(item, symbol)).collect())
+    }
+
+    /// Get the analyst price-target consensus (high / low / consensus / median)
+    pub async fn get_price_target_consensus(&self, symbol: &str) -> Result<Option<PriceTargetConsensus>, ProviderError> {
+        let url = format!(
+            "{}/price-target-consensus?symbol={}&apikey={}",
+            FMP_BASE_URL, symbol, self.api_key
+        );
+        let resp = self.fetch_fmp_json(&url).await?;
+        Ok(resp.first().map(map_consensus))
+    }
+
+    /// Get the analyst price-target summary (counts and average targets by period)
+    pub async fn get_price_target_summary(&self, symbol: &str) -> Result<Option<PriceTargetSummary>, ProviderError> {
+        let url = format!(
+            "{}/price-target-summary?symbol={}&apikey={}",
+            FMP_BASE_URL, symbol, self.api_key
+        );
+        let resp = self.fetch_fmp_json(&url).await?;
+        Ok(resp.first().map(map_summary))
+    }
+
+    /// Get daily closes between `from` and `to` (YYYY-MM-DD), sorted ascending by date
+    pub async fn get_daily_closes(&self, symbol: &str, from: &str, to: &str) -> Result<Vec<DailyClose>, ProviderError> {
+        let url = format!(
+            "{}/historical-price-eod/light?symbol={}&from={}&to={}&apikey={}",
+            FMP_BASE_URL, symbol, from, to, self.api_key
+        );
+        let resp = self.fetch_fmp_json(&url).await?;
+        let mut closes: Vec<DailyClose> = resp.iter().filter_map(map_daily_close).collect();
+        closes.sort_by(|a, b| a.date.cmp(&b.date));
+        Ok(closes)
     }
 
     /// Get economic calendar
@@ -799,5 +822,81 @@ impl FmpClient {
         }
 
         Ok(results)
+    }
+}
+
+fn map_price_target_news(v: &serde_json::Value, symbol: &str) -> PriceTarget {
+    PriceTarget {
+        symbol: v["symbol"].as_str().unwrap_or(symbol).to_string(),
+        published_date: v["publishedDate"].as_str().map(String::from),
+        analyst_name: v["analystName"].as_str().map(String::from),
+        analyst_company: v["analystCompany"].as_str().map(String::from),
+        price_target: v["priceTarget"].as_f64(),
+        adj_price_target: v["adjPriceTarget"].as_f64(),
+        price_when_posted: v["priceWhenPosted"].as_f64(),
+        news_title: v["newsTitle"].as_str().map(String::from),
+    }
+}
+
+fn map_consensus(v: &serde_json::Value) -> PriceTargetConsensus {
+    PriceTargetConsensus {
+        symbol: v["symbol"].as_str().unwrap_or("").to_string(),
+        target_high: v["targetHigh"].as_f64(),
+        target_low: v["targetLow"].as_f64(),
+        target_consensus: v["targetConsensus"].as_f64(),
+        target_median: v["targetMedian"].as_f64(),
+    }
+}
+
+fn map_summary(v: &serde_json::Value) -> PriceTargetSummary {
+    PriceTargetSummary {
+        symbol: v["symbol"].as_str().unwrap_or("").to_string(),
+        last_month_count: v["lastMonthCount"].as_i64().map(|n| n as i32),
+        last_quarter_count: v["lastQuarterCount"].as_i64().map(|n| n as i32),
+        last_quarter_avg_price_target: v["lastQuarterAvgPriceTarget"].as_f64(),
+        last_year_count: v["lastYearCount"].as_i64().map(|n| n as i32),
+        all_time_count: v["allTimeCount"].as_i64().map(|n| n as i32),
+    }
+}
+
+/// Returns `None` when the date is missing or the price is missing / not positive.
+fn map_daily_close(v: &serde_json::Value) -> Option<DailyClose> {
+    let close = v["price"].as_f64().filter(|p| *p > 0.0)?;
+    let date = v["date"].as_str()?.to_string();
+    Some(DailyClose { date, close, volume: v["volume"].as_i64() })
+}
+
+#[cfg(test)]
+mod target_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn maps_consensus_payload() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"symbol":"PFE","targetHigh":33,"targetLow":26,"targetConsensus":29.17,"targetMedian":29}"#).unwrap();
+        let c = map_consensus(&v);
+        assert_eq!(c.target_consensus, Some(29.17));
+        assert_eq!(c.target_high, Some(33.0));
+    }
+
+    #[test]
+    fn maps_summary_payload() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"symbol":"PFE","lastMonthCount":2,"lastMonthAvgPriceTarget":30.5,"lastQuarterCount":4,"lastQuarterAvgPriceTarget":30.5,"lastYearCount":19,"lastYearAvgPriceTarget":27.95,"allTimeCount":64,"allTimeAvgPriceTarget":40.98}"#).unwrap();
+        assert_eq!(map_summary(&v).last_quarter_count, Some(4));
+    }
+
+    #[test]
+    fn maps_daily_close_and_skips_zero_price() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"symbol":"PFE","date":"2026-10-30","price":30.52,"volume":45485398}"#).unwrap();
+        assert_eq!(map_daily_close(&v).unwrap().close, 30.52);
+        let z: serde_json::Value = serde_json::from_str(r#"{"symbol":"PFE","date":"2026-10-31","price":0}"#).unwrap();
+        assert!(map_daily_close(&z).is_none());
+    }
+
+    #[test]
+    fn price_target_news_record_maps_to_price_target() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"symbol":"PFE","publishedDate":"2026-10-08T11:17:00.000Z","analystName":"Jane","analystCompany":"Cantor","priceTarget":28,"adjPriceTarget":28,"priceWhenPosted":24.9,"newsTitle":"PT Raised","newsURL":"u","newsPublisher":"StreetInsider","newsBaseURL":"streetinsider.com"}"#).unwrap();
+        let t = map_price_target_news(&v, "PFE");
+        assert_eq!(t.price_target, Some(28.0));
+        assert_eq!(t.analyst_company.as_deref(), Some("Cantor"));
     }
 }

@@ -139,6 +139,35 @@ pub struct PriceTarget {
     pub news_title: Option<String>,
 }
 
+/// Analyst price-target consensus
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PriceTargetConsensus {
+    pub symbol: String,
+    pub target_high: Option<f64>,
+    pub target_low: Option<f64>,
+    pub target_consensus: Option<f64>,
+    pub target_median: Option<f64>,
+}
+
+/// Analyst price-target summary by period
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PriceTargetSummary {
+    pub symbol: String,
+    pub last_month_count: Option<i32>,
+    pub last_quarter_count: Option<i32>,
+    pub last_quarter_avg_price_target: Option<f64>,
+    pub last_year_count: Option<i32>,
+    pub all_time_count: Option<i32>,
+}
+
+/// One daily closing price
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyClose {
+    pub date: String,
+    pub close: f64,
+    pub volume: Option<i64>,
+}
+
 /// Economic calendar event
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EconomicEvent {
