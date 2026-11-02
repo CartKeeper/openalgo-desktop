@@ -260,6 +260,10 @@ fn ny_date_of_timestamp(ts: &str) -> Option<String> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(ts) {
         return Some(dt.with_timezone(&New_York).format("%Y-%m-%d").to_string());
     }
+    // Zone-less SQLite values (`YYYY-MM-DD HH:MM:SS`) are UTC.
+    if let Ok(naive) = NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S") {
+        return Some(naive.and_utc().with_timezone(&New_York).format("%Y-%m-%d").to_string());
+    }
     let day = ts.get(..10)?;
     NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?;
     Some(day.to_string())
@@ -455,7 +459,11 @@ impl ReportContext<'_> {
                 recent = recent_target_prices(&individual, self.today);
             }
         }
-        if let Some(pick) = pick_target(consensus, summary_count, &recent, None) {
+        if let Some(mut pick) = pick_target(consensus, summary_count, &recent, None) {
+            if pick.count.is_none() {
+                // Both FMP counts are missing: Yahoo is consulted for the count only.
+                pick.count = self.yahoo.get_target_mean(symbol).await.map(|(_, n)| n);
+            }
             return Some(pick);
         }
         let yahoo = self.yahoo.get_target_mean(symbol).await;
@@ -655,30 +663,42 @@ fn target_cell(p: &RidePosition) -> String {
     }
 }
 
+fn working_sell_text(s: &ExistingStop) -> String {
+    format!("{} ({} x{})", s.order_id, s.order_type, fmt_qty(s.quantity))
+}
+
 fn protection_cell(p: &RidePosition) -> String {
     let mut cell = if !p.protection_known {
         "unknown (open orders could not be read; do not propose or cancel stops)".to_string()
     } else if p.protected {
-        let stop = p
-            .working_sells
-            .iter()
-            .find(|s| s.order_type == "TRAILING_STOP" && (s.quantity - p.quantity).abs() < 1e-9);
+        let stop = p.working_sells.iter().find(|s| {
+            s.order_type == "TRAILING_STOP" && (s.quantity - p.quantity).abs() < 1e-9
+        });
         match stop {
-            Some(s) => format!(
-                "protected (trailing {}% GTC, id {})",
-                s.trail_percent.map_or_else(|| "?".to_string(), |t| format!("{:.1}", t)),
-                s.order_id
-            ),
+            Some(s) => {
+                let mut text = format!(
+                    "protected (trailing {}% {}, id {})",
+                    s.trail_percent.map_or_else(|| "?".to_string(), |t| format!("{:.1}", t)),
+                    s.validity,
+                    s.order_id
+                );
+                let others: Vec<String> = p
+                    .working_sells
+                    .iter()
+                    .filter(|o| o.order_id != s.order_id)
+                    .map(working_sell_text)
+                    .collect();
+                if !others.is_empty() {
+                    text.push_str(&format!("; also working: {}", others.join(", ")));
+                }
+                text
+            }
             None => "protected".to_string(),
         }
     } else if p.working_sells.is_empty() {
         "none".to_string()
     } else {
-        let list: Vec<String> = p
-            .working_sells
-            .iter()
-            .map(|s| format!("{} ({} x{})", s.order_id, s.order_type, fmt_qty(s.quantity)))
-            .collect();
+        let list: Vec<String> = p.working_sells.iter().map(working_sell_text).collect();
         format!("not protected — working sells to cancel first: {}", list.join(", "))
     };
     if let Some(d) = &p.protection_dismissed_at {
@@ -963,6 +983,29 @@ mod render_tests {
     }
 
     #[test]
+    fn render_protected_shows_validity_and_other_working_sells() {
+        let stop = |id: &str, order_type: &str, validity: &str| ExistingStop {
+            order_id: id.to_string(),
+            order_type: order_type.to_string(),
+            quantity: 4.0,
+            validity: validity.to_string(),
+            trail_percent: Some(4.5),
+            trigger_price: 0.0,
+        };
+        let mut p = position();
+        p.protected = true;
+        p.working_sells = vec![stop("T1", "TRAILING_STOP", "DAY"), stop("S2", "SL-M", "DAY")];
+        let out = render_for_prompt(&report(vec![p.clone()], false));
+        assert!(out.contains("protected (trailing 4.5% DAY, id T1); also working: S2 (SL-M x4)"), "{out}");
+        assert!(!out.contains("GTC"), "{out}");
+
+        p.working_sells = vec![stop("T1", "TRAILING_STOP", "GTC")];
+        let out = render_for_prompt(&report(vec![p], false));
+        assert!(out.contains("protected (trailing 4.5% GTC, id T1)"), "{out}");
+        assert!(!out.contains("also working"), "{out}");
+    }
+
+    #[test]
     fn render_trail_reason_copy() {
         let mut p = position();
         p.trail_reason = TrailReason::ThreeTimesSwingHighUpside;
@@ -989,6 +1032,9 @@ mod builder_tests {
         let yahoo = pick_target(None, None, &[30.0], Some((50.0, 9))).unwrap();
         assert_eq!((yahoo.source, yahoo.consensus), ("yahoo", 50.0));
 
+        // No FMP count of either kind: count stays None so the caller asks Yahoo for it.
+        assert_eq!(pick_target(Some(37.0), None, &[], None).unwrap().count, None);
+
         assert_eq!(pick_target(None, None, &[], None), None);
     }
 
@@ -998,6 +1044,9 @@ mod builder_tests {
         assert_eq!(ny_date_of_timestamp("2026-10-21T00:00:00Z").as_deref(), Some("2026-10-20"));
         assert_eq!(ny_date_of_timestamp("2026-10-20").as_deref(), Some("2026-10-20"));
         assert_eq!(ny_date_of_timestamp("garbage"), None);
+        // Manual `added_at` is a zone-less UTC SQLite value.
+        assert_eq!(ny_date_of_timestamp("2026-11-02 23:30:00").as_deref(), Some("2026-11-02"));
+        assert_eq!(ny_date_of_timestamp("2026-11-03 02:30:00").as_deref(), Some("2026-11-02"));
         assert_eq!(ny_date_of_sqlite_utc("2026-11-02 02:30:00"), "2026-11-01");
     }
 
