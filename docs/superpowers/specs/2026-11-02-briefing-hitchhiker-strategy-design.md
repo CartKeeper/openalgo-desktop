@@ -116,7 +116,7 @@ Only **Dormant** feeds the Rotation section. The other statuses are labels for t
 |---|---|---|---|---|---|---|---|---|---|---|
 | PFE | 30.52 | 25.71 | +18.7% | +10.3% | 1.0% | 29.17 | −4.4% | 4 | Climbing | 3.0% |
 | ABT | 106.20 | 90.60 | +17.2% | +3.5% | 1.2% | 121.36 | +14.3% | 9 | Climbing | 3.0% |
-| NVDA | 204.64 | 199.91 | +2.4% | −7.9% | 1.5% | 339.17 | +65.7% | 25 | Pulling back | 4.4% |
+| NVDA | 204.64 | 199.91 | +2.4% | −7.9% | 1.5% | 339.17 | +65.7% | 25 | Pulling back | 4.5% |
 
 No position is dormant today by the approved definition. PFE is past its analyst consensus but still climbed 10% in 30 days, so it keeps its ride and its 3% trailing stop is the exit. NVDA's trail is widened to 3× its swing because consensus upside is above 15%.
 
