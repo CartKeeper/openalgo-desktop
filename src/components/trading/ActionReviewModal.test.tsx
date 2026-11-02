@@ -520,6 +520,38 @@ describe('ActionReviewModal', () => {
     expect(useActionQueueStore.getState().isReviewOpen).toBe(true)
   })
 
+  it('stops for re-review when the submit-time funds re-check changes a quantity', async () => {
+    const revalidated = rotation.map((item) => (item.id === 'b1' ? { ...item, quantity: 2 } : item))
+    mocks.reconcile.mockResolvedValueOnce({
+      items: revalidated,
+      availableCash: 40,
+      notice: 'Checked against your account: reduced BAC 5→2 to fit your available cash ($40.00).',
+    })
+    const user = userEvent.setup()
+    render(<ActionReviewModal />)
+
+    await acknowledge(user)
+    await waitFor(() => expect(placeButton()).toBeEnabled())
+    await user.click(placeButton())
+
+    await waitFor(() =>
+      expect(mocks.toast.warning).toHaveBeenCalledWith(
+        'Your spendable funds changed — quantities were adjusted to what the account can afford. Review and place again.'
+      )
+    )
+    expect(mocks.reconcile).toHaveBeenCalledTimes(1)
+    expect(mocks.placeStrategyBasket).not.toHaveBeenCalled()
+    expect(mocks.tradingPlaceBasketOrder).not.toHaveBeenCalled()
+    const state = useActionQueueStore.getState()
+    expect(state.items).toEqual(revalidated)
+    expect(state.fundsNotice).toBe(
+      'Checked against your account: reduced BAC 5→2 to fit your available cash ($40.00).'
+    )
+    expect(state.isSubmitting).toBe(false)
+    expect(state.isReviewOpen).toBe(true)
+    expect(await screen.findByText(/reduced BAC 5→2/)).toBeInTheDocument()
+  })
+
   it('shows the clock-read failure on the market-closed line and keeps Place disabled', async () => {
     mocks.getMarketClock.mockRejectedValue('broker unreachable')
     const user = userEvent.setup()

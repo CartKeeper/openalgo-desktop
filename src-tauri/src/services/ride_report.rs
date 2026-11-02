@@ -943,6 +943,8 @@ mod rules_tests {
         assert!(matches!(trail_percent(None, Some(50.0)), (3.0, TrailReason::UnknownSwingFloor)));
         assert!(matches!(trail_percent(Some(1.5), Some(65.7)).1, TrailReason::ThreeTimesSwingHighUpside));
         assert!(matches!(trail_percent(Some(2.1), Some(10.0)).1, TrailReason::TwoTimesSwing));
+        // Upside unknown: never widened, 2x swing.
+        assert!(matches!(trail_percent(Some(2.1), None), (t, TrailReason::TwoTimesSwing) if t == 4.2));
     }
 
     #[test]
