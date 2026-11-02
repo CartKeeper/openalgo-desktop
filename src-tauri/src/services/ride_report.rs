@@ -15,7 +15,7 @@ use crate::services::market_status_service::MarketStatusService;
 use crate::services::orderbook_service::OrderbookService;
 use crate::services::position_service::PositionService;
 use crate::state::AppState;
-use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, Utc, Weekday};
+use chrono::{DateTime, Datelike, Duration, Months, NaiveDate, NaiveDateTime, Utc, Weekday};
 use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -375,19 +375,40 @@ fn pick_target(
         .map(|(mean, n)| TargetPick { consensus: mean, count: count(Some(n)), source: "yahoo" })
 }
 
-/// Equity scoreboard: last point now, the point 5 sessions back for one week, 21 back for one month.
-fn scoreboard_from(timestamps: &[i64], equity: &[f64]) -> Option<Scoreboard> {
-    let now = *equity.last()?;
-    let len = equity.len();
-    let as_of = timestamps
-        .last()
-        .and_then(|t| DateTime::from_timestamp(*t, 0))
-        .map(|dt| dt.with_timezone(&New_York).format(NY_STAMP).to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+/// Equity scoreboard. "Now" is the live account equity when known (Alpaca's daily series never
+/// includes the current session), else the last non-zero point. The one-week and one-month marks
+/// are the last non-zero point dated on or before `today` minus 7 days / 1 month; `None` when the
+/// series does not reach back that far. `now_stamp` is the NY stamp of the present moment.
+fn scoreboard_from(
+    now_equity: Option<f64>,
+    today: NaiveDate,
+    now_stamp: &str,
+    timestamps: &[i64],
+    equity: &[f64],
+) -> Option<Scoreboard> {
+    // (session date in New York, NY stamp, equity), skipping Alpaca's null points (mapped to 0.0).
+    let points: Vec<(NaiveDate, String, f64)> = timestamps
+        .iter()
+        .zip(equity)
+        .filter(|(_, e)| **e != 0.0)
+        .filter_map(|(t, e)| {
+            let ny = DateTime::from_timestamp(*t, 0)?.with_timezone(&New_York);
+            Some((ny.date_naive(), ny.format(NY_STAMP).to_string(), *e))
+        })
+        .collect();
+    let last_on_or_before = |cutoff: Option<NaiveDate>| {
+        let cutoff = cutoff?;
+        points.iter().rev().find(|(d, _, _)| *d <= cutoff).map(|(_, _, e)| *e)
+    };
+    let (equity_now, as_of) = match (now_equity.filter(|x| *x > 0.0), points.last()) {
+        (Some(live), _) => (live, now_stamp.to_string()),
+        (None, Some((_, stamp, last))) => (*last, stamp.clone()),
+        (None, None) => return None,
+    };
     Some(Scoreboard {
-        equity_now: now,
-        equity_1w: if len >= 6 { Some(equity[len - 6]) } else { None },
-        equity_1m: if len >= 22 { Some(equity[len - 22]) } else { None },
+        equity_now,
+        equity_1w: last_on_or_before(today.checked_sub_signed(Duration::days(7))),
+        equity_1m: last_on_or_before(today.checked_sub_months(Months::new(1))),
         as_of,
     })
 }
@@ -667,9 +688,14 @@ impl ReportContext<'_> {
 }
 
 async fn load_scoreboard(state: &AppState) -> Option<Scoreboard> {
-    let fetched = FundsService::get_portfolio_history(state, None, "1M", "1D").await;
-    let history = ok_or_warn("equity history", "account", fetched)?;
-    scoreboard_from(&history.timestamp, &history.equity)
+    // 3M of daily points: a one-month request yields only ~21 sessions and never the current one.
+    let fetched = FundsService::get_portfolio_history(state, None, "3M", "1D").await;
+    let history = ok_or_warn("equity history", "account", fetched);
+    let funds_fetched = FundsService::get_funds(state, None).await;
+    let live_equity = ok_or_warn("account equity", "account", funds_fetched).and_then(|r| r.funds.equity);
+    let now = Utc::now().with_timezone(&New_York);
+    let (timestamps, equity) = history.map(|h| (h.timestamp, h.equity)).unwrap_or_default();
+    scoreboard_from(live_equity, now.date_naive(), &now.format(NY_STAMP).to_string(), &timestamps, &equity)
 }
 
 /// Build the Ride Report for every held position. Never fails; missing data becomes `None` per field.
@@ -1182,22 +1208,131 @@ mod builder_tests {
         assert_eq!(weekdays_after("2026-10-26", "2026-11-02"), Some(5));
     }
 
+    /// `n` weekday sessions ending `last`, oldest first. Each point is stamped like Alpaca's daily
+    /// series: 00:00 UTC of the day after the session (8 PM ET of the session day).
+    fn weekday_series(last: NaiveDate, n: usize) -> (Vec<NaiveDate>, Vec<i64>, Vec<f64>) {
+        let mut dates = Vec::new();
+        let mut d = last;
+        while dates.len() < n {
+            if !matches!(d.weekday(), Weekday::Sat | Weekday::Sun) {
+                dates.push(d);
+            }
+            d -= Duration::days(1);
+        }
+        dates.reverse();
+        let ts = dates
+            .iter()
+            .map(|d| (*d + Duration::days(1)).and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp())
+            .collect();
+        let eq = (0..n).map(|i| 1000.0 + i as f64).collect();
+        (dates, ts, eq)
+    }
+
+    fn day(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    fn equity_dated(dates: &[NaiveDate], eq: &[f64], d: &str) -> f64 {
+        eq[dates.iter().position(|x| *x == day(d)).unwrap()]
+    }
+
+    const NOW_STAMP: &str = "2026-11-02 6:00 PM ET";
+
     #[test]
     fn scoreboard_points() {
-        // 23 daily points: one month ago is 21 sessions back (index 1), one week 5 back.
-        let ts: Vec<i64> = (0..23).map(|i| 1_790_000_000 + i * 86_400).collect();
-        let eq: Vec<f64> = (0..23).map(|i| 1000.0 + i as f64).collect();
-        let sb = scoreboard_from(&ts, &eq).unwrap();
-        assert_eq!((sb.equity_now, sb.equity_1w, sb.equity_1m), (1022.0, Some(1017.0), Some(1001.0)));
+        let today = day("2026-11-02");
+        let (dates, ts, eq) = weekday_series(day("2026-10-30"), 64);
+
+        // Live equity is "now"; the lookbacks are picked by date, inclusive of the boundary date.
+        let sb = scoreboard_from(Some(1834.64), today, NOW_STAMP, &ts, &eq).unwrap();
+        assert_eq!(sb.equity_now, 1834.64);
+        assert_eq!(sb.as_of, NOW_STAMP);
+        assert_eq!(sb.equity_1w, Some(equity_dated(&dates, &eq, "2026-10-26")));
+        assert_eq!(sb.equity_1m, Some(equity_dated(&dates, &eq, "2026-10-02")));
+
+        // No live equity: the last point is "now", stamped with its own NY time (Friday 8 PM).
+        let sb = scoreboard_from(None, today, NOW_STAMP, &ts, &eq).unwrap();
+        assert_eq!(sb.equity_now, *eq.last().unwrap());
+        assert_eq!(sb.as_of, "2026-10-30 8:00 PM ET");
+        assert_eq!(sb.equity_1w, Some(equity_dated(&dates, &eq, "2026-10-26")));
+
+        // A non-positive live equity is not trusted.
+        let sb = scoreboard_from(Some(0.0), today, NOW_STAMP, &ts, &eq).unwrap();
+        assert_eq!(sb.equity_now, *eq.last().unwrap());
+        assert_eq!(sb.as_of, "2026-10-30 8:00 PM ET");
         assert!(sb.as_of.ends_with(" ET"));
-        // Exactly 22 points: one month ago is the first point.
-        let month = scoreboard_from(&ts[..22], &eq[..22]).unwrap();
-        assert_eq!(month.equity_1m, Some(1000.0));
-        // Too little history for a month (or a week): None, never a shorter look-back.
-        let short = scoreboard_from(&ts[..3], &eq[..3]).unwrap();
-        assert_eq!((short.equity_1w, short.equity_1m), (None, None));
-        let under_a_month = scoreboard_from(&ts[..21], &eq[..21]).unwrap();
-        assert_eq!((under_a_month.equity_1w, under_a_month.equity_1m), (Some(1015.0), None));
-        assert!(scoreboard_from(&[], &[]).is_none());
+    }
+
+    #[test]
+    fn scoreboard_month_boundary() {
+        let today = day("2026-11-02");
+        // 21 sessions 2026-10-02 .. 2026-10-30 (what a one-month request returns): the first point
+        // is dated exactly one month back, so the month lookback is present.
+        let (dates, ts, eq) = weekday_series(day("2026-10-30"), 21);
+        assert_eq!(dates[0], day("2026-10-02"));
+        let sb = scoreboard_from(Some(1834.64), today, NOW_STAMP, &ts, &eq).unwrap();
+        assert_eq!(sb.equity_1m, Some(eq[0]));
+        assert_eq!(sb.equity_1w, Some(equity_dated(&dates, &eq, "2026-10-26")));
+        // 20 sessions starting 2026-10-05: nothing is dated on or before 10-02.
+        let (dates, ts, eq) = weekday_series(day("2026-10-30"), 20);
+        assert_eq!(dates[0], day("2026-10-05"));
+        let sb = scoreboard_from(Some(1834.64), today, NOW_STAMP, &ts, &eq).unwrap();
+        assert_eq!(sb.equity_1m, None);
+        assert!(sb.equity_1w.is_some());
+        // Too little history for a week: None, never a shorter lookback.
+        let (_, ts, eq) = weekday_series(day("2026-10-30"), 3);
+        let sb = scoreboard_from(Some(1834.64), today, NOW_STAMP, &ts, &eq).unwrap();
+        assert_eq!((sb.equity_1w, sb.equity_1m), (None, None));
+    }
+
+    #[test]
+    fn scoreboard_ignores_a_point_dated_today() {
+        let today = day("2026-11-02");
+        let (dates, mut ts, mut eq) = weekday_series(day("2026-10-30"), 64);
+        let want_1w = equity_dated(&dates, &eq, "2026-10-26");
+        // Simulate Alpaca including the current session (Monday, stamped Tuesday 00:00 UTC).
+        ts.push(day("2026-11-03").and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp());
+        eq.push(5000.0);
+        let sb = scoreboard_from(None, today, NOW_STAMP, &ts, &eq).unwrap();
+        assert_eq!(sb.equity_1w, Some(want_1w));
+        assert_eq!(sb.equity_now, 5000.0);
+        // DST ended Sun 2026-11-01, so 00:00 UTC is 7 PM EST: still the session day.
+        assert_eq!(sb.as_of, "2026-11-02 7:00 PM ET");
+    }
+
+    #[test]
+    fn scoreboard_skips_zero_equity_points() {
+        let today = day("2026-11-02");
+        let (dates, ts, mut eq) = weekday_series(day("2026-10-30"), 64);
+        let before_1w = equity_dated(&dates, &eq, "2026-10-23");
+        let before_1m = equity_dated(&dates, &eq, "2026-10-01");
+        // Alpaca nulls arrive as 0.0: the 1w and 1m boundary points are gaps.
+        for d in ["2026-10-26", "2026-10-02"] {
+            let i = dates.iter().position(|x| *x == day(d)).unwrap();
+            eq[i] = 0.0;
+        }
+        let sb = scoreboard_from(Some(1834.64), today, NOW_STAMP, &ts, &eq).unwrap();
+        assert_eq!(sb.equity_1w, Some(before_1w));
+        assert_eq!(sb.equity_1m, Some(before_1m));
+        // A zero final point is skipped for "now" too when there is no live equity.
+        let last = eq.len() - 1;
+        let prior = eq[last - 1];
+        eq[last] = 0.0;
+        let sb = scoreboard_from(None, today, NOW_STAMP, &ts, &eq).unwrap();
+        assert_eq!(sb.equity_now, prior);
+        assert_eq!(sb.as_of, "2026-10-29 8:00 PM ET");
+    }
+
+    #[test]
+    fn scoreboard_degraded_inputs() {
+        let today = day("2026-11-02");
+        // No history but live equity: just "now".
+        let sb = scoreboard_from(Some(1834.64), today, NOW_STAMP, &[], &[]).unwrap();
+        assert_eq!((sb.equity_now, sb.equity_1w, sb.equity_1m), (1834.64, None, None));
+        assert_eq!(sb.as_of, NOW_STAMP);
+        // Neither: nothing to show.
+        assert!(scoreboard_from(None, today, NOW_STAMP, &[], &[]).is_none());
+        // History of only zeros counts as no history.
+        assert!(scoreboard_from(None, today, NOW_STAMP, &[1_790_000_000], &[0.0]).is_none());
     }
 }

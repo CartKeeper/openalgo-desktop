@@ -1053,6 +1053,7 @@ impl Broker for FyersBroker {
             span: 0.0,
             exposure: 0.0,
             collateral,
+            equity: None,
         })
     }
 

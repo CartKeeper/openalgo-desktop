@@ -123,6 +123,7 @@ impl FundsService {
             span: 0.0,
             exposure: 0.0,
             collateral: 0.0,
+            equity: None,
         };
 
         Ok(FundsResult {

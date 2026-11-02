@@ -893,6 +893,7 @@ impl Broker for AngelBroker {
             span: data.span.to_f64(),
             exposure: data.exposure.to_f64(),
             collateral,
+            equity: None,
         })
     }
 

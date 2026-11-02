@@ -689,6 +689,7 @@ impl Broker for IbkrBroker {
                 .excess_liquidity
                 .map(|v| v.amount)
                 .unwrap_or(0.0),
+            equity: None,
         })
     }
 

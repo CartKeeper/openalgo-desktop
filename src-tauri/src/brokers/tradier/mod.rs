@@ -773,6 +773,7 @@ impl Broker for TradierBroker {
             span: 0.0,
             exposure: balances.market_value,
             collateral: 0.0,
+            equity: None,
         })
     }
 

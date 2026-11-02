@@ -773,7 +773,7 @@ impl Broker for AlpacaBroker {
         let account: AlpacaAccount = response.json().await?;
 
         let cash: f64 = account.cash.parse().unwrap_or(0.0);
-        let _equity: f64 = account.equity.parse().unwrap_or(0.0);
+        let equity: Option<f64> = account.equity.parse::<f64>().ok().filter(|e| *e > 0.0);
         let buying_power: f64 = account.buying_power.parse().unwrap_or(0.0);
         let initial_margin: f64 = account.initial_margin.parse().unwrap_or(0.0);
         let maintenance_margin: f64 = account.maintenance_margin.parse().unwrap_or(0.0);
@@ -793,6 +793,7 @@ impl Broker for AlpacaBroker {
             span: maintenance_margin,
             exposure: long_mv + short_mv,
             collateral: 0.0,
+            equity,
         })
     }
 

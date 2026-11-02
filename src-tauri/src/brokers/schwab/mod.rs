@@ -734,6 +734,7 @@ impl Broker for SchwabBroker {
             span: balances.maintenance_requirement,
             exposure: balances.long_market_value + balances.short_market_value,
             collateral: 0.0,
+            equity: None,
         })
     }
 

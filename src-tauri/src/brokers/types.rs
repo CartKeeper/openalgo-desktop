@@ -139,6 +139,9 @@ pub struct Funds {
     pub span: f64,
     pub exposure: f64,
     pub collateral: f64,
+    /// Live account equity (cash + positions) when the broker reports it.
+    #[serde(default)]
+    pub equity: Option<f64>,
 }
 
 /// Account activity — trade fills and non-trade events (cash deposits/

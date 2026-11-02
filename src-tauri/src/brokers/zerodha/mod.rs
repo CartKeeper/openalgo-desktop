@@ -739,6 +739,7 @@ impl Broker for ZerodhaBroker {
             span,
             exposure,
             collateral,
+            equity: None,
         })
     }
 
