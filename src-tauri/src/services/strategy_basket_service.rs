@@ -755,7 +755,9 @@ async fn run_fill(broker: &impl BasketBroker, leg: &StrategyLeg, expected_mode: 
 }
 
 /// Protect: place the stop. When a buy precedes it in the group the stop is
-/// sized to what actually filled (`bought`, taken from the same-symbol buy).
+/// sized to the smaller of what the user typed and what actually filled
+/// (`bought`, taken from the same-symbol buy); a protect with no quantity of
+/// its own takes the fill.
 async fn run_protect(
     broker: &impl BasketBroker,
     leg: &StrategyLeg,
@@ -773,7 +775,7 @@ async fn run_protect(
                 REASON_FAILED,
             );
         }
-        order.quantity = filled;
+        order.quantity = if order.quantity > 0.0 { order.quantity.min(filled) } else { filled };
     }
     let qty = order.quantity;
     let success_message = protect_success_message(&leg.symbol, &order.order_type, &order.validity);
@@ -1575,6 +1577,29 @@ mod executor_tests {
         );
         // The fill wait ran to its 60 s cap (virtual time), then the cancel confirmed on the first poll.
         assert_eq!(*broker.slept.lock().unwrap(), Duration::from_secs(FILL_CAP_SECONDS + POLL_SECONDS));
+    }
+
+    /// (c) The stop never covers more shares than the user typed, even when
+    /// the buy filled more.
+    #[tokio::test]
+    async fn protect_is_capped_to_the_quantity_the_user_typed() {
+        let broker = ScriptedBroker::new();
+        broker.script_statuses("ord-BAC-buy", vec![row("ord-BAC-buy", "COMPLETE", 13.0, 13.0)]);
+        let legs = vec![
+            with_order("r1", LegRole::Buy, market("BAC", "BUY", 13.0)),
+            with_order("r1", LegRole::Protect, trailing_stop("BAC", 5.0)),
+        ];
+
+        let results = run(&broker, legs).await;
+
+        assert_eq!(
+            summary(&results),
+            vec![
+                ("BAC Buy".into(), true, 13.0, "BAC buy filled (13 shares)".into()),
+                ("BAC Protect".into(), true, 5.0, "BAC trailing stop placed (GTC)".into()),
+            ]
+        );
+        assert_eq!(broker.writes(), vec!["place BAC BUY 13 MARKET", "place BAC SELL 5 TRAILING_STOP"]);
     }
 
     /// (d) After a successful cancel, a failing fund sell says the old stop is
