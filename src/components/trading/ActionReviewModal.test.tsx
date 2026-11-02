@@ -236,6 +236,8 @@ describe('ActionReviewModal', () => {
     await waitFor(() => expect(mocks.placeStrategyBasket).toHaveBeenCalledTimes(1))
     expect(mocks.getMarketClock).toHaveBeenCalledTimes(3)
     await screen.findByText('BAC · protect')
+    // The strategy path counts legs, not orders.
+    expect(mocks.toast.success).toHaveBeenCalledWith('All 4 legs completed')
   })
 
   it.each([
@@ -465,7 +467,7 @@ describe('ActionReviewModal', () => {
     expect(screen.getByText('Order ID: ord-b')).toBeInTheDocument()
     expect(screen.getByText('BAC · protect')).toBeInTheDocument()
     expect(screen.getByText('Trailing stop rejected')).toBeInTheDocument()
-    expect(mocks.toast.warning).toHaveBeenCalledWith('3 placed, 1 failed')
+    expect(mocks.toast.warning).toHaveBeenCalledWith('3 completed, 1 failed')
     expect(mocks.emit).toHaveBeenCalledWith('basket_order_event', { count: 3 })
   })
 
@@ -638,6 +640,7 @@ describe('ActionReviewModal', () => {
     expect(await screen.findByText('Order ID: o-2')).toBeInTheDocument()
     expect(screen.getByText('Order ID: o-1')).toBeInTheDocument()
     expect(screen.queryByText('Order placed successfully')).toBeNull()
+    expect(mocks.toast.success).toHaveBeenCalledWith('All 2 orders placed successfully')
   })
 
   it('adds sell proceeds to the Gate B cost line and funds the buys with them', async () => {

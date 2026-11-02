@@ -466,7 +466,14 @@ export function ActionReviewModal({
     // Emit basket event for auto-refresh (distinct from order_event to avoid single-order toast)
     emit('basket_order_event', { count: successCount })
 
-    if (failCount === 0) {
+    // A strategy result is one leg (a cancel places nothing), so it counts legs.
+    if (fromStrategy) {
+      if (failCount === 0) {
+        toast.success(`All ${successCount} legs completed`)
+      } else {
+        toast.warning(`${successCount} completed, ${failCount} failed`)
+      }
+    } else if (failCount === 0) {
       toast.success(`All ${successCount} orders placed successfully`)
     } else {
       toast.warning(`${successCount} placed, ${failCount} failed`)
