@@ -18,6 +18,7 @@ use crate::error::{AppError, Result};
 use crate::services::{OrderService, OrderbookService, PlaceOrderResult};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
@@ -27,6 +28,8 @@ const POLL_SECONDS: u64 = 2;
 const CANCEL_CAP_SECONDS: u64 = 30;
 /// Longest wait for a market order to fill.
 const FILL_CAP_SECONDS: u64 = 60;
+/// Longest wait for a single order-book lookup; a timeout counts as a failed lookup.
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 const REASON_FAILED: &str = "failed";
 const REASON_NOT_FILLED: &str = "did not fill within 60 seconds";
@@ -122,8 +125,58 @@ fn validate_leg(leg: &StrategyLeg) -> Result<()> {
                 word, leg.symbol, order.symbol
             )))
         }
-        Some(_) => Ok(()),
+        Some(order) => {
+            let required_side = match leg.role {
+                LegRole::Fund => Some("SELL"),
+                LegRole::Buy => Some("BUY"),
+                _ => None,
+            };
+            match required_side {
+                Some(side) if !order.side.eq_ignore_ascii_case(side) => Err(AppError::Validation(format!(
+                    "{} leg for {} must be a {} order, not {}",
+                    match leg.role {
+                        LegRole::Fund => "fund",
+                        _ => "buy",
+                    },
+                    leg.symbol,
+                    side,
+                    order.side
+                ))),
+                _ => Ok(()),
+            }
+        }
     }
+}
+
+/// Group-level checks: at most one Buy, a Protect must protect that Buy's
+/// symbol, and a Protect with no Buy needs its own quantity.
+fn validate_group(name: &Option<String>, members: &[StrategyLeg]) -> Result<()> {
+    let label = name.as_deref().unwrap_or("(ungrouped)");
+    let buys: Vec<&StrategyLeg> = members.iter().filter(|l| l.role == LegRole::Buy).collect();
+    if buys.len() > 1 {
+        return Err(AppError::Validation(format!("group {} has more than one buy leg", label)));
+    }
+    for protect in members.iter().filter(|l| l.role == LegRole::Protect) {
+        match buys.first() {
+            Some(buy) if !buy.symbol.eq_ignore_ascii_case(&protect.symbol) => {
+                return Err(AppError::Validation(format!(
+                    "protect leg for {} does not match the buy leg for {} in group {}",
+                    protect.symbol, buy.symbol, label
+                )));
+            }
+            Some(_) => {}
+            None => {
+                let qty = protect.order.as_ref().map(|o| o.quantity).unwrap_or(0.0);
+                if qty <= 0.0 {
+                    return Err(AppError::Validation(format!(
+                        "protect leg for {} in group {} has no quantity and no buy to size it from",
+                        protect.symbol, label
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Split legs into groups (first-appearance order) and order each group
@@ -148,6 +201,10 @@ pub fn plan_groups(legs: Vec<StrategyLeg>) -> Result<Vec<Vec<StrategyLeg>>> {
             },
             None => groups.push((None, vec![leg])),
         }
+    }
+
+    for (name, members) in &groups {
+        validate_group(name, members)?;
     }
 
     Ok(groups
@@ -219,6 +276,49 @@ fn remaining_failure_message(
     )
 }
 
+/// What to tell the user about the unfilled remainder of an order we tried to cancel.
+fn remainder_note(confirmed: bool) -> &'static str {
+    if confirmed {
+        "remainder confirmed cancelled"
+    } else {
+        "remainder may still be working at the broker \u{2014} check the Order Book"
+    }
+}
+
+/// Appends a note for each symbol whose old stop was cancelled earlier in the
+/// group, so a halted group says plainly that the position is unprotected.
+fn with_old_stop_note(message: String, cancelled_symbols: &[String]) -> String {
+    let mut out = message;
+    for symbol in cancelled_symbols {
+        out.push_str(&format!("; the old stop on {} is no longer active", symbol));
+    }
+    out
+}
+
+/// Success message for a stop leg, from the order actually placed.
+fn protect_success_message(symbol: &str, order_type: &str, validity: &str) -> String {
+    if order_type == "TRAILING_STOP" {
+        format!("{} trailing stop placed ({})", symbol, validity)
+    } else {
+        format!("{} stop placed ({})", symbol, validity)
+    }
+}
+
+/// Gate B wording, identical to `OrderService::place_order`. `None` = modes agree
+/// (or no acknowledgment was supplied).
+fn mode_mismatch_message(expected: Option<bool>, analyze_mode: bool) -> Option<String> {
+    let expected = expected?;
+    if expected == analyze_mode {
+        return None;
+    }
+    let ack = if expected { "paper (sandbox)" } else { "LIVE (real money)" };
+    let actual = if analyze_mode { "paper (sandbox)" } else { "LIVE (real money)" };
+    Some(format!(
+        "Order rejected: you confirmed {ack} mode, but the app is now in {actual} mode. \
+         Re-confirm before placing."
+    ))
+}
+
 // ============================================================================
 // Execution
 // ============================================================================
@@ -236,8 +336,8 @@ type StepResult = std::result::Result<LegResult, (LegResult, &'static str)>;
 enum FillOutcome {
     /// Fully filled with this many shares.
     Filled(f64),
-    /// Ended without a full fill (cap reached, or cancelled after a partial
-    /// fill) with this many shares filled.
+    /// Stopped short of a full fill (cap reached, or cancelled after a partial
+    /// fill). Carries the last fill count seen, which may be stale.
     Partial(f64),
     /// Rejected or cancelled with nothing filled.
     Failed(String),
@@ -247,6 +347,15 @@ enum CancelOutcome {
     Cancelled,
     Failed(String),
     TimedOut,
+}
+
+/// State of an order's unfilled remainder after a cancel attempt.
+struct Settled {
+    /// Fill count from a fresh read after the cancel (falls back to the last
+    /// seen count when that read failed).
+    filled: f64,
+    /// True only when the remainder is known to be gone.
+    confirmed: bool,
 }
 
 fn leg_result(leg: &StrategyLeg, success: bool, order_id: Option<String>, filled: f64, message: String) -> LegResult {
@@ -265,6 +374,37 @@ fn failed(leg: &StrategyLeg, order_id: Option<String>, filled: f64, message: Str
     Err((leg_result(leg, false, order_id, filled, message), reason))
 }
 
+/// One order-status lookup. Outer `None` = the lookup failed or timed out
+/// (logged); `Some(None)` = the order is not in the order book.
+async fn lookup_status(state: &AppState, order_id: &str) -> Option<Option<Order>> {
+    match tokio::time::timeout(LOOKUP_TIMEOUT, OrderbookService::get_order_status(state, order_id, None)).await {
+        Ok(Ok(r)) => Some(r.order),
+        Ok(Err(e)) => {
+            warn!("strategy basket: status lookup for {} failed: {}", order_id, e);
+            None
+        }
+        Err(_) => {
+            warn!("strategy basket: status lookup for {} timed out", order_id);
+            None
+        }
+    }
+}
+
+/// Whether the order is still listed among open orders. `None` = lookup failed.
+async fn lookup_is_open(state: &AppState, order_id: &str) -> Option<bool> {
+    match tokio::time::timeout(LOOKUP_TIMEOUT, OrderbookService::get_open_orders(state, None)).await {
+        Ok(Ok(open)) => Some(open.orders.iter().any(|o| o.order_id == order_id)),
+        Ok(Err(e)) => {
+            warn!("strategy basket: open orders lookup failed: {}", e);
+            None
+        }
+        Err(_) => {
+            warn!("strategy basket: open orders lookup timed out");
+            None
+        }
+    }
+}
+
 /// Polls until the cancel shows up in the order book (or the order is no
 /// longer open), or the cap is reached.
 async fn wait_for_cancel(state: &AppState, order_id: &str) -> CancelOutcome {
@@ -272,26 +412,21 @@ async fn wait_for_cancel(state: &AppState, order_id: &str) -> CancelOutcome {
     loop {
         tokio::time::sleep(Duration::from_secs(POLL_SECONDS)).await;
 
-        match OrderbookService::get_order_status(state, order_id, None).await {
-            Ok(status) => match status.order {
-                Some(order) if is_cancelled(&order) => return CancelOutcome::Cancelled,
-                Some(order) if is_filled(&order) => {
-                    return CancelOutcome::Failed("the order had already filled".to_string())
+        match lookup_status(state, order_id).await {
+            Some(Some(order)) if is_cancelled(&order) => return CancelOutcome::Cancelled,
+            Some(Some(order)) if is_filled(&order) => {
+                return CancelOutcome::Failed("the order had already filled".to_string())
+            }
+            Some(Some(order)) if is_rejected(&order) => {
+                return CancelOutcome::Failed("the broker rejected the cancel".to_string())
+            }
+            Some(Some(_)) => {}
+            Some(None) => {
+                if lookup_is_open(state, order_id).await == Some(false) {
+                    return CancelOutcome::Cancelled;
                 }
-                Some(order) if is_rejected(&order) => {
-                    return CancelOutcome::Failed("the broker rejected the cancel".to_string())
-                }
-                Some(_) => {}
-                None => match OrderbookService::get_open_orders(state, None).await {
-                    Ok(open) => {
-                        if !open.orders.iter().any(|o| o.order_id == order_id) {
-                            return CancelOutcome::Cancelled;
-                        }
-                    }
-                    Err(e) => warn!("strategy basket: open orders lookup failed while waiting for cancel: {}", e),
-                },
-            },
-            Err(e) => warn!("strategy basket: status lookup for {} failed while waiting for cancel: {}", order_id, e),
+            }
+            None => {}
         }
 
         if start.elapsed() >= Duration::from_secs(CANCEL_CAP_SECONDS) {
@@ -307,36 +442,54 @@ async fn wait_for_fill(state: &AppState, order_id: &str) -> FillOutcome {
     loop {
         tokio::time::sleep(Duration::from_secs(POLL_SECONDS)).await;
 
-        match OrderbookService::get_order_status(state, order_id, None).await {
-            Ok(status) => {
-                if let Some(order) = status.order {
-                    last_filled = order.filled_quantity;
-                    if is_filled(&order) {
-                        return FillOutcome::Filled(order.filled_quantity);
-                    }
-                    if is_rejected(&order) {
-                        let why = order
-                            .rejection_reason
-                            .clone()
-                            .filter(|r| !r.trim().is_empty())
-                            .unwrap_or_else(|| "no reason given".to_string());
-                        return FillOutcome::Failed(format!("was rejected by the broker ({})", why));
-                    }
-                    if is_cancelled(&order) {
-                        return if order.filled_quantity > 0.0 {
-                            FillOutcome::Partial(order.filled_quantity)
-                        } else {
-                            FillOutcome::Failed("was cancelled before it filled".to_string())
-                        };
-                    }
-                }
+        if let Some(Some(order)) = lookup_status(state, order_id).await {
+            last_filled = order.filled_quantity;
+            if is_filled(&order) {
+                return FillOutcome::Filled(order.filled_quantity);
             }
-            Err(e) => warn!("strategy basket: status lookup for {} failed while waiting for fill: {}", order_id, e),
+            if is_rejected(&order) {
+                let why = order
+                    .rejection_reason
+                    .clone()
+                    .filter(|r| !r.trim().is_empty())
+                    .unwrap_or_else(|| "no reason given".to_string());
+                return FillOutcome::Failed(format!("was rejected by the broker ({})", why));
+            }
+            if is_cancelled(&order) {
+                return if order.filled_quantity > 0.0 {
+                    FillOutcome::Partial(order.filled_quantity)
+                } else {
+                    FillOutcome::Failed("was cancelled before it filled".to_string())
+                };
+            }
         }
 
         if start.elapsed() >= Duration::from_secs(FILL_CAP_SECONDS) {
             return FillOutcome::Partial(last_filled);
         }
+    }
+}
+
+/// Cancels whatever is left of an order that stopped short, waits for the
+/// cancel to take effect, then re-reads the order so the final fill count is
+/// what the broker actually shows after the race.
+async fn settle_remainder(state: &AppState, order_id: &str, last_filled: f64) -> Settled {
+    let mut wait_confirmed = false;
+    match OrderService::cancel_order(state, order_id, None, None).await {
+        Ok(r) if r.success => {
+            wait_confirmed = matches!(wait_for_cancel(state, order_id).await, CancelOutcome::Cancelled);
+        }
+        Ok(r) => warn!("strategy basket: cancel of remainder of {} was refused: {}", order_id, r.message),
+        Err(e) => warn!("strategy basket: could not cancel remainder of {}: {}", order_id, e),
+    }
+
+    match lookup_status(state, order_id).await {
+        Some(Some(order)) => Settled {
+            filled: order.filled_quantity,
+            confirmed: wait_confirmed || is_cancelled(&order) || is_filled(&order),
+        },
+        // Final read failed: the fill count is stale, so the remainder cannot be vouched for.
+        _ => Settled { filled: last_filled, confirmed: false },
     }
 }
 
@@ -422,16 +575,7 @@ async fn run_fill(state: &AppState, leg: &StrategyLeg, expected_mode: Option<boo
         );
     };
 
-    let outcome = wait_for_fill(state, &id).await;
-
-    // Whatever is left of a buy or sell that stopped short must not stay live.
-    if matches!(outcome, FillOutcome::Partial(_)) {
-        if let Err(e) = OrderService::cancel_order(state, &id, None, None).await {
-            warn!("strategy basket: could not cancel remainder of {}: {}", id, e);
-        }
-    }
-
-    match outcome {
+    match wait_for_fill(state, &id).await {
         FillOutcome::Filled(qty) if qty > 0.0 => Ok(leg_result(
             leg,
             true,
@@ -446,40 +590,6 @@ async fn run_fill(state: &AppState, leg: &StrategyLeg, expected_mode: Option<boo
             format!("{} {} was reported complete but no shares filled", leg.symbol, word),
             REASON_FAILED,
         ),
-        FillOutcome::Partial(qty) if qty > 0.0 && leg.role == LegRole::Buy => Ok(leg_result(
-            leg,
-            true,
-            order_id,
-            qty,
-            format!(
-                "{} {} partly filled ({} of {}); the rest was cancelled",
-                leg.symbol,
-                word,
-                shares(qty),
-                shares(wanted)
-            ),
-        )),
-        FillOutcome::Partial(qty) if qty > 0.0 => failed(
-            leg,
-            order_id,
-            qty,
-            format!(
-                "{} {} only partly filled ({} of {}) within {} seconds",
-                leg.symbol,
-                word,
-                shares(qty),
-                shares(wanted),
-                FILL_CAP_SECONDS
-            ),
-            REASON_NOT_FILLED,
-        ),
-        FillOutcome::Partial(_) => failed(
-            leg,
-            order_id,
-            0.0,
-            format!("{} {} did not fill within {} seconds", leg.symbol, word, FILL_CAP_SECONDS),
-            REASON_NOT_FILLED,
-        ),
         FillOutcome::Failed(why) => failed(
             leg,
             order_id,
@@ -487,11 +597,65 @@ async fn run_fill(state: &AppState, leg: &StrategyLeg, expected_mode: Option<boo
             format!("{} {} {}", leg.symbol, word, why),
             REASON_FAILED,
         ),
+        FillOutcome::Partial(last_filled) => {
+            // Stopped short: cancel the rest, then trust only a fresh read.
+            let settled = settle_remainder(state, &id, last_filled).await;
+            let note = remainder_note(settled.confirmed);
+            let qty = settled.filled;
+            if wanted > 0.0 && qty >= wanted - 1e-9 {
+                // The rest filled while we were cancelling.
+                Ok(leg_result(
+                    leg,
+                    true,
+                    order_id,
+                    qty,
+                    format!("{} {} filled ({})", leg.symbol, word, shares(qty)),
+                ))
+            } else if qty > 0.0 && leg.role == LegRole::Buy {
+                Ok(leg_result(
+                    leg,
+                    true,
+                    order_id,
+                    qty,
+                    format!(
+                        "{} {} partly filled ({} of {}); {}",
+                        leg.symbol,
+                        word,
+                        shares(qty),
+                        shares(wanted),
+                        note
+                    ),
+                ))
+            } else if qty > 0.0 {
+                failed(
+                    leg,
+                    order_id,
+                    qty,
+                    format!(
+                        "{} {} only partly filled ({} of {}); {}",
+                        leg.symbol,
+                        word,
+                        shares(qty),
+                        shares(wanted),
+                        note
+                    ),
+                    REASON_NOT_FILLED,
+                )
+            } else {
+                failed(
+                    leg,
+                    order_id,
+                    0.0,
+                    format!("{} {} did not fill within {} seconds; {}", leg.symbol, word, FILL_CAP_SECONDS, note),
+                    REASON_NOT_FILLED,
+                )
+            }
+        }
     }
 }
 
 /// Protect: place the stop. When a buy precedes it in the group the stop is
-/// sized to what actually filled.
+/// sized to what actually filled (`bought`, taken from the same-symbol buy).
 async fn run_protect(
     state: &AppState,
     leg: &StrategyLeg,
@@ -512,20 +676,15 @@ async fn run_protect(
         order.quantity = filled;
     }
     let qty = order.quantity;
+    let success_message = protect_success_message(&leg.symbol, &order.order_type, &order.validity);
 
     match place(state, order, expected_mode).await {
-        Ok(r) => Ok(leg_result(
-            leg,
-            true,
-            r.order_id,
-            qty,
-            format!("{} trailing stop placed (GTC)", leg.symbol),
-        )),
+        Ok(r) => Ok(leg_result(leg, true, r.order_id, qty, success_message)),
         Err(msg) => failed(
             leg,
             None,
             0.0,
-            format!("{} trailing stop failed: {}", leg.symbol, msg),
+            format!("{} stop failed: {}", leg.symbol, msg),
             REASON_FAILED,
         ),
     }
@@ -557,11 +716,17 @@ async fn run_standalone(state: &AppState, leg: &StrategyLeg, expected_mode: Opti
 async fn run_group(state: &AppState, group: Vec<StrategyLeg>, expected_mode: Option<bool>) -> Vec<LegResult> {
     let mut results = Vec::with_capacity(group.len());
     let mut halt: Option<Halt> = None;
-    let mut bought: Option<f64> = None;
+    // Fill of each successful buy, keyed by uppercased symbol.
+    let mut bought: HashMap<String, f64> = HashMap::new();
+    // Symbols whose old stop this group has already cancelled.
+    let mut cancelled: Vec<String> = Vec::new();
 
     for leg in group {
         if let Some(h) = &halt {
-            let message = remaining_failure_message(&leg.symbol, &leg.role, &h.symbol, &h.role, &h.reason);
+            let message = with_old_stop_note(
+                remaining_failure_message(&leg.symbol, &leg.role, &h.symbol, &h.role, &h.reason),
+                &cancelled,
+            );
             results.push(leg_result(&leg, false, None, 0.0, message));
             continue;
         }
@@ -569,18 +734,26 @@ async fn run_group(state: &AppState, group: Vec<StrategyLeg>, expected_mode: Opt
         let step = match leg.role {
             LegRole::Cancel => run_cancel(state, &leg).await,
             LegRole::Fund | LegRole::Buy => run_fill(state, &leg, expected_mode).await,
-            LegRole::Protect => run_protect(state, &leg, bought, expected_mode).await,
+            LegRole::Protect => {
+                let filled = bought.get(&leg.symbol.to_uppercase()).copied();
+                run_protect(state, &leg, filled, expected_mode).await
+            }
             LegRole::Standalone => run_standalone(state, &leg, expected_mode).await,
         };
 
         match step {
             Ok(result) => {
-                if leg.role == LegRole::Buy {
-                    bought = Some(result.filled_quantity);
+                match leg.role {
+                    LegRole::Buy => {
+                        bought.insert(leg.symbol.to_uppercase(), result.filled_quantity);
+                    }
+                    LegRole::Cancel if !cancelled.contains(&leg.symbol) => cancelled.push(leg.symbol.clone()),
+                    _ => {}
                 }
                 results.push(result);
             }
-            Err((result, reason)) => {
+            Err((mut result, reason)) => {
+                result.message = with_old_stop_note(result.message, &cancelled);
                 warn!("strategy basket: {}", result.message);
                 halt = Some(Halt {
                     symbol: leg.symbol.clone(),
@@ -604,6 +777,16 @@ pub async fn place_strategy_basket(
     expected_mode: Option<bool>,
 ) -> Result<Vec<LegResult>> {
     let groups = plan_groups(legs)?;
+
+    // Cancel legs run before any order is placed, so Gate B must be checked up
+    // front or a mode mismatch would cancel a live stop and only then reject.
+    // (place_order still re-checks every order.)
+    let analyze_mode = state.sqlite.get_analyze_mode().unwrap_or(false);
+    if let Some(message) = mode_mismatch_message(expected_mode, analyze_mode) {
+        warn!("strategy basket rejected before any cancel: {}", message);
+        return Err(AppError::Validation(message));
+    }
+
     info!("strategy basket: {} groups", groups.len());
 
     let mut all = Vec::new();
@@ -630,7 +813,11 @@ mod plan_tests {
         StrategyLeg {
             group: group.map(String::from),
             cancel_order_id: if role == LegRole::Cancel { Some("abc123".to_string()) } else { None },
-            order: if role == LegRole::Cancel { None } else { Some(order(symbol, "BUY")) },
+            order: if role == LegRole::Cancel {
+                None
+            } else {
+                Some(order(symbol, if role == LegRole::Fund { "SELL" } else { "BUY" }))
+            },
             role,
             symbol: symbol.to_string(),
         }
@@ -799,5 +986,115 @@ mod plan_tests {
         assert_eq!(shares(2.5), "2.5 shares");
         assert_eq!(short_id("3f9c1a2b-77aa-4c10"), "3f9c1a2b…");
         assert_eq!(short_id("abc123"), "abc123");
+    }
+
+    #[test]
+    fn unknown_and_partial_statuses_are_not_filled_or_cancelled() {
+        assert!(!is_filled(&order_row("UNKNOWN", 11.0, 0.0)));
+        assert!(!is_cancelled(&order_row("UNKNOWN", 11.0, 0.0)));
+        assert!(!is_cancelled(&order_row("PARTIALLY_FILLED", 11.0, 5.0)));
+    }
+
+    #[test]
+    fn two_buys_in_a_group_is_validation_error() {
+        let legs = vec![
+            leg(Some("r1"), LegRole::Buy, "BAC"),
+            leg(Some("r1"), LegRole::Buy, "KO"),
+        ];
+        match plan_groups(legs) {
+            Err(AppError::Validation(msg)) => assert!(msg.contains("r1") && msg.contains("more than one buy")),
+            other => panic!("expected validation error, got {:?}", other.map(|g| g.len())),
+        }
+    }
+
+    #[test]
+    fn protect_symbol_must_match_the_groups_buy() {
+        let legs = vec![
+            leg(Some("r1"), LegRole::Buy, "BAC"),
+            leg(Some("r1"), LegRole::Protect, "KO"),
+        ];
+        match plan_groups(legs) {
+            Err(AppError::Validation(msg)) => assert!(msg.contains("KO") && msg.contains("BAC") && msg.contains("r1")),
+            other => panic!("expected validation error, got {:?}", other.map(|g| g.len())),
+        }
+        let ok = vec![
+            leg(Some("r1"), LegRole::Buy, "BAC"),
+            leg(Some("r1"), LegRole::Protect, "bac"),
+        ];
+        assert!(plan_groups(ok).is_ok());
+    }
+
+    #[test]
+    fn fund_must_sell_and_buy_must_buy() {
+        let mut fund = leg(Some("r1"), LegRole::Fund, "PFE");
+        fund.order = Some(order("PFE", "BUY"));
+        assert!(matches!(plan_groups(vec![fund]), Err(AppError::Validation(_))));
+
+        let mut buy = leg(Some("r1"), LegRole::Buy, "BAC");
+        buy.order = Some(order("BAC", "SELL"));
+        assert!(matches!(plan_groups(vec![buy]), Err(AppError::Validation(_))));
+    }
+
+    #[test]
+    fn protect_without_a_buy_needs_a_quantity() {
+        let mut zero = leg(Some("p1"), LegRole::Protect, "PFE");
+        let mut o = order("PFE", "SELL");
+        o.quantity = 0.0;
+        zero.order = Some(o);
+        assert!(matches!(plan_groups(vec![zero]), Err(AppError::Validation(_))));
+
+        let with_qty = leg(Some("p1"), LegRole::Protect, "PFE");
+        assert!(plan_groups(vec![with_qty]).is_ok());
+
+        // With a buy present, the protect's own quantity is not required.
+        let mut sized_by_buy = leg(Some("r1"), LegRole::Protect, "BAC");
+        let mut o = order("BAC", "SELL");
+        o.quantity = 0.0;
+        sized_by_buy.order = Some(o);
+        let legs = vec![leg(Some("r1"), LegRole::Buy, "BAC"), sized_by_buy];
+        assert!(plan_groups(legs).is_ok());
+    }
+
+    #[test]
+    fn halt_message_says_the_old_stop_is_gone_only_when_a_cancel_succeeded() {
+        assert_eq!(
+            with_old_stop_note("PFE sell failed: rejected".to_string(), &["PFE".to_string()]),
+            "PFE sell failed: rejected; the old stop on PFE is no longer active"
+        );
+        assert_eq!(
+            with_old_stop_note(
+                "BAC buy not placed because PFE sell failed".to_string(),
+                &["PFE".to_string(), "KO".to_string()]
+            ),
+            "BAC buy not placed because PFE sell failed; the old stop on PFE is no longer active; the old stop on KO is no longer active"
+        );
+        assert_eq!(with_old_stop_note("PFE sell failed".to_string(), &[]), "PFE sell failed");
+    }
+
+    #[test]
+    fn remainder_note_distinguishes_confirmed_from_unconfirmed() {
+        assert_eq!(remainder_note(true), "remainder confirmed cancelled");
+        assert!(remainder_note(false).starts_with("remainder may still be working at the broker"));
+        assert!(remainder_note(false).ends_with("check the Order Book"));
+    }
+
+    #[test]
+    fn protect_message_reflects_the_placed_order() {
+        assert_eq!(protect_success_message("BAC", "TRAILING_STOP", "GTC"), "BAC trailing stop placed (GTC)");
+        assert_eq!(protect_success_message("BAC", "SL-M", "DAY"), "BAC stop placed (DAY)");
+    }
+
+    #[test]
+    fn mode_gate_matches_place_order_wording() {
+        assert_eq!(mode_mismatch_message(None, true), None);
+        assert_eq!(mode_mismatch_message(Some(false), false), None);
+        assert_eq!(
+            mode_mismatch_message(Some(false), true).unwrap(),
+            "Order rejected: you confirmed LIVE (real money) mode, but the app is now in paper (sandbox) mode. Re-confirm before placing."
+        );
+        assert_eq!(
+            mode_mismatch_message(Some(true), false).unwrap(),
+            "Order rejected: you confirmed paper (sandbox) mode, but the app is now in LIVE (real money) mode. Re-confirm before placing."
+        );
     }
 }
