@@ -11,10 +11,12 @@
 //!
 //! If a leg fails, every remaining leg of that group is reported as not placed
 //! and the group stops. Groups are independent: one group failing never stops
-//! the next one.
+//! the next one. A group with a cancel, fund or buy leg runs only while the
+//! market clock says open; otherwise none of its legs is sent.
 
 use crate::brokers::types::{Order, OrderRequest};
 use crate::error::{AppError, Result};
+use crate::services::market_status_service::MarketStatusService;
 use crate::services::{OrderService, OrderbookService, PlaceOrderResult};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
@@ -30,6 +32,10 @@ const CANCEL_CAP_SECONDS: u64 = 30;
 const FILL_CAP_SECONDS: u64 = 60;
 /// Longest wait for a single order-book lookup; a timeout counts as a failed lookup.
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Same copy as the review modal's market-closed line.
+const MARKET_CLOSED_MESSAGE: &str = "Market opens at 9:30 AM ET. Place this then.";
+const CLOCK_UNREADABLE_SUFFIX: &str = " (could not read the market clock)";
 
 const REASON_FAILED: &str = "failed";
 const REASON_NOT_FILLED: &str = "did not fill within 60 seconds";
@@ -317,6 +323,29 @@ fn mode_mismatch_message(expected: Option<bool>, analyze_mode: bool) -> Option<S
         "Order rejected: you confirmed {ack} mode, but the app is now in {actual} mode. \
          Re-confirm before placing."
     ))
+}
+
+/// Market-hours gate, the same predicate as the review modal: a group with a
+/// cancel, fund or buy leg only runs while the market is open. Protect-only
+/// groups (GTC stops) and standalone legs are not gated.
+fn group_needs_open_market(group: &[StrategyLeg]) -> bool {
+    group
+        .iter()
+        .any(|l| matches!(l.role, LegRole::Cancel | LegRole::Fund | LegRole::Buy))
+}
+
+/// Results for a gated group refused because the market is closed (or its
+/// clock could not be read): nothing in the group was placed or cancelled.
+fn closed_market_results(group: &[StrategyLeg], read_failed: bool) -> Vec<LegResult> {
+    let message = if read_failed {
+        format!("{}{}", MARKET_CLOSED_MESSAGE, CLOCK_UNREADABLE_SUFFIX)
+    } else {
+        MARKET_CLOSED_MESSAGE.to_string()
+    };
+    group
+        .iter()
+        .map(|leg| leg_result(leg, false, None, 0.0, message.clone()))
+        .collect()
 }
 
 // ============================================================================
@@ -713,7 +742,31 @@ async fn run_standalone(state: &AppState, leg: &StrategyLeg, expected_mode: Opti
     }
 }
 
+/// Whether the market is open now. `None` = the clock could not be read (a
+/// timeout counts as a failed read).
+async fn read_market_open(state: &AppState) -> Option<bool> {
+    match tokio::time::timeout(LOOKUP_TIMEOUT, MarketStatusService::get_clock(state, None)).await {
+        Ok(Ok(clock)) => Some(clock.is_open),
+        Ok(Err(e)) => {
+            warn!("strategy basket: market clock read failed: {}", e);
+            None
+        }
+        Err(_) => {
+            warn!("strategy basket: market clock read timed out");
+            None
+        }
+    }
+}
+
 async fn run_group(state: &AppState, group: Vec<StrategyLeg>, expected_mode: Option<bool>) -> Vec<LegResult> {
+    if group_needs_open_market(&group) {
+        match read_market_open(state).await {
+            Some(true) => {}
+            Some(false) => return closed_market_results(&group, false),
+            None => return closed_market_results(&group, true),
+        }
+    }
+
     let mut results = Vec::with_capacity(group.len());
     let mut halt: Option<Halt> = None;
     // Fill of each successful buy, keyed by uppercased symbol.
@@ -1096,5 +1149,49 @@ mod plan_tests {
             mode_mismatch_message(Some(true), false).unwrap(),
             "Order rejected: you confirmed paper (sandbox) mode, but the app is now in LIVE (real money) mode. Re-confirm before placing."
         );
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    fn leg(group: Option<&str>, role: LegRole, symbol: &str) -> StrategyLeg {
+        StrategyLeg {
+            group: group.map(String::from),
+            role,
+            symbol: symbol.to_string(),
+            cancel_order_id: None,
+            order: None,
+        }
+    }
+
+    #[test]
+    fn cancel_fund_and_buy_groups_need_an_open_market() {
+        assert!(group_needs_open_market(&[leg(Some("r1"), LegRole::Cancel, "PFE"), leg(Some("r1"), LegRole::Protect, "PFE")]));
+        assert!(group_needs_open_market(&[leg(Some("r1"), LegRole::Fund, "PFE")]));
+        assert!(group_needs_open_market(&[leg(Some("r1"), LegRole::Buy, "BAC"), leg(Some("r1"), LegRole::Protect, "BAC")]));
+        assert!(!group_needs_open_market(&[leg(Some("p1"), LegRole::Protect, "NVDA")]));
+        assert!(!group_needs_open_market(&[leg(None, LegRole::Standalone, "AAPL")]));
+    }
+
+    #[test]
+    fn closed_market_fails_every_leg_of_the_group_with_the_modal_copy() {
+        let group = vec![leg(Some("r1"), LegRole::Cancel, "PFE"), leg(Some("r1"), LegRole::Fund, "PFE")];
+        let closed = closed_market_results(&group, false);
+        assert_eq!(closed.len(), 2);
+        for r in &closed {
+            assert!(!r.success);
+            assert_eq!(r.order_id, None);
+            assert_eq!(r.filled_quantity, 0.0);
+            assert_eq!(r.message, "Market opens at 9:30 AM ET. Place this then.");
+            assert_eq!(r.group.as_deref(), Some("r1"));
+        }
+        assert_eq!(closed[1].role, LegRole::Fund);
+
+        let unread = closed_market_results(&group, true);
+        assert!(unread
+            .iter()
+            .all(|r| r.message == "Market opens at 9:30 AM ET. Place this then. (could not read the market clock)"));
     }
 }
