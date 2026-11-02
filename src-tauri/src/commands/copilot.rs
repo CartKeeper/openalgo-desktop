@@ -191,7 +191,7 @@ const ACTIONS_EXAMPLE: &str = r#"[
   { "symbol": "PFE", "exchange": "NYSE", "side": "SELL", "quantity": 11, "orderType": "MARKET", "product": "CNC", "price": 0, "validity": "DAY", "group": "rotation-1", "role": "fund", "rationale": "Dormant: +1.2% net over 30 days, analysts see +2% upside. We've made what we can." },
   { "symbol": "BAC", "exchange": "NYSE", "side": "BUY", "quantity": 13, "orderType": "MARKET", "product": "CNC", "price": 0, "validity": "DAY", "group": "rotation-1", "role": "buy", "rationale": "Consensus target $58 (+15%), 14 analysts; +6% over 30 days; funded by PFE proceeds + cash." },
   { "symbol": "BAC", "exchange": "NYSE", "side": "SELL", "quantity": 13, "orderType": "TRAILING_STOP", "product": "CNC", "price": 0, "trailPercent": 4.2, "validity": "GTC", "group": "rotation-1", "role": "protect", "rationale": "Trail 4.2%: BAC moves 2.1% on a normal day." },
-  { "symbol": "NVDA", "exchange": "NASDAQ", "side": "SELL", "quantity": 4, "orderType": "SL-M", "product": "CNC", "price": 0, "triggerPrice": 192.00, "validity": "DAY", "group": "protect-NVDA", "role": "cancel", "cancelOrderId": "ID_FROM_OPEN_ORDERS", "rationale": "Cancel the DAY stop at $192 so the GTC trailing stop can replace it." },
+  { "symbol": "NVDA", "exchange": "NASDAQ", "side": "SELL", "group": "protect-NVDA", "role": "cancel", "cancelOrderId": "3f9c2b1e-7a4d-4c8e-9b0f-5d6e7a8b9c01", "rationale": "Cancel the DAY stop at $192 so the GTC trailing stop can replace it." },
   { "symbol": "NVDA", "exchange": "NASDAQ", "side": "SELL", "quantity": 4, "orderType": "TRAILING_STOP", "product": "CNC", "price": 0, "trailPercent": 9.9, "validity": "GTC", "group": "protect-NVDA", "role": "protect", "rationale": "Trail 9.9%: NVDA moves 3.3% on a normal day and analysts see 40% upside, so it gets room." }
 ]"#;
 
@@ -228,7 +228,7 @@ pub fn build_briefing_prompt(
 - The single best ride found today (from New Stock Corner) with its evidence: analyst consensus target and upside, 30-day move, catalyst.
 - Selection rule: the rotation target must have consensus upside at least 10 percentage points higher than the dormant position being sold, must have `targets_last_90d` ≥ 3, and must not be up more than 10% intraday (the existing spike rule applies). If no candidate qualifies, no rotation: say so and propose nothing.
 - Show the money: proceeds from the sells at current prices + available cash = budget; whole-share quantity of the buy; leftover cash.
-- The new ride's trailing stop with its trail percent and reason. Trail = 2 × its daily swing (from get_price_history); 3 × if consensus upside ≥ 15.0%, and say it was widened for its potential; clamp to 3.0%–15.0%, round to 0.1; if the swing is unknown, 3.0% and say so."#
+- The new ride's trailing stop with its trail percent and reason. Its daily swing is the `daily_swing_pct` field returned by get_price_history: use it as returned, never recompute it. Trail = 2 × that value; 3 × when the analyst upside is 15% or more, and say it was widened for its potential; never below 3.0% or above 15.0%; rounded to 0.1. If the swing is unknown, 3.0% and say so."#
             .to_string()
     };
 
@@ -254,7 +254,7 @@ Strategy — hitchhiking. Each held stock is a ride: stay on while it climbs; wh
 ## Account Budget
 {cash_line}
 
-Every BUY must fit available cash plus the proceeds of `fund` sells in the same group (shares × current price). Whole shares only. Size buys cumulatively: the total cost of all BUYs stays within that budget. If not even one whole share fits, emit no BUY for it. SELL and stop orders do not use the budget.
+Available cash is one shared budget counted once across ALL buys in this briefing; each rotation group's buy may additionally spend that group's own `fund` sell proceeds. Whole shares only; walk the buys in order. If not even one whole share fits, emit no BUY for it. SELL and stop orders do not use the budget.
 
 ## Open Orders (already working at the broker)
 {open_orders_block}
@@ -305,7 +305,10 @@ The 1-2 most important positions (biggest movers or highest risk): fundamentals 
 - **Affordability**: whether at least one whole share fits available cash alone, or only with a rotation's proceeds
 The top-ranked affordable pick that meets the selection rule is the Rotation target when a rotation exists.
 
-Close with one short risk note and the one-line AI self-disclosure. When you propose a rotation, the risk note states once, plainly: in a cash account, if the new ride's trailing stop fires before the sale proceeds that funded it settle (T+1), that is a good-faith violation; most GTC trailing stops fire days later, but a same-day fire is possible on a volatile name.
+Close with one short risk note, written once, then the one-line AI self-disclosure. The risk note states plainly:
+- When you propose a rotation: in a cash account, if the new ride's trailing stop fires before the sale proceeds that funded it settle (T+1), that is a good-faith violation; most GTC trailing stops fire days later, but a same-day fire is possible on a volatile name.
+- When you propose any trailing stop: a trailing stop can be triggered by an ordinary pullback and sell a ride on noise; the wider trail on high-upside names reduces this.
+- When you propose any MARKET buy: rotation buys are market orders and fill at the live price, not a chosen level.
 
 Keep the briefing concise but substantive: about 10 minutes to read and act on.
 
@@ -326,15 +329,16 @@ Example:
 
 Rules:
 - Every TRAILING_STOP has "validity": "GTC" and trailPercent > 0. Never a DAY stop.
-- A cancel carries cancelOrderId, the symbol and a rationale (e.g. "Cancel the DAY stop at $192 so the GTC trailing stop can replace it."). Only use order ids that appear in the Open Orders block.
+- A cancel carries only symbol, exchange, side "SELL", group, role, cancelOrderId and rationale (e.g. "Cancel the DAY stop at $192 so the GTC trailing stop can replace it."). Only use order ids that appear in the Open Orders block.
+- A `cancel` action has no quantity.
 - A rotation is one group, in this order: cancel legs (one per working sell order on a symbol being sold or re-protected), then the fund sells, then the buy, then the protect trailing stop for the bought symbol. Array order is placement order.
 - A protection group for an existing position is cancel (if an old stop exists) then protect.
 - Rotation buys are MARKET. A fund sell is the whole dormant position.
 - Any other action uses role "standalone".
 
 Position-aware constraints:
-- NEVER SELL a symbol that is not in the Ride Report: you can only sell what the user holds.
-- NEVER sell more shares than the Ride Report's Qty.
+- NEVER SELL a symbol that is not in the Ride Report: you can only sell what the user holds, except the `protect` trailing stop for a symbol bought in the same group, which is sized to that group's bought quantity.
+- NEVER sell more shares than the Ride Report's Qty, except the `protect` trailing stop for a symbol bought in the same group, which is sized to that group's bought quantity.
 - A stop's quantity equals the position's full quantity (for a new ride, the bought quantity)."#,
         paper_note = paper_note,
         report_table = report_table,
@@ -369,7 +373,12 @@ mod briefing_prompt_tests {
     #[test]
     fn prompt_states_proceeds_rule() {
         let p = build_briefing_prompt("T", "c", "o", "PFE", false);
-        assert!(p.contains("proceeds"));
+        assert!(p.contains("that group's own `fund` sell proceeds"));
         assert!(!p.contains("watch-only"));
+    }
+
+    #[test]
+    fn prompt_allows_protect_on_bought_symbol() {
+        assert!(build_briefing_prompt("T", "c", "o", "PFE", false).contains("bought in the same group"));
     }
 }
