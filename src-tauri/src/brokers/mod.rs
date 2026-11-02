@@ -57,6 +57,18 @@ pub trait Broker: Send + Sync {
     /// Get order book
     async fn get_order_book(&self, auth_token: &str) -> Result<Vec<Order>>;
 
+    /// Get only working (open) orders, not capped by the order-book window.
+    ///
+    /// Default: the order book filtered to OPEN, PARTIALLY_FILLED and PENDING.
+    /// Brokers with a dedicated open-orders query override this.
+    async fn get_open_orders(&self, auth_token: &str) -> Result<Vec<Order>> {
+        let orders = self.get_order_book(auth_token).await?;
+        Ok(orders
+            .into_iter()
+            .filter(|o| matches!(o.status.as_str(), "OPEN" | "PARTIALLY_FILLED" | "PENDING"))
+            .collect())
+    }
+
     /// Get trade book
     async fn get_trade_book(&self, auth_token: &str) -> Result<Vec<Order>>;
 
@@ -99,6 +111,21 @@ pub trait Broker: Send + Sync {
     ) -> Result<Vec<AccountActivity>> {
         Err(crate::error::AppError::Broker(
             "Account activities are not supported by this broker".to_string(),
+        ))
+    }
+
+    /// Get the account's fill history, newest first, paging up to `max_pages`
+    /// pages.
+    ///
+    /// Default: not supported. Brokers that expose a fills endpoint
+    /// (e.g. Alpaca) override this.
+    async fn get_fills(
+        &self,
+        _auth_token: &str,
+        _max_pages: u32,
+    ) -> Result<Vec<AccountActivity>> {
+        Err(crate::error::AppError::Broker(
+            "Fill history is not supported by this broker".to_string(),
         ))
     }
 

@@ -699,6 +699,8 @@ impl Broker for AngelBroker {
                     order_timestamp: o.updatetime,
                     exchange_timestamp: o.exchtime,
                     rejection_reason: o.text,
+                    trail_percent: None,
+                    hwm: None,
                 }
             })
             .collect())
@@ -752,6 +754,8 @@ impl Broker for AngelBroker {
                     order_timestamp: o.updatetime,
                     exchange_timestamp: o.exchtime,
                     rejection_reason: o.text,
+                    trail_percent: None,
+                    hwm: None,
                 }
             })
             .collect())

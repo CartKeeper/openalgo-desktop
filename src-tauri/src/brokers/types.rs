@@ -84,6 +84,12 @@ pub struct Order {
     pub order_timestamp: String,
     pub exchange_timestamp: Option<String>,
     pub rejection_reason: Option<String>,
+    /// Trailing-stop trail percent (Alpaca `trail_percent`), when applicable.
+    #[serde(default)]
+    pub trail_percent: Option<f64>,
+    /// Trailing-stop high-water mark (Alpaca `hwm`), when applicable.
+    #[serde(default)]
+    pub hwm: Option<f64>,
 }
 
 /// Position

@@ -587,6 +587,8 @@ impl Broker for SchwabBroker {
                     order_timestamp: o.entered_time,
                     exchange_timestamp: o.close_time,
                     rejection_reason: o.status_description,
+                    trail_percent: None,
+                    hwm: None,
                 }
             })
             .collect())

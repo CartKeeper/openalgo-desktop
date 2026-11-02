@@ -600,6 +600,8 @@ impl Broker for TradierBroker {
                     order_timestamp: o.create_date,
                     exchange_timestamp: o.transaction_date,
                     rejection_reason: o.reason_description,
+                    trail_percent: None,
+                    hwm: None,
                 }
             })
             .collect())

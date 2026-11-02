@@ -546,6 +546,8 @@ impl Broker for ZerodhaBroker {
                 order_timestamp: o.order_timestamp.unwrap_or_default(),
                 exchange_timestamp: o.exchange_timestamp,
                 rejection_reason: o.status_message,
+                trail_percent: None,
+                hwm: None,
             })
             .collect())
     }
@@ -589,6 +591,8 @@ impl Broker for ZerodhaBroker {
                 order_timestamp: o.order_timestamp.unwrap_or_default(),
                 exchange_timestamp: o.exchange_timestamp,
                 rejection_reason: o.status_message,
+                trail_percent: None,
+                hwm: None,
             })
             .collect())
     }

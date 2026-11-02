@@ -816,6 +816,8 @@ impl Broker for FyersBroker {
                     order_timestamp: o.orderDateTime.unwrap_or_default(),
                     exchange_timestamp: None,
                     rejection_reason: o.message,
+                    trail_percent: None,
+                    hwm: None,
                 }
             })
             .collect();
@@ -875,6 +877,8 @@ impl Broker for FyersBroker {
                     order_timestamp: t.orderDateTime.unwrap_or_default(),
                     exchange_timestamp: None,
                     rejection_reason: None,
+                    trail_percent: None,
+                    hwm: None,
                 }
             })
             .collect();

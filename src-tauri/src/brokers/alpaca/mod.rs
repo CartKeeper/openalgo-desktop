@@ -278,6 +278,10 @@ struct AlpacaOrder {
     filled_at: Option<String>,
     #[serde(default)]
     asset_class: Option<String>,
+    #[serde(default)]
+    trail_percent: Option<String>,
+    #[serde(default)]
+    hwm: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -590,32 +594,31 @@ impl Broker for AlpacaBroker {
 
         let orders: Vec<AlpacaOrder> = response.json().await?;
 
-        Ok(orders.into_iter().map(|o| {
-            let qty = parse_f64_or_zero(o.qty.as_deref());
-            let filled = parse_f64_or_zero(o.filled_qty.as_deref());
-            let pending = qty - filled;
+        Ok(map_alpaca_orders(orders))
+    }
 
-            Order {
-                order_id: o.id,
-                exchange_order_id: Some(o.client_order_id),
-                symbol: o.symbol,
-                exchange: "US".to_string(),
-                side: o.side.to_uppercase(),
-                quantity: qty as f64,
-                filled_quantity: filled as f64,
-                pending_quantity: pending as f64,
-                price: parse_f64_or_zero(o.limit_price.as_deref()),
-                trigger_price: parse_f64_or_zero(o.stop_price.as_deref()),
-                average_price: parse_f64_or_zero(o.filled_avg_price.as_deref()),
-                order_type: map_order_type_back(&o.order_type),
-                product: "CNC".to_string(),
-                status: map_order_status(&o.status),
-                validity: o.time_in_force.to_uppercase(),
-                order_timestamp: o.created_at,
-                exchange_timestamp: o.filled_at,
-                rejection_reason: None,
-            }
-        }).collect())
+    async fn get_open_orders(&self, auth_token: &str) -> Result<Vec<Order>> {
+        let (api_key, api_secret) = parse_auth_token(auth_token)?;
+        let base_url = Self::get_base_url(&api_key);
+
+        let response = self
+            .client
+            .get(format!("{}/v2/orders?status=open&limit=500", base_url))
+            .headers(self.get_headers(&api_key, &api_secret))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_body = response.text().await.unwrap_or_default();
+            return Err(AppError::Broker(format!(
+                "Failed to get open orders: {}",
+                error_body
+            )));
+        }
+
+        let orders: Vec<AlpacaOrder> = response.json().await?;
+
+        Ok(map_alpaca_orders(orders))
     }
 
     async fn get_trade_book(&self, auth_token: &str) -> Result<Vec<Order>> {
@@ -663,6 +666,8 @@ impl Broker for AlpacaBroker {
                     order_timestamp: o.created_at,
                     exchange_timestamp: o.filled_at,
                     rejection_reason: None,
+                    trail_percent: None,
+                    hwm: None,
                 }
             })
             .collect())
@@ -820,22 +825,60 @@ impl Broker for AlpacaBroker {
 
         let raw: Vec<AlpacaActivity> = response.json().await?;
 
-        Ok(raw
-            .into_iter()
-            .map(|a| AccountActivity {
-                id: a.id,
-                activity_type: a.activity_type,
-                date: a.transaction_time.or(a.date),
-                symbol: a.symbol,
-                side: a.side,
-                qty: a.qty.as_deref().and_then(|s| s.parse().ok()),
-                price: a.price.as_deref().and_then(|s| s.parse().ok()),
-                net_amount: a.net_amount.as_deref().and_then(|s| s.parse().ok()),
-                per_share_amount: a.per_share_amount.as_deref().and_then(|s| s.parse().ok()),
-                order_id: a.order_id,
-                status: a.order_status,
-            })
-            .collect())
+        Ok(raw.into_iter().map(map_activity).collect())
+    }
+
+    async fn get_fills(
+        &self,
+        auth_token: &str,
+        max_pages: u32,
+    ) -> Result<Vec<AccountActivity>> {
+        const PAGE_SIZE: usize = 100;
+
+        let (api_key, api_secret) = parse_auth_token(auth_token)?;
+        let base_url = Self::get_base_url(&api_key);
+
+        let mut fills: Vec<AccountActivity> = Vec::new();
+        let mut page_token: Option<String> = None;
+        let mut pages_fetched: u32 = 0;
+
+        while pages_fetched < max_pages {
+            let mut url = format!(
+                "{}/v2/account/activities/FILL?page_size={}&direction=desc",
+                base_url, PAGE_SIZE
+            );
+            if let Some(token) = &page_token {
+                url.push_str(&format!("&page_token={}", token));
+            }
+
+            let response = self
+                .client
+                .get(url)
+                .headers(self.get_headers(&api_key, &api_secret))
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                let error_body = response.text().await.unwrap_or_default();
+                return Err(AppError::Broker(format!(
+                    "Failed to get fill history: {}",
+                    error_body
+                )));
+            }
+
+            let raw: Vec<AlpacaActivity> = response.json().await?;
+            pages_fetched += 1;
+
+            let page_len = raw.len();
+            page_token = raw.last().map(|a| a.id.clone());
+            fills.extend(raw.into_iter().map(map_activity));
+
+            if page_len < PAGE_SIZE {
+                break;
+            }
+        }
+
+        Ok(fills)
     }
 
     async fn get_portfolio_history(
@@ -1334,6 +1377,56 @@ fn parse_auth_token(auth_token: &str) -> Result<(String, String)> {
     Ok((parts[0].to_string(), parts[1].to_string()))
 }
 
+fn map_alpaca_orders(orders: Vec<AlpacaOrder>) -> Vec<Order> {
+    orders
+        .into_iter()
+        .map(|o| {
+            let qty = parse_f64_or_zero(o.qty.as_deref());
+            let filled = parse_f64_or_zero(o.filled_qty.as_deref());
+            let pending = qty - filled;
+
+            Order {
+                order_id: o.id,
+                exchange_order_id: Some(o.client_order_id),
+                symbol: o.symbol,
+                exchange: "US".to_string(),
+                side: o.side.to_uppercase(),
+                quantity: qty as f64,
+                filled_quantity: filled as f64,
+                pending_quantity: pending as f64,
+                price: parse_f64_or_zero(o.limit_price.as_deref()),
+                trigger_price: parse_f64_or_zero(o.stop_price.as_deref()),
+                average_price: parse_f64_or_zero(o.filled_avg_price.as_deref()),
+                order_type: map_order_type_back(&o.order_type),
+                product: "CNC".to_string(),
+                status: map_order_status(&o.status),
+                validity: o.time_in_force.to_uppercase(),
+                order_timestamp: o.created_at,
+                exchange_timestamp: o.filled_at,
+                rejection_reason: None,
+                trail_percent: o.trail_percent.as_deref().and_then(|v| v.parse().ok()),
+                hwm: o.hwm.as_deref().and_then(|v| v.parse().ok()),
+            }
+        })
+        .collect()
+}
+
+fn map_activity(a: AlpacaActivity) -> AccountActivity {
+    AccountActivity {
+        id: a.id,
+        activity_type: a.activity_type,
+        date: a.transaction_time.or(a.date),
+        symbol: a.symbol,
+        side: a.side,
+        qty: a.qty.as_deref().and_then(|s| s.parse().ok()),
+        price: a.price.as_deref().and_then(|s| s.parse().ok()),
+        net_amount: a.net_amount.as_deref().and_then(|s| s.parse().ok()),
+        per_share_amount: a.per_share_amount.as_deref().and_then(|s| s.parse().ok()),
+        order_id: a.order_id,
+        status: a.order_status,
+    }
+}
+
 fn parse_f64_or_zero(s: Option<&str>) -> f64 {
     s.and_then(|v| v.parse().ok()).unwrap_or(0.0)
 }
@@ -1569,5 +1662,23 @@ mod spendable_cash_tests {
         // Older/odd payloads: empty string doesn't parse — use min(cash, buying_power).
         assert_eq!(spendable_cash("", 1300.41, 436.39), 436.39);
         assert_eq!(spendable_cash("", 200.0, 436.39), 200.0);
+    }
+}
+
+#[cfg(test)]
+mod order_parse_tests {
+    use super::*;
+
+    #[test]
+    fn maps_trailing_stop_fields_from_alpaca_order() {
+        let body = r#"[{"id":"abc","client_order_id":"c1","symbol":"NVDA","side":"sell","type":"trailing_stop",
+          "qty":"4","filled_qty":"0","status":"new","time_in_force":"gtc","created_at":"2026-11-02T14:00:00Z",
+          "trail_percent":"9.9","hwm":"210.5"}]"#;
+        let orders: Vec<AlpacaOrder> = serde_json::from_str(body).unwrap();
+        let mapped = map_alpaca_orders(orders);
+        assert_eq!(mapped[0].order_type, "TRAILING_STOP");
+        assert_eq!(mapped[0].validity, "GTC");
+        assert_eq!(mapped[0].trail_percent, Some(9.9));
+        assert_eq!(mapped[0].hwm, Some(210.5));
     }
 }

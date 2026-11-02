@@ -554,6 +554,8 @@ impl Broker for IbkrBroker {
                         Some(o.last_execution_time)
                     },
                     rejection_reason: o.order_desc,
+                    trail_percent: None,
+                    hwm: None,
                 }
             })
             .collect())
