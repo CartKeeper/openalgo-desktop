@@ -173,8 +173,8 @@ describe('ActionReviewModal', () => {
     )
 
     const cancelBadge = screen.getByText('Cancel order')
-    const cancelCard = cancelBadge.closest('.p-3') as HTMLElement
-    expect(cancelCard).not.toBeNull()
+    const cancelCard = screen.getByTestId('cancel-card')
+    expect(cancelCard).toContainElement(cancelBadge)
     expect(within(cancelCard).getByText('PFE')).toBeInTheDocument()
     expect(
       within(cancelCard).getByText('Release the shares held by the open PFE stop.')
@@ -236,6 +236,68 @@ describe('ActionReviewModal', () => {
     await waitFor(() => expect(mocks.placeStrategyBasket).toHaveBeenCalledTimes(1))
     expect(mocks.getMarketClock).toHaveBeenCalledTimes(3)
     await screen.findByText('BAC · protect')
+  })
+
+  it.each([
+    ['closed', () => mocks.getMarketClock.mockResolvedValueOnce(CLOSED), MARKET_CLOSED_LINE],
+    [
+      'unreadable',
+      () => mocks.getMarketClock.mockRejectedValueOnce('clock timeout'),
+      `${MARKET_CLOSED_LINE} (could not read the market clock)`,
+    ],
+  ])('refuses at submit time when the on-Place clock read is %s', async (_label, onPlaceRead, line) => {
+    mocks.getMarketClock.mockResolvedValueOnce(OPEN) // read on open
+    onPlaceRead() // read at the top of Place
+    const user = userEvent.setup()
+    render(<ActionReviewModal />)
+
+    await acknowledge(user)
+    await waitFor(() => expect(placeButton()).toBeEnabled())
+    expect(screen.queryByText(MARKET_CLOSED_LINE, { exact: false })).toBeNull()
+
+    await user.click(placeButton())
+
+    expect(await screen.findByText(line)).toBeInTheDocument()
+    expect(mocks.getMarketClock).toHaveBeenCalledTimes(2)
+    expect(mocks.placeStrategyBasket).not.toHaveBeenCalled()
+    expect(mocks.reconcile).not.toHaveBeenCalled()
+    expect(mocks.toast.error).not.toHaveBeenCalled()
+    expect(useActionQueueStore.getState().isSubmitting).toBe(false)
+    expect(placeButton()).toBeDisabled()
+  })
+
+  it('keeps the on-Place refusal when an older interval read lands afterwards', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let resolveIntervalRead: (clock: typeof OPEN) => void = () => undefined
+    mocks.getMarketClock
+      .mockResolvedValueOnce(OPEN) // read on open
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveIntervalRead = resolve
+          })
+      ) // 60 s interval read, still in flight when Place is clicked
+      .mockResolvedValueOnce(CLOSED) // read at the top of Place
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    render(<ActionReviewModal />)
+
+    await acknowledge(user)
+    await waitFor(() => expect(placeButton()).toBeEnabled())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(mocks.getMarketClock).toHaveBeenCalledTimes(2)
+
+    await user.click(placeButton())
+    await screen.findByText(MARKET_CLOSED_LINE)
+    expect(mocks.placeStrategyBasket).not.toHaveBeenCalled()
+
+    // The older interval read now resolves "open"; it must not undo the refusal.
+    await act(async () => {
+      resolveIntervalRead(OPEN)
+    })
+    expect(screen.getByText(MARKET_CLOSED_LINE)).toBeInTheDocument()
+    expect(placeButton()).toBeDisabled()
   })
 
   it('does not gate a batch that is only GTC trailing stops', async () => {
@@ -394,7 +456,9 @@ describe('ActionReviewModal', () => {
 
     // Results list each leg as SYMBOL · role with its message (successes too).
     expect(await screen.findByText('PFE · fund')).toBeInTheDocument()
+    // A successful strategy leg shows its message instead of the order ID.
     expect(screen.getByText('Filled 10, remainder confirmed cancelled')).toBeInTheDocument()
+    expect(screen.queryByText('Order ID: ord-f')).toBeNull()
     expect(screen.getByText('PFE · cancel')).toBeInTheDocument()
     expect(screen.getByText('Cancelled ord-stop-1')).toBeInTheDocument()
     expect(screen.getByText('BAC · buy')).toBeInTheDocument()
@@ -466,8 +530,21 @@ describe('ActionReviewModal', () => {
     mocks.tradingPlaceBasketOrder.mockResolvedValue({
       status: 'success',
       data: [
-        { symbol: 'AAPL', exchange: 'NASDAQ', orderId: 'o-1', success: true, message: '' },
-        { symbol: 'KO', exchange: 'NYSE', orderId: 'o-2', success: true, message: '' },
+        // The real backend always sends a success message (order_service.rs).
+        {
+          symbol: 'AAPL',
+          exchange: 'NASDAQ',
+          orderId: 'o-1',
+          success: true,
+          message: 'Order placed successfully',
+        },
+        {
+          symbol: 'KO',
+          exchange: 'NYSE',
+          orderId: 'o-2',
+          success: true,
+          message: 'Order placed successfully',
+        },
       ],
     })
     const user = userEvent.setup()
@@ -508,7 +585,10 @@ describe('ActionReviewModal', () => {
     )
     expect(mocks.placeStrategyBasket).not.toHaveBeenCalled()
     expect(mocks.getMarketClock).not.toHaveBeenCalled()
+    // Ordinary basket results keep showing the order ID, not the stock message.
     expect(await screen.findByText('Order ID: o-2')).toBeInTheDocument()
+    expect(screen.getByText('Order ID: o-1')).toBeInTheDocument()
+    expect(screen.queryByText('Order placed successfully')).toBeNull()
   })
 
   it('adds sell proceeds to the Gate B cost line and funds the buys with them', async () => {
@@ -527,5 +607,18 @@ describe('ActionReviewModal', () => {
     expect(mocks.getQuote).toHaveBeenCalledWith([{ exchange: 'NYSE', symbol: 'PFE' }])
     // $1,200 of buys against $1,000 cash + $250 proceeds: no over-budget warning.
     expect(screen.queryByText(/exceed it and will be reduced/)).toBeNull()
+  })
+
+  it('shows the over-budget warning for the same buy when the sell cannot be priced', async () => {
+    mocks.getQuote.mockRejectedValue('quote feed down')
+    seed([
+      rotation[1],
+      { ...rotation[2], orderType: 'LIMIT', price: 40, quantity: 30 }, // $1,200 > $1,000 cash
+    ])
+    render(<ActionReviewModal />)
+
+    expect(await screen.findByText(/exceed it and will be reduced/)).toBeInTheDocument()
+    await waitFor(() => expect(mocks.getQuote).toHaveBeenCalledTimes(1))
+    expect(screen.queryByText(/Sell proceeds about/)).toBeNull()
   })
 })

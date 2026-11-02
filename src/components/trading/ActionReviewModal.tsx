@@ -1,5 +1,5 @@
 import { Check, Copy, Loader2, ShoppingCart, X } from 'lucide-react'
-import { Fragment, useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { emit } from '@tauri-apps/api/event'
 import {
@@ -141,33 +141,34 @@ async function readMarketClock(): Promise<MarketClockState> {
 /**
  * Market-hours gate: while enabled, reads the market clock immediately and then
  * every 60 s. `recheck` reads it once more (used at the top of Place).
- * `marketClock` is null until the first read lands.
+ * `marketClock` is null until the first read lands. The last-ISSUED read wins:
+ * a slower, older read never overwrites a newer one.
  */
 function useMarketGate(enabled: boolean) {
   const [marketClock, setMarketClock] = useState<MarketClockState | null>(null)
+  // Sequence number of the most recently issued read (bumped on disable too,
+  // so reads in flight when the gate turns off are ignored).
+  const latestRead = useRef(0)
+
+  const issueRead = useCallback(async () => {
+    const seq = ++latestRead.current
+    const state = await readMarketClock()
+    if (seq === latestRead.current) setMarketClock(state)
+    return state
+  }, [])
 
   useEffect(() => {
     if (!enabled) return
-    let cancelled = false
     setMarketClock(null)
-    const read = () => {
-      void readMarketClock().then((state) => {
-        if (!cancelled) setMarketClock(state)
-      })
-    }
-    read()
-    const timer = setInterval(read, MARKET_CLOCK_POLL_MS)
+    void issueRead()
+    const timer = setInterval(() => void issueRead(), MARKET_CLOCK_POLL_MS)
     return () => {
-      cancelled = true
       clearInterval(timer)
+      latestRead.current++
     }
-  }, [enabled])
+  }, [enabled, issueRead])
 
-  const recheck = useCallback(async () => {
-    const state = await readMarketClock()
-    setMarketClock(state)
-    return state.isOpen
-  }, [])
+  const recheck = useCallback(async () => (await issueRead()).isOpen, [issueRead])
 
   return { marketClock, recheck }
 }
@@ -312,7 +313,7 @@ function CancelCard({
   onRemove: (id: string) => void
 }) {
   return (
-    <div className="rounded-lg border p-3 space-y-2">
+    <div data-testid="cancel-card" className="rounded-lg border p-3 space-y-2">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold">{item.symbol}</span>
@@ -360,6 +361,10 @@ export function ActionReviewModal({
   const setSubmitting = useActionQueueStore((s) => s.setSubmitting)
   const setResults = useActionQueueStore((s) => s.setResults)
   const [showResults, setShowResults] = useState(false)
+  // Strategy leg results carry meaningful text on success ("remainder confirmed
+  // cancelled"); ordinary basket results always say "Order placed successfully",
+  // so those keep showing the order ID.
+  const [resultsFromStrategy, setResultsFromStrategy] = useState(false)
   const [cloneName, setCloneName] = useState('')
   // Gate B (pre-execution acknowledgment) — required before any LIVE order.
   const [acknowledged, setAcknowledged] = useState(false)
@@ -450,10 +455,11 @@ export function ActionReviewModal({
     }
   }, [isReviewOpen, onApply])
 
-  const showPlacementResults = (results: BasketOrderResult[]) => {
+  const showPlacementResults = (results: BasketOrderResult[], fromStrategy: boolean) => {
     const successCount = results.filter((r) => r.success).length
     const failCount = results.length - successCount
 
+    setResultsFromStrategy(fromStrategy)
     setResults(results)
     setShowResults(true)
 
@@ -552,7 +558,7 @@ export function ActionReviewModal({
           buildStrategyLegs(items),
           !freshLive
         )
-        showPlacementResults(legResultsToBasketResults(legResults, items))
+        showPlacementResults(legResultsToBasketResults(legResults, items), true)
         return
       }
 
@@ -567,7 +573,7 @@ export function ActionReviewModal({
       )
 
       if (response.status === 'success' && response.data) {
-        showPlacementResults(response.data)
+        showPlacementResults(response.data, false)
       } else {
         toast.error(response.message || 'Failed to place basket order')
         setSubmitting(false)
@@ -587,6 +593,7 @@ export function ActionReviewModal({
 
   const handleClose = () => {
     setShowResults(false)
+    setResultsFromStrategy(false)
     setCloneName('')
     setAcknowledged(false)
     close()
@@ -712,11 +719,11 @@ export function ActionReviewModal({
                   <span className="text-sm font-semibold">{result.symbol}</span>
                 </div>
                 <span className="text-xs text-muted-foreground">
-                  {result.message
+                  {resultsFromStrategy && result.message
                     ? result.message
                     : result.success
                       ? `Order ID: ${result.orderId || 'N/A'}`
-                      : 'Failed'}
+                      : result.message || 'Failed'}
                 </span>
               </div>
             ))
