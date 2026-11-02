@@ -14,10 +14,10 @@
 //! the next one. A group with a cancel, fund or buy leg runs only while the
 //! market clock says open; otherwise none of its legs is sent.
 
-use crate::brokers::types::{Order, OrderRequest};
+use crate::brokers::types::{MarketClock, Order, OrderRequest};
 use crate::error::{AppError, Result};
 use crate::services::market_status_service::MarketStatusService;
-use crate::services::{OrderService, OrderbookService, PlaceOrderResult};
+use crate::services::{CancelOrderResult, OrderService, OrderbookService, PlaceOrderResult};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -423,45 +423,92 @@ fn failed(leg: &StrategyLeg, order_id: Option<String>, filled: f64, message: Str
     Err((leg_result(leg, false, order_id, filled, message), reason))
 }
 
-/// One order-status lookup. Outer `None` = the lookup failed or timed out
-/// (logged); `Some(None)` = the order is not in the order book.
-async fn lookup_status(state: &AppState, order_id: &str) -> Option<Option<Order>> {
-    match tokio::time::timeout(LOOKUP_TIMEOUT, OrderbookService::get_order_status(state, order_id, None)).await {
-        Ok(Ok(r)) => Some(r.order),
-        Ok(Err(e)) => {
-            warn!("strategy basket: status lookup for {} failed: {}", order_id, e);
-            None
-        }
-        Err(_) => {
-            warn!("strategy basket: status lookup for {} timed out", order_id);
-            None
-        }
-    }
+/// What the executor needs from the broker. The live implementation wraps
+/// `AppState`; tests script it (instant sleeps, a virtual clock, a call log).
+trait BasketBroker {
+    /// Place one order, carrying the acknowledged mode (Gate B).
+    async fn place_order(&self, order: OrderRequest, expected_mode: Option<bool>) -> Result<PlaceOrderResult>;
+    /// Cancel one order by id.
+    async fn cancel_order(&self, order_id: &str) -> Result<CancelOrderResult>;
+    /// One order-status lookup. Outer `None` = the lookup failed or timed out
+    /// (logged); `Some(None)` = the order is not in the order book.
+    async fn order_status(&self, order_id: &str) -> Option<Option<Order>>;
+    /// Whether the order is still listed among open orders. `None` = lookup failed.
+    async fn is_open(&self, order_id: &str) -> Option<bool>;
+    /// The broker's market clock.
+    async fn market_clock(&self) -> Result<MarketClock>;
+    /// Wait between polls.
+    async fn sleep(&self, duration: Duration);
+    /// Current time, for the 30 s / 60 s wait caps.
+    fn now(&self) -> Instant;
 }
 
-/// Whether the order is still listed among open orders. `None` = lookup failed.
-async fn lookup_is_open(state: &AppState, order_id: &str) -> Option<bool> {
-    match tokio::time::timeout(LOOKUP_TIMEOUT, OrderbookService::get_open_orders(state, None)).await {
-        Ok(Ok(open)) => Some(open.orders.iter().any(|o| o.order_id == order_id)),
-        Ok(Err(e)) => {
-            warn!("strategy basket: open orders lookup failed: {}", e);
-            None
+/// The live broker: the app's order, order-book and market-clock services.
+struct LiveBroker<'a> {
+    state: &'a AppState,
+}
+
+impl BasketBroker for LiveBroker<'_> {
+    async fn place_order(&self, order: OrderRequest, expected_mode: Option<bool>) -> Result<PlaceOrderResult> {
+        OrderService::place_order(self.state, order, None, expected_mode).await
+    }
+
+    async fn cancel_order(&self, order_id: &str) -> Result<CancelOrderResult> {
+        OrderService::cancel_order(self.state, order_id, None, None).await
+    }
+
+    async fn order_status(&self, order_id: &str) -> Option<Option<Order>> {
+        match tokio::time::timeout(LOOKUP_TIMEOUT, OrderbookService::get_order_status(self.state, order_id, None)).await {
+            Ok(Ok(r)) => Some(r.order),
+            Ok(Err(e)) => {
+                warn!("strategy basket: status lookup for {} failed: {}", order_id, e);
+                None
+            }
+            Err(_) => {
+                warn!("strategy basket: status lookup for {} timed out", order_id);
+                None
+            }
         }
-        Err(_) => {
-            warn!("strategy basket: open orders lookup timed out");
-            None
+    }
+
+    async fn is_open(&self, order_id: &str) -> Option<bool> {
+        match tokio::time::timeout(LOOKUP_TIMEOUT, OrderbookService::get_open_orders(self.state, None)).await {
+            Ok(Ok(open)) => Some(open.orders.iter().any(|o| o.order_id == order_id)),
+            Ok(Err(e)) => {
+                warn!("strategy basket: open orders lookup failed: {}", e);
+                None
+            }
+            Err(_) => {
+                warn!("strategy basket: open orders lookup timed out");
+                None
+            }
         }
+    }
+
+    async fn market_clock(&self) -> Result<MarketClock> {
+        match tokio::time::timeout(LOOKUP_TIMEOUT, MarketStatusService::get_clock(self.state, None)).await {
+            Ok(clock) => clock,
+            Err(_) => Err(AppError::Broker("market clock read timed out".to_string())),
+        }
+    }
+
+    async fn sleep(&self, duration: Duration) {
+        tokio::time::sleep(duration).await
+    }
+
+    fn now(&self) -> Instant {
+        Instant::now()
     }
 }
 
 /// Polls until the cancel shows up in the order book (or the order is no
 /// longer open), or the cap is reached.
-async fn wait_for_cancel(state: &AppState, order_id: &str) -> CancelOutcome {
-    let start = Instant::now();
+async fn wait_for_cancel(broker: &impl BasketBroker, order_id: &str) -> CancelOutcome {
+    let start = broker.now();
     loop {
-        tokio::time::sleep(Duration::from_secs(POLL_SECONDS)).await;
+        broker.sleep(Duration::from_secs(POLL_SECONDS)).await;
 
-        match lookup_status(state, order_id).await {
+        match broker.order_status(order_id).await {
             Some(Some(order)) if is_cancelled(&order) => return CancelOutcome::Cancelled,
             Some(Some(order)) if is_filled(&order) => {
                 return CancelOutcome::Failed("the order had already filled".to_string())
@@ -471,27 +518,27 @@ async fn wait_for_cancel(state: &AppState, order_id: &str) -> CancelOutcome {
             }
             Some(Some(_)) => {}
             Some(None) => {
-                if lookup_is_open(state, order_id).await == Some(false) {
+                if broker.is_open(order_id).await == Some(false) {
                     return CancelOutcome::Cancelled;
                 }
             }
             None => {}
         }
 
-        if start.elapsed() >= Duration::from_secs(CANCEL_CAP_SECONDS) {
+        if broker.now().duration_since(start) >= Duration::from_secs(CANCEL_CAP_SECONDS) {
             return CancelOutcome::TimedOut;
         }
     }
 }
 
 /// Polls until the order fills, ends, or the cap is reached.
-async fn wait_for_fill(state: &AppState, order_id: &str) -> FillOutcome {
-    let start = Instant::now();
+async fn wait_for_fill(broker: &impl BasketBroker, order_id: &str) -> FillOutcome {
+    let start = broker.now();
     let mut last_filled = 0.0_f64;
     loop {
-        tokio::time::sleep(Duration::from_secs(POLL_SECONDS)).await;
+        broker.sleep(Duration::from_secs(POLL_SECONDS)).await;
 
-        if let Some(Some(order)) = lookup_status(state, order_id).await {
+        if let Some(Some(order)) = broker.order_status(order_id).await {
             last_filled = order.filled_quantity;
             if is_filled(&order) {
                 return FillOutcome::Filled(order.filled_quantity);
@@ -513,7 +560,7 @@ async fn wait_for_fill(state: &AppState, order_id: &str) -> FillOutcome {
             }
         }
 
-        if start.elapsed() >= Duration::from_secs(FILL_CAP_SECONDS) {
+        if broker.now().duration_since(start) >= Duration::from_secs(FILL_CAP_SECONDS) {
             return FillOutcome::Partial(last_filled);
         }
     }
@@ -522,17 +569,17 @@ async fn wait_for_fill(state: &AppState, order_id: &str) -> FillOutcome {
 /// Cancels whatever is left of an order that stopped short, waits for the
 /// cancel to take effect, then re-reads the order so the final fill count is
 /// what the broker actually shows after the race.
-async fn settle_remainder(state: &AppState, order_id: &str, last_filled: f64) -> Settled {
+async fn settle_remainder(broker: &impl BasketBroker, order_id: &str, last_filled: f64) -> Settled {
     let mut wait_confirmed = false;
-    match OrderService::cancel_order(state, order_id, None, None).await {
+    match broker.cancel_order(order_id).await {
         Ok(r) if r.success => {
-            wait_confirmed = matches!(wait_for_cancel(state, order_id).await, CancelOutcome::Cancelled);
+            wait_confirmed = matches!(wait_for_cancel(broker, order_id).await, CancelOutcome::Cancelled);
         }
         Ok(r) => warn!("strategy basket: cancel of remainder of {} was refused: {}", order_id, r.message),
         Err(e) => warn!("strategy basket: could not cancel remainder of {}: {}", order_id, e),
     }
 
-    match lookup_status(state, order_id).await {
+    match broker.order_status(order_id).await {
         Some(Some(order)) => Settled {
             filled: order.filled_quantity,
             confirmed: wait_confirmed || is_cancelled(&order) || is_filled(&order),
@@ -542,19 +589,23 @@ async fn settle_remainder(state: &AppState, order_id: &str, last_filled: f64) ->
     }
 }
 
-async fn place(state: &AppState, order: OrderRequest, expected_mode: Option<bool>) -> std::result::Result<PlaceOrderResult, String> {
-    match OrderService::place_order(state, order, None, expected_mode).await {
+async fn place(
+    broker: &impl BasketBroker,
+    order: OrderRequest,
+    expected_mode: Option<bool>,
+) -> std::result::Result<PlaceOrderResult, String> {
+    match broker.place_order(order, expected_mode).await {
         Ok(r) if r.success => Ok(r),
         Ok(r) => Err(r.message),
         Err(e) => Err(e.to_string()),
     }
 }
 
-async fn run_cancel(state: &AppState, leg: &StrategyLeg) -> StepResult {
+async fn run_cancel(broker: &impl BasketBroker, leg: &StrategyLeg) -> StepResult {
     let order_id = leg.cancel_order_id.clone().unwrap_or_default();
     let label = short_id(&order_id);
 
-    match OrderService::cancel_order(state, &order_id, None, None).await {
+    match broker.cancel_order(&order_id).await {
         Ok(r) if r.success => {}
         Ok(r) => {
             return failed(
@@ -576,7 +627,7 @@ async fn run_cancel(state: &AppState, leg: &StrategyLeg) -> StepResult {
         }
     }
 
-    match wait_for_cancel(state, &order_id).await {
+    match wait_for_cancel(broker, &order_id).await {
         CancelOutcome::Cancelled => Ok(leg_result(
             leg,
             true,
@@ -602,12 +653,12 @@ async fn run_cancel(state: &AppState, leg: &StrategyLeg) -> StepResult {
 }
 
 /// Fund (market sell) and Buy (market buy): place, then wait for the fill.
-async fn run_fill(state: &AppState, leg: &StrategyLeg, expected_mode: Option<bool>) -> StepResult {
+async fn run_fill(broker: &impl BasketBroker, leg: &StrategyLeg, expected_mode: Option<bool>) -> StepResult {
     let word = role_word(&leg.role);
     let order = leg.order.clone().unwrap_or_else(|| unreachable!("validated by plan_groups"));
     let wanted = order.quantity;
 
-    let placed = match place(state, order, expected_mode).await {
+    let placed = match place(broker, order, expected_mode).await {
         Ok(r) => r,
         Err(msg) => {
             return failed(leg, None, 0.0, format!("{} {} failed: {}", leg.symbol, word, msg), REASON_FAILED)
@@ -624,7 +675,7 @@ async fn run_fill(state: &AppState, leg: &StrategyLeg, expected_mode: Option<boo
         );
     };
 
-    match wait_for_fill(state, &id).await {
+    match wait_for_fill(broker, &id).await {
         FillOutcome::Filled(qty) if qty > 0.0 => Ok(leg_result(
             leg,
             true,
@@ -648,7 +699,7 @@ async fn run_fill(state: &AppState, leg: &StrategyLeg, expected_mode: Option<boo
         ),
         FillOutcome::Partial(last_filled) => {
             // Stopped short: cancel the rest, then trust only a fresh read.
-            let settled = settle_remainder(state, &id, last_filled).await;
+            let settled = settle_remainder(broker, &id, last_filled).await;
             let note = remainder_note(settled.confirmed);
             let qty = settled.filled;
             if wanted > 0.0 && qty >= wanted - 1e-9 {
@@ -706,7 +757,7 @@ async fn run_fill(state: &AppState, leg: &StrategyLeg, expected_mode: Option<boo
 /// Protect: place the stop. When a buy precedes it in the group the stop is
 /// sized to what actually filled (`bought`, taken from the same-symbol buy).
 async fn run_protect(
-    state: &AppState,
+    broker: &impl BasketBroker,
     leg: &StrategyLeg,
     bought: Option<f64>,
     expected_mode: Option<bool>,
@@ -727,7 +778,7 @@ async fn run_protect(
     let qty = order.quantity;
     let success_message = protect_success_message(&leg.symbol, &order.order_type, &order.validity);
 
-    match place(state, order, expected_mode).await {
+    match place(broker, order, expected_mode).await {
         Ok(r) => Ok(leg_result(leg, true, r.order_id, qty, success_message)),
         Err(msg) => failed(
             leg,
@@ -740,11 +791,11 @@ async fn run_protect(
 }
 
 /// Standalone: a single order with no sequencing.
-async fn run_standalone(state: &AppState, leg: &StrategyLeg, expected_mode: Option<bool>) -> StepResult {
+async fn run_standalone(broker: &impl BasketBroker, leg: &StrategyLeg, expected_mode: Option<bool>) -> StepResult {
     let order = leg.order.clone().unwrap_or_else(|| unreachable!("validated by plan_groups"));
     let qty = order.quantity;
     let side = order.side.to_lowercase();
-    match place(state, order, expected_mode).await {
+    match place(broker, order, expected_mode).await {
         Ok(r) => Ok(leg_result(
             leg,
             true,
@@ -764,23 +815,19 @@ async fn run_standalone(state: &AppState, leg: &StrategyLeg, expected_mode: Opti
 
 /// Whether the market is open now. `None` = the clock could not be read (a
 /// timeout counts as a failed read).
-async fn read_market_open(state: &AppState) -> Option<bool> {
-    match tokio::time::timeout(LOOKUP_TIMEOUT, MarketStatusService::get_clock(state, None)).await {
-        Ok(Ok(clock)) => Some(clock.is_open),
-        Ok(Err(e)) => {
+async fn read_market_open(broker: &impl BasketBroker) -> Option<bool> {
+    match broker.market_clock().await {
+        Ok(clock) => Some(clock.is_open),
+        Err(e) => {
             warn!("strategy basket: market clock read failed: {}", e);
-            None
-        }
-        Err(_) => {
-            warn!("strategy basket: market clock read timed out");
             None
         }
     }
 }
 
-async fn run_group(state: &AppState, group: Vec<StrategyLeg>, expected_mode: Option<bool>) -> Vec<LegResult> {
+async fn run_group(broker: &impl BasketBroker, group: Vec<StrategyLeg>, expected_mode: Option<bool>) -> Vec<LegResult> {
     if group_needs_open_market(&group) {
-        match read_market_open(state).await {
+        match read_market_open(broker).await {
             Some(true) => {}
             Some(false) => return closed_market_results(&group, false),
             None => return closed_market_results(&group, true),
@@ -805,13 +852,13 @@ async fn run_group(state: &AppState, group: Vec<StrategyLeg>, expected_mode: Opt
         }
 
         let step = match leg.role {
-            LegRole::Cancel => run_cancel(state, &leg).await,
-            LegRole::Fund | LegRole::Buy => run_fill(state, &leg, expected_mode).await,
+            LegRole::Cancel => run_cancel(broker, &leg).await,
+            LegRole::Fund | LegRole::Buy => run_fill(broker, &leg, expected_mode).await,
             LegRole::Protect => {
                 let filled = bought.get(&leg.symbol.to_uppercase()).copied();
-                run_protect(state, &leg, filled, expected_mode).await
+                run_protect(broker, &leg, filled, expected_mode).await
             }
-            LegRole::Standalone => run_standalone(state, &leg, expected_mode).await,
+            LegRole::Standalone => run_standalone(broker, &leg, expected_mode).await,
         };
 
         match step {
@@ -850,11 +897,20 @@ pub async fn place_strategy_basket(
     expected_mode: Option<bool>,
 ) -> Result<Vec<LegResult>> {
     let groups = plan_groups(legs)?;
+    let analyze_mode = state.sqlite.get_analyze_mode().unwrap_or(false);
+    run_groups(&LiveBroker { state }, groups, expected_mode, analyze_mode).await
+}
 
+/// Checks Gate B, then runs the planned groups in order.
+async fn run_groups(
+    broker: &impl BasketBroker,
+    groups: Vec<Vec<StrategyLeg>>,
+    expected_mode: Option<bool>,
+    analyze_mode: bool,
+) -> Result<Vec<LegResult>> {
     // Cancel legs run before any order is placed, so Gate B must be checked up
     // front or a mode mismatch would cancel a live stop and only then reject.
     // (place_order still re-checks every order.)
-    let analyze_mode = state.sqlite.get_analyze_mode().unwrap_or(false);
     if let Some(message) = mode_mismatch_message(expected_mode, analyze_mode) {
         warn!("strategy basket rejected before any cancel: {}", message);
         return Err(AppError::Validation(message));
@@ -864,7 +920,7 @@ pub async fn place_strategy_basket(
 
     let mut all = Vec::new();
     for group in groups {
-        all.extend(run_group(state, group, expected_mode).await);
+        all.extend(run_group(broker, group, expected_mode).await);
     }
     Ok(all)
 }
@@ -1251,5 +1307,378 @@ mod gate_tests {
         assert!(unread
             .iter()
             .all(|r| r.message == "Market opens at 9:30 AM ET. Place this then. (could not read the market clock)"));
+    }
+}
+
+#[cfg(test)]
+mod executor_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    /// A broker that follows a script: placements succeed with id
+    /// `ord-SYMBOL-side` unless scripted to fail, cancels succeed unless
+    /// scripted to fail, statuses are read from per-id queues (the last entry
+    /// repeats), sleeps are instant and advance a virtual clock.
+    struct ScriptedBroker {
+        clock: Mutex<Option<bool>>,
+        place_failures: HashMap<String, String>,
+        cancel_failures: HashMap<String, String>,
+        statuses: Mutex<HashMap<String, VecDeque<Order>>>,
+        after_cancel: HashMap<String, Order>,
+        cancelled: Mutex<Vec<String>>,
+        start: Instant,
+        slept: Mutex<Duration>,
+        log: Mutex<Vec<String>>,
+    }
+
+    impl ScriptedBroker {
+        fn new() -> Self {
+            ScriptedBroker {
+                clock: Mutex::new(Some(true)),
+                place_failures: HashMap::new(),
+                cancel_failures: HashMap::new(),
+                statuses: Mutex::new(HashMap::new()),
+                after_cancel: HashMap::new(),
+                cancelled: Mutex::new(Vec::new()),
+                start: Instant::now(),
+                slept: Mutex::new(Duration::ZERO),
+                log: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn with_clock(self, clock: Option<bool>) -> Self {
+            *self.clock.lock().unwrap() = clock;
+            self
+        }
+
+        fn script_statuses(&self, order_id: &str, rows: Vec<Order>) {
+            self.statuses.lock().unwrap().insert(order_id.to_string(), rows.into());
+        }
+
+        fn record(&self, entry: String) {
+            self.log.lock().unwrap().push(entry);
+        }
+
+        fn log(&self) -> Vec<String> {
+            self.log.lock().unwrap().clone()
+        }
+
+        /// Only the calls that change something at the broker.
+        fn writes(&self) -> Vec<String> {
+            self.log()
+                .into_iter()
+                .filter(|e| e.starts_with("place ") || e.starts_with("cancel "))
+                .collect()
+        }
+    }
+
+    impl BasketBroker for ScriptedBroker {
+        async fn place_order(&self, order: OrderRequest, _expected_mode: Option<bool>) -> Result<PlaceOrderResult> {
+            let key = format!("{}:{}", order.symbol, order.side);
+            self.record(format!("place {} {} {} {}", order.symbol, order.side, order.quantity, order.order_type));
+            Ok(match self.place_failures.get(&key) {
+                Some(message) => PlaceOrderResult {
+                    success: false,
+                    order_id: None,
+                    message: message.clone(),
+                    mode: "live".into(),
+                },
+                None => PlaceOrderResult {
+                    success: true,
+                    order_id: Some(format!("ord-{}-{}", order.symbol, order.side.to_lowercase())),
+                    message: "Order placed successfully".into(),
+                    mode: "live".into(),
+                },
+            })
+        }
+
+        async fn cancel_order(&self, order_id: &str) -> Result<CancelOrderResult> {
+            self.record(format!("cancel {}", order_id));
+            let failure = self.cancel_failures.get(order_id);
+            if failure.is_none() {
+                self.cancelled.lock().unwrap().push(order_id.to_string());
+            }
+            Ok(CancelOrderResult {
+                success: failure.is_none(),
+                order_id: order_id.to_string(),
+                message: failure.cloned().unwrap_or_else(|| "cancelled".into()),
+            })
+        }
+
+        async fn order_status(&self, order_id: &str) -> Option<Option<Order>> {
+            self.record(format!("status {}", order_id));
+            if self.cancelled.lock().unwrap().iter().any(|id| id == order_id) {
+                if let Some(row) = self.after_cancel.get(order_id) {
+                    return Some(Some(row.clone()));
+                }
+            }
+            let mut statuses = self.statuses.lock().unwrap();
+            let queue = statuses.get_mut(order_id)?;
+            let row = if queue.len() > 1 { queue.pop_front() } else { queue.front().cloned() };
+            Some(row)
+        }
+
+        async fn is_open(&self, order_id: &str) -> Option<bool> {
+            self.record(format!("open {}", order_id));
+            Some(false)
+        }
+
+        async fn market_clock(&self) -> Result<MarketClock> {
+            self.record("clock".to_string());
+            match *self.clock.lock().unwrap() {
+                Some(is_open) => Ok(MarketClock {
+                    timestamp: "2026-11-02T10:00:00-05:00".into(),
+                    is_open,
+                    next_open: "2026-11-03T09:30:00-05:00".into(),
+                    next_close: "2026-11-02T16:00:00-05:00".into(),
+                }),
+                None => Err(AppError::Broker("clock unavailable".into())),
+            }
+        }
+
+        async fn sleep(&self, duration: Duration) {
+            *self.slept.lock().unwrap() += duration;
+        }
+
+        fn now(&self) -> Instant {
+            self.start + *self.slept.lock().unwrap()
+        }
+    }
+
+    fn market(symbol: &str, side: &str, qty: f64) -> OrderRequest {
+        serde_json::from_value(serde_json::json!({
+            "symbol": symbol, "exchange": "NYSE", "side": side, "quantity": qty,
+            "price": 0.0, "order_type": "MARKET", "product": "CNC", "validity": "DAY",
+            "trigger_price": null, "disclosed_quantity": null, "amo": false
+        }))
+        .unwrap()
+    }
+
+    fn trailing_stop(symbol: &str, qty: f64) -> OrderRequest {
+        let mut o = market(symbol, "SELL", qty);
+        o.order_type = "TRAILING_STOP".into();
+        o.validity = "GTC".into();
+        o.trail_percent = Some(4.2);
+        o
+    }
+
+    fn cancel(group: &str, symbol: &str, order_id: &str) -> StrategyLeg {
+        StrategyLeg {
+            group: Some(group.into()),
+            role: LegRole::Cancel,
+            symbol: symbol.into(),
+            cancel_order_id: Some(order_id.into()),
+            order: None,
+        }
+    }
+
+    fn with_order(group: &str, role: LegRole, order: OrderRequest) -> StrategyLeg {
+        StrategyLeg {
+            group: Some(group.into()),
+            role,
+            symbol: order.symbol.clone(),
+            cancel_order_id: None,
+            order: Some(order),
+        }
+    }
+
+    fn row(order_id: &str, status: &str, qty: f64, filled: f64) -> Order {
+        Order {
+            order_id: order_id.into(),
+            exchange_order_id: None,
+            symbol: String::new(),
+            exchange: "NYSE".into(),
+            side: String::new(),
+            quantity: qty,
+            filled_quantity: filled,
+            pending_quantity: qty - filled,
+            price: 0.0,
+            trigger_price: 0.0,
+            average_price: 0.0,
+            order_type: "MARKET".into(),
+            product: "CNC".into(),
+            status: status.into(),
+            validity: "DAY".into(),
+            order_timestamp: String::new(),
+            exchange_timestamp: None,
+            rejection_reason: None,
+            trail_percent: None,
+            hwm: None,
+        }
+    }
+
+    async fn run(broker: &ScriptedBroker, legs: Vec<StrategyLeg>) -> Vec<LegResult> {
+        run_groups(broker, plan_groups(legs).unwrap(), Some(false), false).await.unwrap()
+    }
+
+    fn summary(results: &[LegResult]) -> Vec<(String, bool, f64, String)> {
+        results
+            .iter()
+            .map(|r| (format!("{} {:?}", r.symbol, r.role), r.success, r.filled_quantity, r.message.clone()))
+            .collect()
+    }
+
+    /// (a) A cancel the broker refuses halts its own group only.
+    #[tokio::test]
+    async fn a_failed_cancel_halts_only_its_group() {
+        let mut broker = ScriptedBroker::new();
+        broker.cancel_failures.insert("stop-1".into(), "order not found".into());
+        let legs = vec![
+            cancel("r1", "PFE", "stop-1"),
+            with_order("r1", LegRole::Fund, market("PFE", "SELL", 11.0)),
+            with_order("p1", LegRole::Protect, trailing_stop("NVDA", 4.0)),
+        ];
+
+        let results = run(&broker, legs).await;
+
+        assert_eq!(
+            summary(&results),
+            vec![
+                ("PFE Cancel".into(), false, 0.0, "PFE cancel of order stop-1 failed: order not found".into()),
+                ("PFE Fund".into(), false, 0.0, "PFE sell not placed because PFE cancel failed".into()),
+                ("NVDA Protect".into(), true, 4.0, "NVDA trailing stop placed (GTC)".into()),
+            ]
+        );
+        assert_eq!(broker.writes(), vec!["cancel stop-1", "place NVDA SELL 4 TRAILING_STOP"]);
+    }
+
+    /// (b) A buy stopped at the 60 s cap with 8 of 13 filled: the remainder is
+    /// cancelled and confirmed, and the stop protects the 8 actually bought.
+    #[tokio::test]
+    async fn partial_buy_cancels_the_remainder_and_protects_what_filled() {
+        let mut broker = ScriptedBroker::new();
+        broker.script_statuses("ord-BAC-buy", vec![row("ord-BAC-buy", "PARTIALLY_FILLED", 13.0, 8.0)]);
+        broker.after_cancel.insert("ord-BAC-buy".into(), row("ord-BAC-buy", "CANCELLED", 13.0, 8.0));
+        let legs = vec![
+            with_order("r1", LegRole::Buy, market("BAC", "BUY", 13.0)),
+            with_order("r1", LegRole::Protect, trailing_stop("BAC", 13.0)),
+        ];
+
+        let results = run(&broker, legs).await;
+
+        assert_eq!(
+            summary(&results),
+            vec![
+                (
+                    "BAC Buy".into(),
+                    true,
+                    8.0,
+                    "BAC buy partly filled (8 shares of 13 shares); remainder confirmed cancelled".into()
+                ),
+                ("BAC Protect".into(), true, 8.0, "BAC trailing stop placed (GTC)".into()),
+            ]
+        );
+        assert_eq!(
+            broker.writes(),
+            vec!["place BAC BUY 13 MARKET", "cancel ord-BAC-buy", "place BAC SELL 8 TRAILING_STOP"]
+        );
+        // The fill wait ran to its 60 s cap (virtual time), then the cancel confirmed on the first poll.
+        assert_eq!(*broker.slept.lock().unwrap(), Duration::from_secs(FILL_CAP_SECONDS + POLL_SECONDS));
+    }
+
+    /// (d) After a successful cancel, a failing fund sell says the old stop is
+    /// gone, and so does every leg it stopped.
+    #[tokio::test]
+    async fn failed_fund_after_a_cancel_carries_the_old_stop_note() {
+        let mut broker = ScriptedBroker::new();
+        broker.after_cancel.insert("stop-1".into(), row("stop-1", "CANCELLED", 11.0, 0.0));
+        broker.place_failures.insert("PFE:SELL".into(), "insufficient qty available".into());
+        let legs = vec![
+            cancel("r1", "PFE", "stop-1"),
+            with_order("r1", LegRole::Fund, market("PFE", "SELL", 11.0)),
+            with_order("r1", LegRole::Buy, market("BAC", "BUY", 13.0)),
+            with_order("r1", LegRole::Protect, trailing_stop("BAC", 13.0)),
+        ];
+
+        let results = run(&broker, legs).await;
+
+        assert_eq!(
+            summary(&results),
+            vec![
+                ("PFE Cancel".into(), true, 0.0, "cancelled order stop-1".into()),
+                (
+                    "PFE Fund".into(),
+                    false,
+                    0.0,
+                    "PFE sell failed: insufficient qty available; the old stop on PFE is no longer active".into()
+                ),
+                (
+                    "BAC Buy".into(),
+                    false,
+                    0.0,
+                    "BAC buy not placed because PFE sell failed; the old stop on PFE is no longer active".into()
+                ),
+                (
+                    "BAC Protect".into(),
+                    false,
+                    0.0,
+                    "BAC trailing stop not placed because PFE sell failed; the old stop on PFE is no longer active"
+                        .into()
+                ),
+            ]
+        );
+        assert_eq!(broker.writes(), vec!["cancel stop-1", "place PFE SELL 11 MARKET"]);
+    }
+
+    fn rotation_and_protection() -> Vec<StrategyLeg> {
+        vec![
+            cancel("r1", "PFE", "stop-1"),
+            with_order("r1", LegRole::Fund, market("PFE", "SELL", 11.0)),
+            with_order("r1", LegRole::Buy, market("BAC", "BUY", 13.0)),
+            with_order("r1", LegRole::Protect, trailing_stop("BAC", 13.0)),
+            with_order("p1", LegRole::Protect, trailing_stop("NVDA", 4.0)),
+        ]
+    }
+
+    /// (e) Closed market: the gated group is refused with the modal's copy and
+    /// nothing in it is sent; a protect-only group still runs.
+    #[tokio::test]
+    async fn closed_market_refuses_gated_groups_and_runs_protect_only_groups() {
+        let broker = ScriptedBroker::new().with_clock(Some(false));
+
+        let results = run(&broker, rotation_and_protection()).await;
+
+        assert_eq!(results.len(), 5);
+        for r in &results[..4] {
+            assert!(!r.success);
+            assert_eq!(r.order_id, None);
+            assert_eq!(r.filled_quantity, 0.0);
+            assert_eq!(r.message, "Market opens at 9:30 AM ET. Place this then.");
+        }
+        assert!(results[4].success);
+        assert_eq!(results[4].symbol, "NVDA");
+        assert_eq!(broker.log(), vec!["clock", "place NVDA SELL 4 TRAILING_STOP"]);
+    }
+
+    /// (e) An unreadable clock refuses the gated group too, saying why.
+    #[tokio::test]
+    async fn unreadable_clock_refuses_gated_groups_with_the_suffix() {
+        let broker = ScriptedBroker::new().with_clock(None);
+
+        let results = run(&broker, rotation_and_protection()).await;
+
+        for r in &results[..4] {
+            assert!(!r.success);
+            assert_eq!(
+                r.message,
+                "Market opens at 9:30 AM ET. Place this then. (could not read the market clock)"
+            );
+        }
+        assert!(results[4].success);
+        assert_eq!(broker.writes(), vec!["place NVDA SELL 4 TRAILING_STOP"]);
+    }
+
+    /// (f) A mode mismatch is refused before any broker call.
+    #[tokio::test]
+    async fn mode_mismatch_is_refused_before_any_broker_call() {
+        let broker = ScriptedBroker::new();
+        let groups = plan_groups(rotation_and_protection()).unwrap();
+
+        match run_groups(&broker, groups, Some(false), true).await {
+            Err(AppError::Validation(msg)) => assert!(msg.starts_with("Order rejected: you confirmed LIVE")),
+            other => panic!("expected a validation error, got {:?}", other.map(|r| r.len())),
+        }
+        assert!(broker.log().is_empty());
     }
 }
