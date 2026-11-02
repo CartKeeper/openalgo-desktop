@@ -1333,7 +1333,7 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
         input: &serde_json::Value,
         state: &AppState,
     ) -> Result<serde_json::Value> {
-        use crate::services::ride_report::{load_target, recent_target_prices};
+        use crate::services::ride_report::load_target;
 
         let symbol = input["symbol"]
             .as_str()
@@ -1345,7 +1345,7 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
         let pick = load_target(fmp.as_ref(), &yahoo, symbol, today).await;
 
         let (mut high, mut low, mut median) = (None, None, None);
-        let (mut targets_last_90d, mut recent) = (None, Vec::new());
+        let mut recent = Vec::new();
         if let Some(fmp) = &fmp {
             match fmp.get_price_target_consensus(symbol).await {
                 Ok(Some(c)) => {
@@ -1358,7 +1358,6 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
             }
             match fmp.get_price_targets(symbol).await {
                 Ok(mut notes) => {
-                    targets_last_90d = Some(recent_target_prices(&notes, today).len());
                     notes.sort_by(|a, b| b.published_date.cmp(&a.published_date));
                     recent = notes
                         .iter()
@@ -1400,7 +1399,8 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
             "median": median,
             "high": high,
             "low": low,
-            "targets_last_90d": targets_last_90d,
+            // Same count the Ride Report uses (the target pick's summary chain).
+            "targets_last_90d": pick.as_ref().and_then(|p| p.count),
             "upside_pct": upside,
             "recent": recent,
         }))
