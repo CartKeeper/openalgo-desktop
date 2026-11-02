@@ -332,6 +332,7 @@ Rules:
 - A cancel carries only symbol, exchange, side "SELL", group, role, cancelOrderId and rationale (e.g. "Cancel the DAY stop at $192 so the GTC trailing stop can replace it."). Only use order ids that appear in the Open Orders block.
 - A `cancel` action has no quantity.
 - A rotation is one group, in this order: cancel legs (one per working sell order on a symbol being sold or re-protected), then the fund sells, then the buy, then the protect trailing stop for the bought symbol. Array order is placement order.
+- If the dormant position is protected, emit a cancel leg for every working sell listed in its Protection cell, before its fund sell.
 - A protection group for an existing position is cancel (if an old stop exists) then protect.
 - Rotation buys are MARKET. A fund sell is the whole dormant position.
 - Any other action uses role "standalone".
@@ -375,6 +376,15 @@ mod briefing_prompt_tests {
         let p = build_briefing_prompt("T", "c", "o", "PFE", false);
         assert!(p.contains("that group's own `fund` sell proceeds"));
         assert!(!p.contains("watch-only"));
+    }
+
+    #[test]
+    fn rotation_out_of_a_protected_position_cancels_its_working_sells() {
+        let p = build_briefing_prompt("T", "c", "o", "PFE", false);
+        let sentence = "If the dormant position is protected, emit a cancel leg for every working sell listed in its Protection cell, before its fund sell.";
+        assert!(p.contains(sentence));
+        // It sits with the rotation ordering rule.
+        assert!(p.find("A rotation is one group, in this order").unwrap() < p.find(sentence).unwrap());
     }
 
     #[test]
