@@ -356,8 +356,17 @@ export function ActionReviewModal({
   cloneNameRequired = false,
   applyButtonLabel,
 }: ActionReviewModalProps = {}) {
-  const { items, isReviewOpen, isSubmitting, lastResults, fundsNotice, updateItem, removeItem, close } =
-    useActionQueueStore()
+  const {
+    items,
+    isReviewOpen,
+    isSubmitting,
+    lastResults,
+    fundsNotice,
+    updateItem,
+    removeItem,
+    replaceItems,
+    close,
+  } = useActionQueueStore()
   const setSubmitting = useActionQueueStore((s) => s.setSubmitting)
   const setResults = useActionQueueStore((s) => s.setResults)
   const [showResults, setShowResults] = useState(false)
@@ -545,7 +554,7 @@ export function ActionReviewModal({
         revalidated.length !== items.length ||
         revalidated.some((r, i) => r.id !== items[i].id || r.quantity !== items[i].quantity)
       if (changed) {
-        useActionQueueStore.setState({ items: revalidated, fundsNotice: notice })
+        replaceItems(revalidated, notice)
         setSubmitting(false)
         toast.warning(
           'Your spendable funds changed — quantities were adjusted to what the account can afford. Review and place again.'

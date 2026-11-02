@@ -232,6 +232,72 @@ describe('actionQueueStore post-removal reconcile', () => {
     expect(ids()).toEqual(['b1', 'p1'])
   })
 
+  type Reconciled = { items: OrderRecommendation[]; availableCash: number; notice: string }
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  /** Starts a post-removal reconcile that stays in flight until released. */
+  function removeWithPendingReconcile(id: string): (v: Reconciled) => void {
+    let release: (v: Reconciled) => void = () => {}
+    reconcile.mockImplementationOnce(
+      () => new Promise((resolve) => { release = resolve }),
+    )
+    useActionQueueStore.getState().removeItem(id)
+    expect(reconcile).toHaveBeenCalledTimes(1)
+    return release
+  }
+
+  it('discards an in-flight reconcile after an updateItem edit', async () => {
+    useActionQueueStore.setState({ items: rotation() })
+    const release = removeWithPendingReconcile('c1')
+    useActionQueueStore.getState().updateItem('b1', { quantity: 3 })
+    release({ items: rotation(), availableCash: 0, notice: 'stale' })
+    await flush()
+    expect(ids()).toEqual(['f1', 'b1', 'p1'])
+    expect(useActionQueueStore.getState().items.find((i) => i.id === 'b1')?.quantity).toBe(3)
+    expect(useActionQueueStore.getState().fundsNotice).toBeNull()
+  })
+
+  it('discards an in-flight reconcile after close()', async () => {
+    useActionQueueStore.setState({ items: rotation() })
+    const release = removeWithPendingReconcile('c1')
+    useActionQueueStore.getState().close()
+    release({ items: rotation(), availableCash: 0, notice: 'stale' })
+    await flush()
+    expect(ids()).toEqual([])
+    expect(useActionQueueStore.getState().isReviewOpen).toBe(false)
+    expect(useActionQueueStore.getState().fundsNotice).toBeNull()
+  })
+
+  it('discards an in-flight reconcile after the items are replaced or reopened', async () => {
+    const fresh = [rec({ id: 'n1', symbol: 'KO', group: 'g5', role: 'buy' })]
+
+    useActionQueueStore.setState({ items: rotation() })
+    let release = removeWithPendingReconcile('c1')
+    useActionQueueStore.getState().replaceItems(fresh, 'revalidated')
+    release({ items: rotation(), availableCash: 0, notice: 'stale' })
+    await flush()
+    expect(ids()).toEqual(['n1'])
+    expect(useActionQueueStore.getState().fundsNotice).toBe('revalidated')
+
+    reconcile.mockClear()
+    useActionQueueStore.setState({ items: rotation(), fundsNotice: null })
+    release = removeWithPendingReconcile('c1')
+    useActionQueueStore.getState().setItemsAndOpen(fresh)
+    release({ items: rotation(), availableCash: 0, notice: 'stale' })
+    await flush()
+    expect(ids()).toEqual(['n1'])
+    expect(useActionQueueStore.getState().fundsNotice).toBeNull()
+
+    reconcile.mockClear()
+    useActionQueueStore.setState({ items: rotation(), fundsNotice: null })
+    release = removeWithPendingReconcile('c1')
+    await useActionQueueStore.getState().setItemsAndOpenWithFundsCheck(fresh)
+    release({ items: rotation(), availableCash: 0, notice: 'stale' })
+    await flush()
+    expect(ids()).toEqual(['n1'])
+    expect(useActionQueueStore.getState().fundsNotice).toBe('reconciled')
+  })
+
   it('keeps the cascaded list when the reconcile rejects', async () => {
     reconcile.mockRejectedValueOnce(new Error('offline'))
     useActionQueueStore.setState({ items: rotation() })

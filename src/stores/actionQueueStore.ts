@@ -71,7 +71,10 @@ export function groupHeader(items: OrderRecommendation[], group: string): string
   return ''
 }
 
-/** Monotonic token so a slow reconcile from an earlier removal never overwrites newer state. */
+/**
+ * Monotonic token so a slow reconcile from an earlier removal never overwrites newer state.
+ * Every writer of `items` bumps it.
+ */
 let removalToken = 0
 
 interface ActionQueueStore {
@@ -91,6 +94,8 @@ interface ActionQueueStore {
   setItemsAndOpenWithFundsCheck: (items: OrderRecommendation[]) => Promise<void>
   updateItem: (id: string, patch: Partial<OrderRecommendation>) => void
   removeItem: (id: string) => void
+  /** Replace the items and funds notice (e.g. after the submit-time re-check). */
+  replaceItems: (items: OrderRecommendation[], fundsNotice: string | null) => void
   close: () => void
   setSubmitting: (v: boolean) => void
   setResults: (results: BasketOrderResult[]) => void
@@ -105,18 +110,23 @@ export const useActionQueueStore = create<ActionQueueStore>()((set, get) => ({
   fundsNotice: null,
 
   // No funds check (e.g. client-scenario flows that don't touch the live account).
-  setItemsAndOpen: (items) =>
-    set({ items, isReviewOpen: true, lastResults: null, fundsNotice: null }),
+  setItemsAndOpen: (items) => {
+    removalToken++
+    set({ items, isReviewOpen: true, lastResults: null, fundsNotice: null })
+  },
 
   setItemsAndOpenWithFundsCheck: async (items) => {
     const { items: capped, notice } = await reconcileRecommendationsWithAccount(items)
+    removalToken++
     set({ items: capped, isReviewOpen: true, lastResults: null, fundsNotice: notice })
   },
 
-  updateItem: (id, patch) =>
+  updateItem: (id, patch) => {
+    removalToken++
     set((state) => ({
       items: state.items.map((item) => (item.id === id ? { ...item, ...patch } : item)),
-    })),
+    }))
+  },
 
   removeItem: (id) => {
     const items = get().items
@@ -145,8 +155,15 @@ export const useActionQueueStore = create<ActionQueueStore>()((set, get) => ({
     }
   },
 
-  close: () =>
-    set({ items: [], isReviewOpen: false, isSubmitting: false, lastResults: null, fundsNotice: null }),
+  replaceItems: (items, fundsNotice) => {
+    removalToken++
+    set({ items, fundsNotice })
+  },
+
+  close: () => {
+    removalToken++
+    set({ items: [], isReviewOpen: false, isSubmitting: false, lastResults: null, fundsNotice: null })
+  },
 
   setSubmitting: (v) => set({ isSubmitting: v }),
 
