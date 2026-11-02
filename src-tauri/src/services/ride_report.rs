@@ -1,11 +1,24 @@
-//! Ride Report rules
+//! Ride Report: rules, builder and prompt renderer
 //!
 //! Deterministic, I/O-free rules for the "hitchhiker" briefing strategy:
 //! 30-day net move, daily swing, analyst upside, ride status, trailing-stop
 //! percent, entry date from fill history, and trading-day counting.
 
-use crate::brokers::types::AccountActivity;
+use crate::brokers::types::{AccountActivity, Order};
+use crate::providers::fmp::FmpClient;
+use crate::providers::types::PriceTarget;
+use crate::providers::yahoo::YahooClient;
+use crate::services::activities_service::ActivitiesService;
+use crate::services::copilot_service::CopilotService;
+use crate::services::funds_service::FundsService;
+use crate::services::market_status_service::MarketStatusService;
+use crate::services::orderbook_service::OrderbookService;
+use crate::services::position_service::PositionService;
+use crate::state::AppState;
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, Utc, Weekday};
+use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
+use tracing::{info, warn};
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -148,6 +161,621 @@ pub fn count_trading_days(sessions: &[String], from_date: &str, to_date: &str) -
         .count() as u32
 }
 
+// ============================================================================
+// Report types
+// ============================================================================
+
+#[derive(Serialize, Clone)]
+pub struct ExistingStop {
+    pub order_id: String,
+    pub order_type: String,
+    pub quantity: f64,
+    pub validity: String,
+    pub trail_percent: Option<f64>,
+    pub trigger_price: f64,
+}
+
+#[derive(Serialize, Clone)]
+pub struct RidePosition {
+    pub symbol: String,
+    pub exchange: String,
+    pub quantity: f64,
+    pub avg_cost: f64,
+    pub price: f64,
+    pub pnl_pct: f64,
+    pub entered_at: Option<String>,
+    pub age_trading_days: Option<u32>,
+    pub net_move_30d_pct: Option<f64>,
+    pub daily_swing_pct: Option<f64>,
+    pub consensus_target: Option<f64>,
+    pub upside_pct: Option<f64>,
+    pub targets_last_90d: Option<i32>,
+    pub target_source: Option<String>,
+    pub status: RideStatus,
+    pub protected: bool,
+    pub working_sells: Vec<ExistingStop>,
+    pub proposed_trail_pct: f64,
+    pub trail_reason: TrailReason,
+    pub protection_dismissed_at: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct Scoreboard {
+    pub equity_now: f64,
+    pub equity_1w: Option<f64>,
+    pub equity_1m: Option<f64>,
+    pub as_of: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct RideReport {
+    pub positions: Vec<RidePosition>,
+    pub scoreboard: Option<Scoreboard>,
+    pub paper_mode: bool,
+    pub generated_at: String,
+}
+
+// ============================================================================
+// Report builder (best effort per field; a failed lookup yields None, never an Err)
+// ============================================================================
+
+const NY_STAMP: &str = "%Y-%m-%d %-I:%M %p ET";
+const FILL_PAGES: u32 = 5;
+const CLOSES_LOOKBACK_DAYS: i64 = 75;
+const TARGET_WINDOW_DAYS: i64 = 90;
+
+/// A held position from the broker (or manual tracking), before any enrichment.
+struct HeldPosition {
+    symbol: String,
+    exchange: String,
+    quantity: f64,
+    avg_cost: f64,
+    ltp: f64,
+    /// Manual positions carry their own entry date.
+    added_at: Option<String>,
+}
+
+/// Where the analyst target came from and how many targets back it.
+#[derive(Debug, PartialEq)]
+struct TargetPick {
+    consensus: f64,
+    count: Option<i32>,
+    source: &'static str,
+}
+
+fn ok_or_warn<T, E: std::fmt::Display>(what: &str, symbol: &str, r: std::result::Result<T, E>) -> Option<T> {
+    match r {
+        Ok(v) => Some(v),
+        Err(e) => {
+            warn!("ride report: {} failed for {}: {}", what, symbol, e);
+            None
+        }
+    }
+}
+
+/// New York calendar date of an ISO timestamp; a bare date passes through.
+fn ny_date_of_timestamp(ts: &str) -> Option<String> {
+    if let Ok(dt) = DateTime::parse_from_rfc3339(ts) {
+        return Some(dt.with_timezone(&New_York).format("%Y-%m-%d").to_string());
+    }
+    let day = ts.get(..10)?;
+    NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?;
+    Some(day.to_string())
+}
+
+/// New York calendar date of a SQLite `datetime('now')` value (UTC, `YYYY-MM-DD HH:MM:SS`).
+fn ny_date_of_sqlite_utc(ts: &str) -> String {
+    NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S")
+        .map(|naive| naive.and_utc().with_timezone(&New_York).format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|_| ts.to_string())
+}
+
+/// Mon-Fri days strictly after `entered_at` through `today` (used when the calendar is unavailable).
+fn weekdays_after(entered_at: &str, today: &str) -> Option<u32> {
+    let from = NaiveDate::parse_from_str(entered_at.get(..10)?, "%Y-%m-%d").ok()?;
+    let to = NaiveDate::parse_from_str(today.get(..10)?, "%Y-%m-%d").ok()?;
+    let mut count = 0;
+    let mut day = from.succ_opt()?;
+    while day <= to {
+        if !matches!(day.weekday(), Weekday::Sat | Weekday::Sun) {
+            count += 1;
+        }
+        day = day.succ_opt()?;
+    }
+    Some(count)
+}
+
+fn median(mut values: Vec<f64>) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = values.len() / 2;
+    Some(if values.len() % 2 == 0 { (values[mid - 1] + values[mid]) / 2.0 } else { values[mid] })
+}
+
+/// Positive price targets published within the window ending `today`.
+fn recent_target_prices(targets: &[PriceTarget], today: NaiveDate) -> Vec<f64> {
+    let cutoff = (today - Duration::days(TARGET_WINDOW_DAYS)).format("%Y-%m-%d").to_string();
+    targets
+        .iter()
+        .filter(|t| t.published_date.as_deref().and_then(|d| d.get(..10)).map_or(false, |d| d >= cutoff.as_str()))
+        .filter_map(|t| t.price_target)
+        .filter(|p| *p > 0.0)
+        .collect()
+}
+
+/// Source order: FMP consensus, then median of recent FMP targets (needs at least 2), then Yahoo mean.
+fn pick_target(
+    consensus: Option<f64>,
+    summary_count: Option<i32>,
+    recent_prices: &[f64],
+    yahoo: Option<(f64, i32)>,
+) -> Option<TargetPick> {
+    let recent_count = if recent_prices.is_empty() { None } else { Some(recent_prices.len() as i32) };
+    let count = |yahoo_count: Option<i32>| summary_count.or(recent_count).or(yahoo_count);
+    if let Some(c) = consensus.filter(|c| *c > 0.0) {
+        return Some(TargetPick { consensus: c, count: count(None), source: "fmp_consensus" });
+    }
+    if recent_prices.len() >= 2 {
+        if let Some(m) = median(recent_prices.to_vec()) {
+            return Some(TargetPick { consensus: m, count: count(None), source: "fmp_median" });
+        }
+    }
+    yahoo
+        .filter(|(mean, _)| *mean > 0.0)
+        .map(|(mean, n)| TargetPick { consensus: mean, count: count(Some(n)), source: "yahoo" })
+}
+
+/// Equity scoreboard: last point now, the point 5 back for one week, the first point for one month.
+fn scoreboard_from(timestamps: &[i64], equity: &[f64]) -> Option<Scoreboard> {
+    let now = *equity.last()?;
+    let len = equity.len();
+    let as_of = timestamps
+        .last()
+        .and_then(|t| DateTime::from_timestamp(*t, 0))
+        .map(|dt| dt.with_timezone(&New_York).format(NY_STAMP).to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    Some(Scoreboard {
+        equity_now: now,
+        equity_1w: if len >= 6 { Some(equity[len - 6]) } else { None },
+        equity_1m: if len >= 2 { Some(equity[0]) } else { None },
+        as_of,
+    })
+}
+
+fn existing_stop(o: &Order) -> ExistingStop {
+    ExistingStop {
+        order_id: o.order_id.clone(),
+        order_type: o.order_type.clone(),
+        quantity: o.quantity,
+        validity: o.validity.clone(),
+        trail_percent: o.trail_percent,
+        trigger_price: o.trigger_price,
+    }
+}
+
+fn is_full_size_trailing_stop(s: &ExistingStop, position_qty: f64) -> bool {
+    s.order_type == "TRAILING_STOP" && (s.quantity - position_qty).abs() < 1e-9
+}
+
+/// Positions exactly as `generate_briefing` reads them: broker first, manual portfolio as fallback.
+async fn load_held_positions(state: &AppState) -> Vec<HeldPosition> {
+    let live = match PositionService::get_positions(state, None).await {
+        Ok(result) if !result.positions.is_empty() => Some(result.positions),
+        Ok(_) => None,
+        Err(e) => {
+            warn!("ride report: live positions unavailable: {}", e);
+            None
+        }
+    };
+    let held: Vec<HeldPosition> = match live {
+        Some(positions) => positions
+            .into_iter()
+            .map(|p| HeldPosition {
+                symbol: p.symbol,
+                exchange: p.exchange,
+                quantity: p.quantity,
+                avg_cost: p.average_price,
+                ltp: p.ltp,
+                added_at: None,
+            })
+            .collect(),
+        None => state
+            .sqlite
+            .get_portfolio_positions()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| HeldPosition {
+                symbol: p.symbol,
+                exchange: p.exchange,
+                quantity: p.quantity,
+                avg_cost: p.avg_price,
+                ltp: p.current_price.unwrap_or(0.0),
+                added_at: p.added_at,
+            })
+            .collect(),
+    };
+    held.into_iter().filter(|p| p.quantity > 0.0).collect()
+}
+
+/// Per-report lookups shared by every position.
+struct ReportContext<'a> {
+    state: &'a AppState,
+    paper_mode: bool,
+    today: NaiveDate,
+    open_orders: Vec<Order>,
+    fmp: Option<FmpClient>,
+    yahoo: YahooClient,
+    /// Fill history, fetched at most once and only if some position needs it.
+    fills: Option<Vec<AccountActivity>>,
+}
+
+impl ReportContext<'_> {
+    async fn fills(&mut self) -> &[AccountActivity] {
+        if self.fills.is_none() {
+            let fetched = ActivitiesService::get_fills(self.state, None, FILL_PAGES).await;
+            let all = ok_or_warn("fill history", "account", fetched).unwrap_or_default();
+            self.fills = Some(all.into_iter().filter(|a| a.activity_type == "FILL").collect());
+        }
+        self.fills.as_deref().unwrap_or(&[])
+    }
+
+    /// Daily closes, ascending. FMP first, Yahoo when FMP fails or returns nothing.
+    async fn closes(&self, symbol: &str) -> Vec<f64> {
+        if let Some(fmp) = &self.fmp {
+            let from = (self.today - Duration::days(CLOSES_LOOKBACK_DAYS)).format("%Y-%m-%d").to_string();
+            let to = self.today.format("%Y-%m-%d").to_string();
+            let fetched = fmp.get_daily_closes(symbol, &from, &to).await;
+            if let Some(bars) = ok_or_warn("FMP daily closes", symbol, fetched).filter(|b| !b.is_empty()) {
+                info!("ride report: {} closes from FMP ({} bars)", symbol, bars.len());
+                return bars.into_iter().map(|b| b.close).collect();
+            }
+        }
+        let fetched = self.yahoo.get_historical(symbol, "1d", "3mo").await;
+        let bars = ok_or_warn("Yahoo daily closes", symbol, fetched).unwrap_or_default();
+        info!("ride report: {} closes from Yahoo ({} bars)", symbol, bars.len());
+        bars.into_iter().map(|b| b.4).collect()
+    }
+
+    async fn target(&self, symbol: &str) -> Option<TargetPick> {
+        let (mut consensus, mut summary_count, mut recent) = (None, None, Vec::new());
+        if let Some(fmp) = &self.fmp {
+            let fetched = fmp.get_price_target_consensus(symbol).await;
+            consensus = ok_or_warn("FMP target consensus", symbol, fetched).flatten().and_then(|c| c.target_consensus);
+            let fetched = fmp.get_price_target_summary(symbol).await;
+            summary_count = ok_or_warn("FMP target summary", symbol, fetched).flatten().and_then(|s| s.last_quarter_count);
+            if consensus.is_none() || summary_count.is_none() {
+                let fetched = fmp.get_price_targets(symbol).await;
+                let individual = ok_or_warn("FMP price targets", symbol, fetched).unwrap_or_default();
+                recent = recent_target_prices(&individual, self.today);
+            }
+        }
+        if let Some(pick) = pick_target(consensus, summary_count, &recent, None) {
+            return Some(pick);
+        }
+        let yahoo = self.yahoo.get_target_mean(symbol).await;
+        pick_target(consensus, summary_count, &recent, yahoo)
+    }
+
+    /// Date the current holding run began: cache, then fill history. Manual positions use `added_at`.
+    async fn entry_date(&mut self, held: &HeldPosition) -> Option<String> {
+        if let Some(added) = &held.added_at {
+            return ny_date_of_timestamp(added);
+        }
+        let cached = self.state.sqlite.get_ride_entry(&held.symbol, held.quantity);
+        if let Some(date) = ok_or_warn("entry-date cache read", &held.symbol, cached).flatten() {
+            return Some(date);
+        }
+        let from_fills = entry_date_from_fills(self.fills().await, &held.symbol, held.quantity);
+        let date = ny_date_of_timestamp(&from_fills?)?;
+        let stored = self.state.sqlite.upsert_ride_entry(&held.symbol, held.quantity, &date);
+        ok_or_warn("entry-date cache write", &held.symbol, stored);
+        Some(date)
+    }
+
+    /// Trading sessions after the entry date through today; weekdays when the calendar is unavailable.
+    async fn ride_age(&self, symbol: &str, entered_at: &str) -> Option<u32> {
+        let today = self.today.format("%Y-%m-%d").to_string();
+        let fetched = MarketStatusService::get_calendar(self.state, None, Some(entered_at), Some(&today)).await;
+        match ok_or_warn("market calendar", symbol, fetched) {
+            Some(days) => {
+                let sessions: Vec<String> = days.into_iter().map(|d| d.date).collect();
+                Some(count_trading_days(&sessions, entered_at, &today))
+            }
+            None => weekdays_after(entered_at, &today),
+        }
+    }
+
+    async fn build_position(&mut self, held: HeldPosition) -> RidePosition {
+        let symbol = held.symbol.clone();
+        let closes = self.closes(&symbol).await;
+        let price = if held.ltp > 0.0 { held.ltp } else { closes.last().copied().unwrap_or(0.0) };
+        let net_move = net_move_pct(&closes);
+        let swing = daily_swing_pct(&closes);
+
+        let target = self.target(&symbol).await;
+        let upside = match &target {
+            Some(t) if price > 0.0 => Some(upside_pct(t.consensus, price)),
+            _ => None,
+        };
+        let (proposed_trail_pct, trail_reason) = trail_percent(swing, upside);
+
+        let (entered_at, age_trading_days) = if self.paper_mode {
+            (None, None)
+        } else {
+            let entered = self.entry_date(&held).await;
+            let age = match &entered {
+                Some(d) => self.ride_age(&symbol, d).await,
+                None => None,
+            };
+            (entered, age)
+        };
+        let status = if self.paper_mode {
+            RideStatus::TooNew
+        } else {
+            classify(age_trading_days, price, held.avg_cost, net_move, upside)
+        };
+
+        let working_sells: Vec<ExistingStop> = self
+            .open_orders
+            .iter()
+            .filter(|o| o.side.eq_ignore_ascii_case("SELL") && o.symbol.eq_ignore_ascii_case(&symbol))
+            .map(existing_stop)
+            .collect();
+        let protected = working_sells.iter().any(|s| is_full_size_trailing_stop(s, held.quantity));
+        let dismissed = self.state.sqlite.is_protection_dismissed(&symbol, held.quantity);
+        let protection_dismissed_at = ok_or_warn("dismissal lookup", &symbol, dismissed)
+            .flatten()
+            .map(|ts| ny_date_of_sqlite_utc(&ts));
+
+        let pnl_pct = if price > 0.0 && held.avg_cost > 0.0 {
+            round1((price - held.avg_cost) / held.avg_cost * 100.0)
+        } else {
+            0.0
+        };
+        RidePosition {
+            symbol,
+            exchange: held.exchange,
+            quantity: held.quantity,
+            avg_cost: held.avg_cost,
+            price,
+            pnl_pct,
+            entered_at,
+            age_trading_days,
+            net_move_30d_pct: net_move,
+            daily_swing_pct: swing,
+            consensus_target: target.as_ref().map(|t| t.consensus),
+            upside_pct: upside,
+            targets_last_90d: target.as_ref().and_then(|t| t.count),
+            target_source: target.as_ref().map(|t| t.source.to_string()),
+            status,
+            protected,
+            working_sells,
+            proposed_trail_pct,
+            trail_reason,
+            protection_dismissed_at,
+        }
+    }
+}
+
+async fn load_scoreboard(state: &AppState) -> Option<Scoreboard> {
+    let fetched = FundsService::get_portfolio_history(state, None, "1M", "1D").await;
+    let history = ok_or_warn("equity history", "account", fetched)?;
+    scoreboard_from(&history.timestamp, &history.equity)
+}
+
+/// Build the Ride Report for every held position. Never fails; missing data becomes `None` per field.
+pub async fn build_ride_report(state: &AppState) -> RideReport {
+    let paper_mode = state.sqlite.get_analyze_mode().unwrap_or(false);
+    let now = Utc::now().with_timezone(&New_York);
+
+    let open_orders_fetched = OrderbookService::get_open_orders(state, None).await;
+    let open_orders = ok_or_warn("open orders", "account", open_orders_fetched)
+        .map(|r| r.orders)
+        .unwrap_or_default();
+    let fmp = ok_or_warn("FMP client", "account", CopilotService::get_fmp_client(state));
+
+    let mut ctx = ReportContext {
+        state,
+        paper_mode,
+        today: now.date_naive(),
+        open_orders,
+        fmp,
+        yahoo: YahooClient::new((*state.http_client).clone()),
+        fills: None,
+    };
+
+    let mut positions = Vec::new();
+    for held in load_held_positions(state).await {
+        positions.push(ctx.build_position(held).await);
+    }
+    let scoreboard = if paper_mode { None } else { load_scoreboard(state).await };
+
+    RideReport { positions, scoreboard, paper_mode, generated_at: now.format(NY_STAMP).to_string() }
+}
+
+// ============================================================================
+// Prompt renderer
+// ============================================================================
+
+fn status_label(status: RideStatus) -> &'static str {
+    match status {
+        RideStatus::TooNew => "Too new to judge",
+        RideStatus::Falling => "Falling",
+        RideStatus::Dormant => "Dormant",
+        RideStatus::FlatWithUpside => "Flat, with upside",
+        RideStatus::PullingBack => "Pulling back",
+        RideStatus::Climbing => "Climbing",
+    }
+}
+
+fn fmt_qty(q: f64) -> String {
+    if (q - q.round()).abs() < 1e-9 {
+        format!("{}", q.round() as i64)
+    } else {
+        format!("{}", q)
+    }
+}
+
+fn fmt_pct(v: Option<f64>) -> String {
+    v.map_or_else(|| "n/a".to_string(), |x| format!("{:.1}", x))
+}
+
+fn fmt_price(p: f64) -> String {
+    if p > 0.0 { format!("${:.2}", p) } else { "n/a".to_string() }
+}
+
+fn got_on_cell(p: &RidePosition, paper_mode: bool) -> String {
+    if paper_mode {
+        return "paper mode: no fill history".to_string();
+    }
+    match (&p.entered_at, p.age_trading_days) {
+        (Some(d), Some(age)) => format!("{} @ ${:.2} ({} sessions)", d, p.avg_cost, age),
+        (Some(d), None) => format!("{} @ ${:.2}", d, p.avg_cost),
+        (None, _) => format!("unknown @ ${:.2}", p.avg_cost),
+    }
+}
+
+fn target_cell(p: &RidePosition) -> String {
+    match p.consensus_target {
+        None => "no analyst target available".to_string(),
+        Some(t) => format!(
+            "${:.2} ({}, {} targets/90d)",
+            t,
+            p.target_source.as_deref().unwrap_or("unknown source"),
+            p.targets_last_90d.map_or_else(|| "?".to_string(), |n| n.to_string()),
+        ),
+    }
+}
+
+fn protection_cell(p: &RidePosition) -> String {
+    let mut cell = if p.protected {
+        let stop = p
+            .working_sells
+            .iter()
+            .find(|s| s.order_type == "TRAILING_STOP" && (s.quantity - p.quantity).abs() < 1e-9);
+        match stop {
+            Some(s) => format!(
+                "protected (trailing {}% GTC, id {})",
+                s.trail_percent.map_or_else(|| "?".to_string(), |t| format!("{:.1}", t)),
+                s.order_id
+            ),
+            None => "protected".to_string(),
+        }
+    } else if p.working_sells.is_empty() {
+        "none".to_string()
+    } else {
+        let list: Vec<String> = p
+            .working_sells
+            .iter()
+            .map(|s| format!("{} ({} x{})", s.order_id, s.order_type, fmt_qty(s.quantity)))
+            .collect();
+        format!("not protected — working sells to cancel first: {}", list.join(", "))
+    };
+    if let Some(d) = &p.protection_dismissed_at {
+        cell.push_str(&format!("; protection dismissed by you on {}", d));
+    }
+    cell
+}
+
+fn trail_cell(p: &RidePosition) -> String {
+    let reason = match p.trail_reason {
+        TrailReason::TwoTimesSwing => "2× daily swing".to_string(),
+        TrailReason::ThreeTimesSwingHighUpside => format!(
+            "widened because analysts see {}% upside (3× swing)",
+            fmt_pct(p.upside_pct)
+        ),
+        TrailReason::UnknownSwingFloor => "swing unknown, floor".to_string(),
+    };
+    format!("{:.1}% ({})", p.proposed_trail_pct, reason)
+}
+
+fn scoreboard_block(report: &RideReport) -> String {
+    let sb = match (&report.scoreboard, report.paper_mode) {
+        (Some(sb), _) => sb,
+        (None, true) => return "Scoreboard: not available in paper mode".to_string(),
+        (None, false) => return "Scoreboard: not available".to_string(),
+    };
+    let change = |then: Option<f64>| match then {
+        Some(t) if t > 0.0 => format!(
+            "${:.2} ({:+.2}, {:+.1}%)",
+            t,
+            sb.equity_now - t,
+            (sb.equity_now - t) / t * 100.0
+        ),
+        _ => "not available".to_string(),
+    };
+    format!(
+        "Scoreboard (account equity, as of {}):\n- now: ${:.2}\n- 1 week ago: {}\n- 1 month ago: {}",
+        sb.as_of,
+        sb.equity_now,
+        change(sb.equity_1w),
+        change(sb.equity_1m)
+    )
+}
+
+const COLUMN_LEGEND: [&str; 12] = [
+    "Symbol: ticker held",
+    "Qty: shares held",
+    "Got on: date the current holding run began (New York date), average cost, and trading sessions held",
+    "Price: latest price",
+    "P&L %: gain or loss versus average cost",
+    "30d net %: close-to-close move over the last 30 trading sessions",
+    "Daily swing %: mean absolute day-over-day move over the last 30 sessions",
+    "Analyst target: consensus price target, its source and how many targets in the last 90 days",
+    "Upside %: analyst target versus current price",
+    "Status: where the position sits in the ride rules (see statuses below)",
+    "Protection: whether a trailing stop for the full quantity is already working, and any other working sells",
+    "Proposed trail: trailing-stop percent computed from the daily swing, with the reason",
+];
+
+const STATUS_LEGEND: [&str; 6] = [
+    "Too new to judge: held fewer than 30 trading sessions, or not enough price history",
+    "Falling: price is below average cost",
+    "Dormant: 30d net move within ±3% and upside 5% or less (or unknown)",
+    "Flat, with upside: 30d net move within ±3% but analysts see more than 5% upside",
+    "Pulling back: 30d net move below -3%, price at or above cost",
+    "Climbing: 30d net move above +3%, price at or above cost",
+];
+
+/// Markdown block the briefing prompt embeds: optional scoreboard, one table row per position, legend.
+pub fn render_for_prompt(report: &RideReport) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Ride Report generated {}\n\n", report.generated_at));
+    out.push_str(&scoreboard_block(report));
+    out.push_str("\n\n");
+    out.push_str("| Symbol | Qty | Got on | Price | P&L % | 30d net % | Daily swing % | Analyst target | Upside % | Status | Protection | Proposed trail |\n");
+    out.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    for p in &report.positions {
+        let status = if report.paper_mode { RideStatus::TooNew } else { p.status };
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            p.symbol,
+            fmt_qty(p.quantity),
+            got_on_cell(p, report.paper_mode),
+            fmt_price(p.price),
+            if p.price > 0.0 { fmt_pct(Some(p.pnl_pct)) } else { "n/a".to_string() },
+            fmt_pct(p.net_move_30d_pct),
+            fmt_pct(p.daily_swing_pct),
+            target_cell(p),
+            fmt_pct(p.upside_pct),
+            status_label(status),
+            protection_cell(p),
+            trail_cell(p),
+        ));
+    }
+    out.push_str("\nColumns:\n");
+    for line in COLUMN_LEGEND {
+        out.push_str(&format!("- {}\n", line));
+    }
+    out.push_str("\nStatuses:\n");
+    for line in STATUS_LEGEND {
+        out.push_str(&format!("- {}\n", line));
+    }
+    out
+}
+
 #[cfg(test)]
 mod rules_tests {
     use super::*;
@@ -247,5 +875,127 @@ mod rules_tests {
         // ISO timestamps compare by date; unsorted input is fine
         let u = ["2026-11-02", "2026-10-28", "2026-10-30"].map(String::from);
         assert_eq!(count_trading_days(&u, "2026-10-28T14:30:00.123Z", "2026-11-02"), 2);
+    }
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+
+    fn position() -> RidePosition {
+        RidePosition {
+            symbol: "PFE".to_string(),
+            exchange: "NYSE".to_string(),
+            quantity: 4.0,
+            avg_cost: 25.71,
+            price: 30.52,
+            pnl_pct: 18.7,
+            entered_at: Some("2026-09-01".to_string()),
+            age_trading_days: Some(41),
+            net_move_30d_pct: Some(10.3),
+            daily_swing_pct: Some(1.5),
+            consensus_target: Some(37.0),
+            upside_pct: Some(21.2),
+            targets_last_90d: Some(12),
+            target_source: Some("fmp_consensus".to_string()),
+            status: RideStatus::Climbing,
+            protected: false,
+            working_sells: vec![],
+            proposed_trail_pct: 4.5,
+            trail_reason: TrailReason::TwoTimesSwing,
+            protection_dismissed_at: None,
+        }
+    }
+
+    fn report(positions: Vec<RidePosition>, paper_mode: bool) -> RideReport {
+        RideReport {
+            positions,
+            scoreboard: None,
+            paper_mode,
+            generated_at: "2026-11-02 9:30 AM ET".to_string(),
+        }
+    }
+
+    #[test]
+    fn render_marks_unknown_consensus() {
+        let mut p = position();
+        p.consensus_target = None;
+        p.upside_pct = None;
+        p.targets_last_90d = None;
+        p.target_source = None;
+        let out = render_for_prompt(&report(vec![p], false));
+        assert!(out.contains("no analyst target available"), "{out}");
+    }
+
+    #[test]
+    fn render_shows_dismissal_and_paper_mode() {
+        let mut p = position();
+        p.protection_dismissed_at = Some("2026-11-01 4:05 PM ET".to_string());
+        let out = render_for_prompt(&report(vec![p], false));
+        assert!(out.contains("protection dismissed by you on"), "{out}");
+
+        let mut q = position();
+        q.entered_at = None;
+        q.age_trading_days = None;
+        let out = render_for_prompt(&report(vec![q], true));
+        assert!(out.contains("paper mode: no fill history"), "{out}");
+    }
+
+    #[test]
+    fn render_trail_reason_copy() {
+        let mut p = position();
+        p.trail_reason = TrailReason::ThreeTimesSwingHighUpside;
+        p.proposed_trail_pct = 4.5;
+        let out = render_for_prompt(&report(vec![p], false));
+        assert!(out.contains("widened because analysts see"), "{out}");
+    }
+}
+
+
+#[cfg(test)]
+mod builder_tests {
+    use super::*;
+
+    #[test]
+    fn target_source_order() {
+        let fmp = pick_target(Some(37.0), Some(12), &[30.0, 40.0], Some((50.0, 9))).unwrap();
+        assert_eq!((fmp.source, fmp.consensus, fmp.count), ("fmp_consensus", 37.0, Some(12)));
+
+        let median = pick_target(None, None, &[30.0, 40.0, 38.0], Some((50.0, 9))).unwrap();
+        assert_eq!((median.source, median.consensus, median.count), ("fmp_median", 38.0, Some(3)));
+
+        // One recent record is not enough for a median; Yahoo takes over.
+        let yahoo = pick_target(None, None, &[30.0], Some((50.0, 9))).unwrap();
+        assert_eq!((yahoo.source, yahoo.consensus), ("yahoo", 50.0));
+
+        assert_eq!(pick_target(None, None, &[], None), None);
+    }
+
+    #[test]
+    fn fill_timestamps_convert_to_new_york_dates() {
+        // 8 PM ET on Oct 20 is already Oct 21 in UTC.
+        assert_eq!(ny_date_of_timestamp("2026-10-21T00:00:00Z").as_deref(), Some("2026-10-20"));
+        assert_eq!(ny_date_of_timestamp("2026-10-20").as_deref(), Some("2026-10-20"));
+        assert_eq!(ny_date_of_timestamp("garbage"), None);
+        assert_eq!(ny_date_of_sqlite_utc("2026-11-02 02:30:00"), "2026-11-01");
+    }
+
+    #[test]
+    fn weekday_fallback_counts_mon_to_fri_after_entry() {
+        // Fri Oct 30 -> Mon Nov 2: only Mon counts.
+        assert_eq!(weekdays_after("2026-10-30", "2026-11-02"), Some(1));
+        assert_eq!(weekdays_after("2026-10-26", "2026-11-02"), Some(5));
+    }
+
+    #[test]
+    fn scoreboard_points() {
+        let ts: Vec<i64> = (0..22).map(|i| 1_790_000_000 + i * 86_400).collect();
+        let eq: Vec<f64> = (0..22).map(|i| 1000.0 + i as f64).collect();
+        let sb = scoreboard_from(&ts, &eq).unwrap();
+        assert_eq!((sb.equity_now, sb.equity_1w, sb.equity_1m), (1021.0, Some(1016.0), Some(1000.0)));
+        assert!(sb.as_of.ends_with(" ET"));
+        let short = scoreboard_from(&ts[..3], &eq[..3]).unwrap();
+        assert_eq!((short.equity_1w, short.equity_1m), (None, Some(1000.0)));
+        assert!(scoreboard_from(&[], &[]).is_none());
     }
 }

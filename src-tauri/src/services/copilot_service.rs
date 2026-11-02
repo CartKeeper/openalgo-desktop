@@ -1269,7 +1269,7 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
     // ========== Helpers ==========
 
     /// Get FMP client with API key from the database
-    fn get_fmp_client(state: &AppState) -> Result<FmpClient> {
+    pub(crate) fn get_fmp_client(state: &AppState) -> Result<FmpClient> {
         let api_key = state
             .sqlite
             .get_provider_key("fmp", &state.security)?
