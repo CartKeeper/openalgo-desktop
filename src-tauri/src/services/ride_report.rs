@@ -375,7 +375,7 @@ fn pick_target(
         .map(|(mean, n)| TargetPick { consensus: mean, count: count(Some(n)), source: "yahoo" })
 }
 
-/// Equity scoreboard: last point now, the point 5 back for one week, the first point for one month.
+/// Equity scoreboard: last point now, the point 5 sessions back for one week, 21 back for one month.
 fn scoreboard_from(timestamps: &[i64], equity: &[f64]) -> Option<Scoreboard> {
     let now = *equity.last()?;
     let len = equity.len();
@@ -387,7 +387,7 @@ fn scoreboard_from(timestamps: &[i64], equity: &[f64]) -> Option<Scoreboard> {
     Some(Scoreboard {
         equity_now: now,
         equity_1w: if len >= 6 { Some(equity[len - 6]) } else { None },
-        equity_1m: if len >= 2 { Some(equity[0]) } else { None },
+        equity_1m: if len >= 22 { Some(equity[len - 22]) } else { None },
         as_of,
     })
 }
@@ -1182,13 +1182,20 @@ mod builder_tests {
 
     #[test]
     fn scoreboard_points() {
-        let ts: Vec<i64> = (0..22).map(|i| 1_790_000_000 + i * 86_400).collect();
-        let eq: Vec<f64> = (0..22).map(|i| 1000.0 + i as f64).collect();
+        // 23 daily points: one month ago is 21 sessions back (index 1), one week 5 back.
+        let ts: Vec<i64> = (0..23).map(|i| 1_790_000_000 + i * 86_400).collect();
+        let eq: Vec<f64> = (0..23).map(|i| 1000.0 + i as f64).collect();
         let sb = scoreboard_from(&ts, &eq).unwrap();
-        assert_eq!((sb.equity_now, sb.equity_1w, sb.equity_1m), (1021.0, Some(1016.0), Some(1000.0)));
+        assert_eq!((sb.equity_now, sb.equity_1w, sb.equity_1m), (1022.0, Some(1017.0), Some(1001.0)));
         assert!(sb.as_of.ends_with(" ET"));
+        // Exactly 22 points: one month ago is the first point.
+        let month = scoreboard_from(&ts[..22], &eq[..22]).unwrap();
+        assert_eq!(month.equity_1m, Some(1000.0));
+        // Too little history for a month (or a week): None, never a shorter look-back.
         let short = scoreboard_from(&ts[..3], &eq[..3]).unwrap();
-        assert_eq!((short.equity_1w, short.equity_1m), (None, Some(1000.0)));
+        assert_eq!((short.equity_1w, short.equity_1m), (None, None));
+        let under_a_month = scoreboard_from(&ts[..21], &eq[..21]).unwrap();
+        assert_eq!((under_a_month.equity_1w, under_a_month.equity_1m), (Some(1015.0), None));
         assert!(scoreboard_from(&[], &[]).is_none());
     }
 }
