@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { rideCommands } from '@/api/tauri-client'
 import { reconcileRecommendationsWithAccount } from '@/lib/affordability'
-import type { BasketOrderResult, OrderRecommendation } from '@/types/actionQueue'
+import type { BasketOrderResult, OrderRecommendation, StrategyRole } from '@/types/actionQueue'
 
 const sameGroup = (a: OrderRecommendation, b: OrderRecommendation): boolean =>
   !!a.group && !!b.group && a.group === b.group
@@ -18,21 +18,33 @@ export interface CascadeResult {
   protectRemovedDirectly: boolean
 }
 
+/** Which role (if any) is dragged out with a removed item of the given role. */
+const CASCADE_ROLE: Partial<Record<StrategyRole, StrategyRole>> = {
+  buy: 'protect',
+  fund: 'cancel',
+  protect: 'cancel',
+}
+
 /**
- * Pure removal rules for grouped strategy legs:
- * - removing a buy also removes the protect(s) for the same group + symbol (fund sells stay);
- * - removing a fund also removes the cancel(s) for the same group + symbol;
- * - removing a protect, cancel or standalone leg cascades nothing.
+ * Pure removal rules for grouped strategy legs. Each rule removes legs of the cascade role
+ * with the same group + symbol as the removed item:
+ * - removing a buy also removes its protect(s) (fund sells stay);
+ * - removing a fund also removes its cancel(s);
+ * - removing a protect directly also removes its cancel(s): the cancel only exists to make
+ *   room for the new stop, and placing it alone would leave the position unprotected;
+ * - removing a cancel or a standalone leg cascades nothing.
+ * Cascades never chain: only the item the user removed drives the cascade, so a protect
+ * removed because its buy was removed does not in turn remove any cancel.
  */
 export function cascadeRemoval(items: OrderRecommendation[], removedId: string): CascadeResult {
   const removed = items.find((item) => item.id === removedId)
   if (!removed) return { remaining: items, removed: undefined, protectRemovedDirectly: false }
 
-  const cascadeRole = removed.role === 'buy' ? 'protect' : removed.role === 'fund' ? 'cancel' : null
+  const cascadeRole = removed.role ? CASCADE_ROLE[removed.role] : undefined
   const remaining = items.filter((item) => {
     if (item.id === removedId) return false
     return !(
-      cascadeRole !== null &&
+      cascadeRole !== undefined &&
       item.role === cascadeRole &&
       sameGroup(item, removed) &&
       sameSymbol(item, removed)

@@ -107,6 +107,49 @@ describe('actionQueueStore removeItem cascades', () => {
     expect(ids()).toEqual([])
   })
 
+  it('removing a protect directly also removes its same-group same-symbol cancel and records one dismissal', () => {
+    useActionQueueStore.setState({
+      items: [
+        rec({ id: 'c1', symbol: 'NVDA', side: 'SELL', group: 'g1', role: 'cancel', cancelOrderId: 'o1' }),
+        rec({ id: 'p1', symbol: 'nvda', side: 'SELL', group: 'g1', role: 'protect' }),
+        rec({ id: 'c2', symbol: 'NVDA', side: 'SELL', group: 'g1', role: 'cancel', cancelOrderId: 'o2' }),
+      ],
+    })
+    useActionQueueStore.getState().removeItem('p1')
+    expect(ids()).toEqual([])
+    expect(dismissal).toHaveBeenCalledTimes(1)
+    expect(dismissal).toHaveBeenCalledWith('nvda', 10)
+  })
+
+  it('removing a protect does not remove a cancel in another group or for another symbol', async () => {
+    useActionQueueStore.setState({
+      items: [
+        rec({ id: 'c1', symbol: 'NVDA', side: 'SELL', group: 'g1', role: 'cancel' }),
+        rec({ id: 'p1', symbol: 'NVDA', side: 'SELL', group: 'g1', role: 'protect' }),
+        rec({ id: 'c2', symbol: 'NVDA', side: 'SELL', group: 'g2', role: 'cancel' }),
+        rec({ id: 'c3', symbol: 'AAPL', side: 'SELL', group: 'g1', role: 'cancel' }),
+        rec({ id: 'c4', symbol: 'NVDA', side: 'SELL', role: 'cancel' }),
+      ],
+    })
+    useActionQueueStore.getState().removeItem('p1')
+    expect(ids()).toEqual(['c2', 'c3', 'c4'])
+    await vi.waitFor(() => expect(useActionQueueStore.getState().fundsNotice).toBe('reconciled'))
+  })
+
+  it('cascades do not chain: removing a buy drops its protect but keeps a same-symbol cancel', async () => {
+    useActionQueueStore.setState({
+      items: [
+        rec({ id: 'c1', symbol: 'BAC', side: 'SELL', group: 'g1', role: 'cancel' }),
+        rec({ id: 'b1', symbol: 'BAC', group: 'g1', role: 'buy' }),
+        rec({ id: 'p1', symbol: 'BAC', side: 'SELL', group: 'g1', role: 'protect' }),
+      ],
+    })
+    useActionQueueStore.getState().removeItem('b1')
+    expect(ids()).toEqual(['c1'])
+    expect(dismissal).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(useActionQueueStore.getState().fundsNotice).toBe('reconciled'))
+  })
+
   it('a protect removed by cascade records no dismissal', () => {
     useActionQueueStore.setState({ items: rotation() })
     useActionQueueStore.getState().removeItem('b1')
