@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { OrderRecommendation } from '@/types/actionQueue'
 
 // --- Mock the broker IPC the reconciliation reads from ----------------------
@@ -40,7 +40,7 @@ const pos = (list: Array<{ symbol: string; quantity: number }>) =>
     list.map((p) => ({ symbol: p.symbol, exchange: 'NASDAQ', product: 'CNC', quantity: p.quantity, average_price: 0, ltp: 0, pnl: 0, realized_pnl: 0, unrealized_pnl: 0, buy_quantity: 0, buy_value: 0, sell_quantity: 0, sell_value: 0 }))
   )
 
-afterEach(() => {
+beforeEach(() => {
   vi.clearAllMocks()
   getPositions.mockResolvedValue([])
   getHoldings.mockResolvedValue([])
@@ -158,7 +158,8 @@ describe('reconcileRecommendationsWithAccount — sell proceeds, protect and can
     quotes({ PFE: 25.0, BAC: 50.27 })
     const { items, notice } = await reconcileRecommendationsWithAccount([fundSell(), groupBuy()])
     expect(items.find((i) => i.symbol === 'BAC')?.quantity).toBe(12) // floor((351+275)/50.27)
-    expect(notice).toContain('reduced BAC 13→12 to fit your available cash')
+    expect(notice).toContain('reduced BAC 13→12 to fit your available cash plus sale proceeds ($626.00)')
+    expect(notice).not.toContain('to fit your available cash (')
     expect(notice).toContain('BAC ×12 is funded by selling PFE (about $275) plus $351 cash')
   })
 
@@ -332,5 +333,79 @@ describe('reconcileRecommendationsWithAccount — sell proceeds, protect and can
       rec({ symbol: 'AAPL', side: 'SELL', orderType: 'LIMIT', price: 100, quantity: 5 }),
     ])
     expect(getOrderBook).not.toHaveBeenCalled()
+  })
+
+  it('does not double-count proceeds when two sells hit the same symbol', async () => {
+    cash(0)
+    pos([{ symbol: 'PFE', quantity: 11 }])
+    quotes({ PFE: 30, BAC: 50 })
+    const { items, notice } = await reconcileRecommendationsWithAccount([
+      fundSell(),
+      fundSell(),
+      groupBuy({ quantity: 13 }),
+    ])
+    expect(items.filter((i) => i.symbol === 'PFE')).toHaveLength(1)
+    expect(items.find((i) => i.symbol === 'BAC')?.quantity).toBe(6) // floor(330/50), 11 x 30 once
+    expect(notice).toContain("removed sell of PFE — you don't hold any shares")
+    expect(notice).toContain('reduced BAC 13→6 to fit your available cash plus sale proceeds ($330.00)')
+  })
+
+  it('caps a stop to the shares left after an earlier sell of the same symbol', async () => {
+    pos([{ symbol: 'PFE', quantity: 11 }])
+    quotes({ PFE: 30 })
+    const { items, notice } = await reconcileRecommendationsWithAccount([
+      fundSell({ quantity: 5, group: undefined, role: 'standalone' }),
+      protect({ symbol: 'PFE', quantity: 11, group: undefined, role: 'standalone' }),
+    ])
+    expect(items.find((i) => i.orderType === 'TRAILING_STOP')?.quantity).toBe(6)
+    expect(notice).toContain('reduced PFE 11→6 to the shares you actually hold')
+  })
+
+  it('does not lose a share to float noise at an exact-cents boundary', async () => {
+    cash(0)
+    pos([{ symbol: 'PFE', quantity: 3 }])
+    const { items } = await reconcileRecommendationsWithAccount([
+      fundSell({ orderType: 'LIMIT', price: 10.1, quantity: 3 }),
+      groupBuy({ orderType: 'LIMIT', price: 30.3, quantity: 1 }),
+    ])
+    expect(items.find((i) => i.symbol === 'BAC')?.quantity).toBe(1) // 3 x 10.10 = 30.299999999999997
+  })
+
+  it('does not cap a protect stop by a buy of a different symbol in its group', async () => {
+    cash(1000)
+    pos([{ symbol: 'KO', quantity: 20 }])
+    quotes({ BAC: 50 })
+    const { items, notice } = await reconcileRecommendationsWithAccount([
+      groupBuy({ quantity: 5 }),
+      protect({ symbol: 'KO', quantity: 20 }),
+    ])
+    expect(items.find((i) => i.symbol === 'KO')?.quantity).toBe(20) // held rule, not the BAC buy's 5
+    expect(notice).toBeNull()
+  })
+
+  it('does not cap a protect stop by a buy in another group', async () => {
+    cash(1000)
+    pos([{ symbol: 'BAC', quantity: 20 }])
+    quotes({ BAC: 50 })
+    const { items, notice } = await reconcileRecommendationsWithAccount([
+      groupBuy({ group: 'r1', quantity: 5 }),
+      protect({ group: 'r2', quantity: 20 }),
+    ])
+    expect(items.find((i) => i.orderType === 'TRAILING_STOP')?.quantity).toBe(20) // held rule
+    expect(notice ?? '').not.toMatch(/match its buy/)
+  })
+
+  it('keeps a sell but credits no proceeds when holdings cannot be read', async () => {
+    cash(100)
+    // readHeldLongQty swallows rejected reads into [], so only a synchronous throw reaches its null path.
+    getPositions.mockImplementation(() => {
+      throw new Error('offline')
+    })
+    quotes({ PFE: 30, BAC: 50 })
+    const { items, notice } = await reconcileRecommendationsWithAccount([fundSell(), groupBuy({ quantity: 5 })])
+    expect(items.find((i) => i.symbol === 'PFE')?.quantity).toBe(11)
+    expect(items.find((i) => i.symbol === 'BAC')?.quantity).toBe(2) // floor(100/50), no proceeds
+    expect(notice).toContain("couldn't confirm your holdings")
+    expect(notice).not.toMatch(/funded by/)
   })
 })

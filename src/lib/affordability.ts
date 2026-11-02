@@ -180,7 +180,11 @@ export async function reconcileRecommendationsWithAccount(
 
   // --- Walk recommendations in order ---------------------------------------
   let remaining = availableCash ?? 0
+  // Sale proceeds credited to `remaining` so far (drives the cap wording).
+  let proceedsCredited = 0
   const buyAdjusted: string[] = []
+  // Reduced buys whose cap included sale proceeds, keyed by the cash + proceeds budget at that point.
+  const buyAdjustedWithProceeds = new Map<number, string[]>()
   const buyDropped: string[] = []
   const buyUnverified: string[] = []
   const sellAdjusted: string[] = []
@@ -189,6 +193,9 @@ export async function reconcileRecommendationsWithAccount(
   const trailDropped: string[] = []
   const cancelDropped: string[] = []
   const fundedNotes: string[] = []
+  // Shares not yet claimed by an earlier kept sell/stop, per symbol: two sells of the
+  // same 11 shares must not both be kept (nor both credit proceeds).
+  const heldLeft: Record<string, number> = { ...(heldBySymbol ?? {}) }
   // Final (post-cap) quantity of each surviving buy, keyed by group + symbol.
   const boughtQty = new Map<string, number>()
   // Kept, priced fund sells per group, for the funded-buy notice.
@@ -231,7 +238,8 @@ export async function reconcileRecommendationsWithAccount(
         out.push(rec)
         continue
       }
-      const held = Math.floor(heldBySymbol[rec.symbol.toUpperCase()] ?? 0)
+      const heldKey = rec.symbol.toUpperCase()
+      const held = Math.floor(heldLeft[heldKey] ?? 0)
       if (held <= 0) {
         sellDropped.push(rec.symbol)
         continue
@@ -244,6 +252,7 @@ export async function reconcileRecommendationsWithAccount(
       } else {
         out.push(rec)
       }
+      heldLeft[heldKey] = held - sellQty
 
       // A liquidating sell funds later buys with its (post-cap) proceeds.
       if (isLiquidatingSell(rec)) {
@@ -251,6 +260,7 @@ export async function reconcileRecommendationsWithAccount(
         if (unit !== null && unit > 0) {
           const proceeds = sellQty * unit
           remaining += proceeds
+          proceedsCredited += proceeds
           if (rec.role === 'fund' && rec.group) {
             const entry = fundSells.get(rec.group) ?? { symbols: [], proceeds: 0 }
             entry.symbols.push(rec.symbol)
@@ -280,7 +290,7 @@ export async function reconcileRecommendationsWithAccount(
       out.push(rec)
       continue
     }
-    const affordableQty = Math.floor(remaining / unit)
+    const affordableQty = Math.floor(remaining / unit + 1e-9)
     if (affordableQty <= 0) {
       buyDropped.push(rec.symbol)
       continue
@@ -288,7 +298,14 @@ export async function reconcileRecommendationsWithAccount(
     const remainingBefore = remaining
     const keptQty = Math.min(rec.quantity, affordableQty)
     if (keptQty < rec.quantity) {
-      buyAdjusted.push(`${rec.symbol} ${rec.quantity}→${keptQty}`)
+      const label = `${rec.symbol} ${rec.quantity}→${keptQty}`
+      if (proceedsCredited > 0) {
+        // The wording must say when sale proceeds (not just cash) set the cap.
+        const budget = availableCash + proceedsCredited
+        buyAdjustedWithProceeds.set(budget, [...(buyAdjustedWithProceeds.get(budget) ?? []), label])
+      } else {
+        buyAdjusted.push(label)
+      }
       out.push({ ...rec, quantity: keptQty })
     } else {
       out.push(rec)
@@ -309,6 +326,9 @@ export async function reconcileRecommendationsWithAccount(
   const parts: string[] = []
   if (buyAdjusted.length > 0 && availableCash !== null) {
     parts.push(`reduced ${buyAdjusted.join(', ')} to fit your available cash (${usd(availableCash)})`)
+  }
+  for (const [budget, labels] of buyAdjustedWithProceeds) {
+    parts.push(`reduced ${labels.join(', ')} to fit your available cash plus sale proceeds (${usd(budget)})`)
   }
   if (buyDropped.length > 0) {
     parts.push(`removed ${buyDropped.join(', ')} — not enough cash for a single share`)
