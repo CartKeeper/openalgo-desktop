@@ -128,6 +128,7 @@ pub fn run() {
             commands::orders::get_order_book,
             commands::orders::get_trade_book,
             commands::orders::place_basket_order,
+            commands::orders::place_strategy_basket,
             // Position commands
             commands::positions::get_positions,
             commands::positions::close_position,

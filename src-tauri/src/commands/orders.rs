@@ -2,7 +2,8 @@
 
 use crate::brokers::types::{Order, OrderRequest, ModifyOrderRequest};
 use crate::error::Result;
-use crate::services::{OrderService, OrderbookService, PlaceOrderResult, SmartOrderService};
+use crate::services::strategy_basket_service;
+use crate::services::{LegResult, OrderService, OrderbookService, PlaceOrderResult, SmartOrderService, StrategyLeg};
 use crate::state::AppState;
 use serde::Serialize;
 use tauri::State;
@@ -106,4 +107,18 @@ pub async fn place_basket_order(
 ) -> Result<Vec<PlaceOrderResult>> {
     tracing::info!("Placing basket order: {} orders", orders.len());
     SmartOrderService::place_basket_order(&state, orders, None, expected_analyze_mode).await
+}
+
+/// Place a strategy basket (briefing rotations and protections)
+///
+/// Legs run in groups, in cancel -> sell -> buy -> stop order, each step
+/// waiting for the previous one to take effect. A failed leg stops its group.
+#[tauri::command]
+pub async fn place_strategy_basket(
+    state: State<'_, AppState>,
+    legs: Vec<StrategyLeg>,
+    expected_analyze_mode: Option<bool>,
+) -> Result<Vec<LegResult>> {
+    tracing::info!("Placing strategy basket: {} legs", legs.len());
+    strategy_basket_service::place_strategy_basket(&state, legs, expected_analyze_mode).await
 }
