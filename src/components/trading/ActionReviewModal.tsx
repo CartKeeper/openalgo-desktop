@@ -1,9 +1,17 @@
 import { Check, Copy, Loader2, ShoppingCart, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { emit } from '@tauri-apps/api/event'
-import { fundsCommands, settingsCommands } from '@/api/tauri-client'
-import { tradingApi } from '@/api/trading'
+import {
+  fundsCommands,
+  marketStatusCommands,
+  type OrderRequest,
+  orderCommands,
+  quoteCommands,
+  settingsCommands,
+  type StrategyLeg,
+} from '@/api/tauri-client'
+import { type PlaceOrderRequest, tradingApi } from '@/api/trading'
 import { reconcileRecommendationsWithAccount } from '@/lib/affordability'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -26,8 +34,8 @@ import {
 } from '@/components/ui/select'
 import { formatRecommendationsAsCsv } from '@/lib/csvRecommendations'
 import { cn } from '@/lib/utils'
-import { useActionQueueStore } from '@/stores/actionQueueStore'
-import type { OrderRecommendation } from '@/types/actionQueue'
+import { groupHeader, useActionQueueStore } from '@/stores/actionQueueStore'
+import type { BasketOrderResult, OrderRecommendation, StrategyLegResult } from '@/types/actionQueue'
 
 const ORDER_TYPE_LABELS: Record<string, string> = {
   MARKET: 'Market',
@@ -35,6 +43,133 @@ const ORDER_TYPE_LABELS: Record<string, string> = {
   SL: 'Stop Loss Limit',
   'SL-M': 'Stop Loss Market',
   TRAILING_STOP: 'Trailing Stop',
+}
+
+/** How often the market clock is re-read while a gated batch sits in review. */
+const MARKET_CLOCK_POLL_MS = 60_000
+
+/** Price, validity and trailing fields — identical on both placement paths. */
+function orderTerms(item: OrderRecommendation) {
+  const isTrailing = item.orderType === 'TRAILING_STOP'
+  return {
+    price: item.orderType === 'MARKET' || isTrailing ? 0 : item.price,
+    trigger_price: item.triggerPrice,
+    validity: item.validity ?? 'DAY',
+    amo: false,
+    trail_price: isTrailing ? item.trailPrice : undefined,
+    trail_percent: isTrailing ? item.trailPercent : undefined,
+  }
+}
+
+/** Ungrouped batches: the `tradingApi.placeBasketOrder` request shape. */
+function toBasketRequest(item: OrderRecommendation): PlaceOrderRequest {
+  return {
+    symbol: item.symbol,
+    exchange: item.exchange,
+    action: item.side,
+    product: item.product,
+    pricetype: item.orderType,
+    quantity: item.quantity,
+    ...orderTerms(item),
+  }
+}
+
+/** Grouped batches: one strategy leg per item, in item order. */
+function buildStrategyLegs(items: OrderRecommendation[]): StrategyLeg[] {
+  return items.map((item) => {
+    if (item.role === 'cancel') {
+      return {
+        group: item.group ?? null,
+        role: 'cancel',
+        symbol: item.symbol,
+        cancel_order_id: item.cancelOrderId,
+      }
+    }
+    const order: OrderRequest = {
+      symbol: item.symbol,
+      exchange: item.exchange,
+      side: item.side,
+      quantity: item.quantity,
+      order_type: item.orderType,
+      product: item.product,
+      ...orderTerms(item),
+    }
+    return {
+      group: item.group ?? null,
+      role: item.role ?? 'standalone',
+      symbol: item.symbol,
+      order,
+    }
+  })
+}
+
+/** Strategy leg results in the shape the results view renders (`SYMBOL · role`). */
+function legResultsToBasketResults(
+  results: StrategyLegResult[],
+  items: OrderRecommendation[]
+): BasketOrderResult[] {
+  return results.map((r) => ({
+    symbol: `${r.symbol} · ${r.role}`,
+    exchange: items.find((i) => i.symbol === r.symbol)?.exchange ?? '',
+    orderId: r.order_id,
+    success: r.success,
+    message: r.message,
+  }))
+}
+
+/** A sell that turns shares into cash (not a stop, not a cancel). */
+const isLiquidatingSell = (item: OrderRecommendation) =>
+  item.side === 'SELL' &&
+  (item.orderType === 'MARKET' || item.orderType === 'LIMIT') &&
+  item.role !== 'cancel'
+
+interface MarketClockState {
+  isOpen: boolean
+  readFailed: boolean
+}
+
+/** One market-clock read; a failed read counts as closed. */
+async function readMarketClock(): Promise<MarketClockState> {
+  try {
+    const clock = await marketStatusCommands.getMarketClock()
+    return { isOpen: clock.is_open, readFailed: false }
+  } catch {
+    return { isOpen: false, readFailed: true }
+  }
+}
+
+/**
+ * Market-hours gate: while enabled, reads the market clock immediately and then
+ * every 60 s. `recheck` reads it once more (used at the top of Place).
+ * `marketClock` is null until the first read lands.
+ */
+function useMarketGate(enabled: boolean) {
+  const [marketClock, setMarketClock] = useState<MarketClockState | null>(null)
+
+  useEffect(() => {
+    if (!enabled) return
+    let cancelled = false
+    setMarketClock(null)
+    const read = () => {
+      void readMarketClock().then((state) => {
+        if (!cancelled) setMarketClock(state)
+      })
+    }
+    read()
+    const timer = setInterval(read, MARKET_CLOCK_POLL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [enabled])
+
+  const recheck = useCallback(async () => {
+    const state = await readMarketClock()
+    setMarketClock(state)
+    return state.isOpen
+  }, [])
+
+  return { marketClock, recheck }
 }
 
 function RecommendationCard({
@@ -62,7 +197,9 @@ function RecommendationCard({
             {item.side}
           </Badge>
           <Badge variant="outline" className="text-[10px]">
-            {ORDER_TYPE_LABELS[item.orderType] || item.orderType}
+            {item.validity === 'GTC'
+              ? `${ORDER_TYPE_LABELS[item.orderType] || item.orderType} · GTC`
+              : ORDER_TYPE_LABELS[item.orderType] || item.orderType}
           </Badge>
         </div>
         <Button
@@ -166,6 +303,40 @@ function RecommendationCard({
   )
 }
 
+/** A strategy `cancel` leg: cancels an open broker order; nothing to edit. */
+function CancelCard({
+  item,
+  onRemove,
+}: {
+  item: OrderRecommendation
+  onRemove: (id: string) => void
+}) {
+  return (
+    <div className="rounded-lg border p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold">{item.symbol}</span>
+          <Badge variant="outline" className="text-[10px]">
+            Cancel order
+          </Badge>
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
+          onClick={() => onRemove(item.id)}
+        >
+          <X className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+
+      {item.rationale && (
+        <p className="text-xs text-muted-foreground leading-relaxed">{item.rationale}</p>
+      )}
+    </div>
+  )
+}
+
 export interface ActionReviewModalProps {
   /**
    * Optional override for the Apply action. When provided, the modal calls this
@@ -198,6 +369,19 @@ export function ActionReviewModal({
   // Settled, spendable balance shown next to the basket cost so the user always
   // knows what they can actually spend. null = couldn't read (line is hidden).
   const [availableCash, setAvailableCash] = useState<number | null>(null)
+  // Live quotes (by upper-cased symbol) for MARKET liquidating sells, read once on
+  // open so the Gate B line can state the expected sell proceeds.
+  const [sellQuotes, setSellQuotes] = useState<Record<string, number>>({})
+
+  const isLivePath = !onApply
+  // Rotation legs (cancel / fund / buy) only make sense while the market is open.
+  const needsMarketGate =
+    isLivePath && items.some((i) => i.role === 'cancel' || i.role === 'fund' || i.role === 'buy')
+  // Any grouped leg routes the whole batch through the sequenced strategy basket.
+  const useStrategyPath = isLivePath && items.some((i) => !!i.group)
+  const { marketClock, recheck: recheckMarketClock } = useMarketGate(
+    isReviewOpen && needsMarketGate && !showResults
+  )
 
   // Read the authoritative mode when the modal opens on the live path. We do NOT
   // trust any cached/themeStore value — only get_analyze_mode, the same flag the
@@ -240,6 +424,48 @@ export function ActionReviewModal({
       cancelled = true
     }
   }, [isReviewOpen, onApply])
+
+  // Quote the MARKET liquidating sells once when the order-placing modal opens.
+  // On failure those sells contribute nothing to the stated proceeds.
+  useEffect(() => {
+    if (!isReviewOpen || onApply) return
+    setSellQuotes({}) // never carry quotes over from a previous review
+    const marketSells = useActionQueueStore
+      .getState()
+      .items.filter((i) => isLiquidatingSell(i) && i.orderType === 'MARKET')
+    if (marketSells.length === 0) return
+    let cancelled = false
+    quoteCommands
+      .getQuote(marketSells.map((i) => ({ exchange: i.exchange, symbol: i.symbol })))
+      .then((quotes) => {
+        if (!cancelled) {
+          setSellQuotes(Object.fromEntries(quotes.map((q) => [q.symbol.toUpperCase(), q.ltp])))
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSellQuotes({})
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isReviewOpen, onApply])
+
+  const showPlacementResults = (results: BasketOrderResult[]) => {
+    const successCount = results.filter((r) => r.success).length
+    const failCount = results.length - successCount
+
+    setResults(results)
+    setShowResults(true)
+
+    // Emit basket event for auto-refresh (distinct from order_event to avoid single-order toast)
+    emit('basket_order_event', { count: successCount })
+
+    if (failCount === 0) {
+      toast.success(`All ${successCount} orders placed successfully`)
+    } else {
+      toast.warning(`${successCount} placed, ${failCount} failed`)
+    }
+  }
 
   const handlePlaceAll = async () => {
     if (items.length === 0) return
@@ -288,6 +514,13 @@ export function ActionReviewModal({
       return
     }
 
+    // Market-hours gate: rotation legs are refused while the market is closed.
+    // The footer line explains why; no toast.
+    if (needsMarketGate && !(await recheckMarketClock())) {
+      setSubmitting(false)
+      return
+    }
+
     // Funds re-check at SUBMIT time — the deterministic backstop. Quantities can
     // be edited upward in this modal, and cash/prices move while it sits open, so
     // re-reconcile against the broker NOW. If anything no longer fits, adjust the
@@ -312,21 +545,19 @@ export function ActionReviewModal({
     }
 
     try {
+      if (useStrategyPath) {
+        // Sequenced on the backend: cancel → fund (waits for fills) → buy → protect.
+        // Same acknowledged-mode contract as the basket path below.
+        const legResults = await orderCommands.placeStrategyBasket(
+          buildStrategyLegs(items),
+          !freshLive
+        )
+        showPlacementResults(legResultsToBasketResults(legResults, items))
+        return
+      }
+
       const response = await tradingApi.placeBasketOrder(
-        items.map((item) => ({
-          symbol: item.symbol,
-          exchange: item.exchange,
-          action: item.side,
-          product: item.product,
-          pricetype: item.orderType,
-          price: item.orderType === 'MARKET' || item.orderType === 'TRAILING_STOP' ? 0 : item.price,
-          quantity: item.quantity,
-          trigger_price: item.triggerPrice,
-          validity: 'DAY',
-          amo: false,
-          trail_price: item.orderType === 'TRAILING_STOP' ? item.trailPrice : undefined,
-          trail_percent: item.orderType === 'TRAILING_STOP' ? item.trailPercent : undefined,
-        })),
+        items.map(toBasketRequest),
         // Pass the acknowledged analyze-mode to the backend. It re-reads the same
         // authority at routing time and rejects if it no longer matches — so no
         // background mode flip between this confirmation and execution can route a
@@ -336,26 +567,20 @@ export function ActionReviewModal({
       )
 
       if (response.status === 'success' && response.data) {
-        const successCount = response.data.filter((r) => r.success).length
-        const failCount = response.data.length - successCount
-
-        setResults(response.data)
-        setShowResults(true)
-
-        // Emit basket event for auto-refresh (distinct from order_event to avoid single-order toast)
-        emit('basket_order_event', { count: successCount })
-
-        if (failCount === 0) {
-          toast.success(`All ${successCount} orders placed successfully`)
-        } else {
-          toast.warning(`${successCount} placed, ${failCount} failed`)
-        }
+        showPlacementResults(response.data)
       } else {
         toast.error(response.message || 'Failed to place basket order')
         setSubmitting(false)
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to place orders')
+      // Rejected invokes usually carry the backend's wording as a plain string.
+      toast.error(
+        typeof err === 'string'
+          ? err
+          : err instanceof Error
+            ? err.message
+            : 'Failed to place orders'
+      )
       setSubmitting(false)
     }
   }
@@ -386,15 +611,32 @@ export function ActionReviewModal({
 
   // Gate B figures (live path only). Real-money downside restated in the
   // user's own dollars per the trading-advice spec (C5).
-  const isLivePath = !onApply
   const buyCost = items
     .filter((i) => i.side === 'BUY' && i.price > 0)
     .reduce((sum, i) => sum + i.quantity * i.price, 0)
-  const marketLegs = items.filter((i) => i.price === 0).length
+  // A cancel leg places nothing, so it is not a market-priced order.
+  const marketLegs = items.filter((i) => i.role !== 'cancel' && i.price === 0).length
+  // Expected cash from liquidating sells: limit price, else the live quote.
+  const sellProceeds = items.filter(isLiquidatingSell).reduce((sum, i) => {
+    const unitPrice =
+      i.orderType === 'LIMIT' && i.price > 0 ? i.price : (sellQuotes[i.symbol.toUpperCase()] ?? 0)
+    return sum + i.quantity * unitPrice
+  }, 0)
   const realisticDownside = buyCost * 0.25
   const usd = (n: number) =>
     n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
   const showGateB = isLivePath && !showResults && items.length > 0
+  const showMarketClosed =
+    needsMarketGate && !showResults && marketClock !== null && !marketClock.isOpen
+
+  // Strategy groups in first-appearance order; ungrouped items render after them.
+  const groupOrder = [...new Set(items.flatMap((item) => (item.group ? [item.group] : [])))]
+  const renderCard = (item: OrderRecommendation) =>
+    item.role === 'cancel' ? (
+      <CancelCard key={item.id} item={item} onRemove={removeItem} />
+    ) : (
+      <RecommendationCard key={item.id} item={item} onUpdate={updateItem} onRemove={removeItem} />
+    )
   // null (unread) or true => treat as LIVE; only an authoritative `false` is paper.
   const isLive = liveMode !== false
 
@@ -470,9 +712,11 @@ export function ActionReviewModal({
                   <span className="text-sm font-semibold">{result.symbol}</span>
                 </div>
                 <span className="text-xs text-muted-foreground">
-                  {result.success
-                    ? `Order ID: ${result.orderId || 'N/A'}`
-                    : result.message || 'Failed'}
+                  {result.message
+                    ? result.message
+                    : result.success
+                      ? `Order ID: ${result.orderId || 'N/A'}`
+                      : 'Failed'}
                 </span>
               </div>
             ))
@@ -482,14 +726,22 @@ export function ActionReviewModal({
               <p className="text-sm">No recommendations to review</p>
             </div>
           ) : (
-            items.map((item) => (
-              <RecommendationCard
-                key={item.id}
-                item={item}
-                onUpdate={updateItem}
-                onRemove={removeItem}
-              />
-            ))
+            <>
+              {groupOrder.map((group) => {
+                const header = groupHeader(items, group)
+                return (
+                  <Fragment key={group}>
+                    {header && (
+                      <p className="text-xs font-semibold uppercase tracking-wider leading-[1.4] text-muted-foreground">
+                        {header}
+                      </p>
+                    )}
+                    {items.filter((item) => item.group === group).map(renderCard)}
+                  </Fragment>
+                )
+              })}
+              {items.filter((item) => !item.group).map(renderCard)}
+            </>
           )}
         </div>
 
@@ -520,6 +772,11 @@ export function ActionReviewModal({
                 </>
               )}
               .{' '}
+              {sellProceeds > 0 && (
+                <>
+                  Sell proceeds about <strong>{usd(sellProceeds)}</strong>.{' '}
+                </>
+              )}
               {buyCost > 0 && (
                 <>
                   A realistic drawdown of ~25% would be about <strong>{usd(realisticDownside)}</strong> of
@@ -531,7 +788,7 @@ export function ActionReviewModal({
             {availableCash !== null && (
               <p className="text-xs text-muted-foreground">
                 Available to spend (settled): <strong className="text-foreground">{usd(availableCash)}</strong>
-                {buyCost > availableCash && (
+                {buyCost > availableCash + sellProceeds && (
                   <span className="text-red-600 dark:text-red-400">
                     {' '}— this basket's buys exceed it and will be reduced at placement.
                   </span>
@@ -563,6 +820,12 @@ export function ActionReviewModal({
           </div>
         )}
 
+        {showMarketClosed && (
+          <p className="text-xs font-semibold leading-[1.4] text-muted-foreground">
+            Market opens at 9:30 AM ET. Place this then.
+            {marketClock?.readFailed && ' (could not read the market clock)'}
+          </p>
+        )}
         <DialogFooter className="gap-2">
           {showResults ? (
             <Button onClick={handleClose}>Done</Button>
@@ -577,7 +840,8 @@ export function ActionReviewModal({
                   isSubmitting ||
                   items.length === 0 ||
                   (cloneNameRequired && cloneName.trim().length === 0) ||
-                  (showGateB && isLive && !acknowledged)
+                  (showGateB && isLive && !acknowledged) ||
+                  (needsMarketGate && (marketClock === null || !marketClock.isOpen))
                 }
                 className="bg-primary"
               >
