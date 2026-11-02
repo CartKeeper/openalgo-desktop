@@ -37,6 +37,7 @@ pub mod symbol_service;
 pub mod analyzer_service;
 pub mod options_service;
 pub mod history_service;
+pub mod ride_report;
 pub mod portfolio_service;
 pub mod quant_service;
 pub mod copilot_service;
