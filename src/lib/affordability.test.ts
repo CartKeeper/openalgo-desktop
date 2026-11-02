@@ -397,15 +397,27 @@ describe('reconcileRecommendationsWithAccount — sell proceeds, protect and can
 
   it('keeps a sell but credits no proceeds when holdings cannot be read', async () => {
     cash(100)
-    // readHeldLongQty swallows rejected reads into [], so only a synchronous throw reaches its null path.
-    getPositions.mockImplementation(() => {
-      throw new Error('offline')
-    })
+    getPositions.mockRejectedValue(new Error('offline'))
     quotes({ PFE: 30, BAC: 50 })
     const { items, notice } = await reconcileRecommendationsWithAccount([fundSell(), groupBuy({ quantity: 5 })])
     expect(items.find((i) => i.symbol === 'PFE')?.quantity).toBe(11)
     expect(items.find((i) => i.symbol === 'BAC')?.quantity).toBe(2) // floor(100/50), no proceeds
     expect(notice).toContain("couldn't confirm your holdings")
     expect(notice).not.toMatch(/funded by/)
+  })
+
+  it('tolerates a holdings-only read failure and still caps sells to positions', async () => {
+    cash(100)
+    pos([{ symbol: 'PFE', quantity: 11 }])
+    getHoldings.mockRejectedValue(new Error('holdings offline'))
+    quotes({ PFE: 30, BAC: 50 })
+    const { items, notice } = await reconcileRecommendationsWithAccount([
+      fundSell({ quantity: 20 }),
+      groupBuy({ quantity: 5 }),
+    ])
+    expect(items.find((i) => i.symbol === 'PFE')?.quantity).toBe(11)
+    expect(items.find((i) => i.symbol === 'BAC')?.quantity).toBe(5) // $100 + 11 x $30
+    expect(notice).toContain('reduced PFE 20→11 to the shares you actually hold')
+    expect(notice).not.toContain("couldn't confirm your holdings")
   })
 })

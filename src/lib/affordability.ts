@@ -63,13 +63,18 @@ function knownUnitPrice(rec: OrderRecommendation): number | null {
   return null
 }
 
-/** Read net long quantity held per symbol (positions + holdings), uppercase keys. */
+/**
+ * Read net long quantity held per symbol (positions + holdings), uppercase keys.
+ * Null when positions can't be read: that must not look like "holds nothing".
+ * A holdings-only failure is tolerated as no holdings.
+ */
 async function readHeldLongQty(): Promise<Record<string, number> | null> {
   try {
     const [positions, holdings] = await Promise.all([
-      positionCommands.getPositions().catch(() => []),
+      positionCommands.getPositions().catch(() => null),
       holdingsCommands.getHoldings().catch(() => []),
     ])
+    if (positions === null) return null
     const held: Record<string, number> = {}
     for (const p of positions) {
       held[p.symbol.toUpperCase()] = (held[p.symbol.toUpperCase()] ?? 0) + p.quantity
