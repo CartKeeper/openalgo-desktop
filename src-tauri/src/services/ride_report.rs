@@ -239,10 +239,17 @@ struct HeldPosition {
 
 /// Where the analyst target came from and how many targets back it.
 #[derive(Debug, PartialEq)]
-struct TargetPick {
-    consensus: f64,
-    count: Option<i32>,
-    source: &'static str,
+pub(crate) struct TargetPick {
+    pub(crate) consensus: f64,
+    pub(crate) count: Option<i32>,
+    pub(crate) source: &'static str,
+}
+
+/// One daily bar from whichever source answered.
+pub(crate) struct CloseBar {
+    pub(crate) date: String,
+    pub(crate) close: f64,
+    pub(crate) volume: Option<i64>,
 }
 
 fn ok_or_warn<T, E: std::fmt::Display>(what: &str, symbol: &str, r: std::result::Result<T, E>) -> Option<T> {
@@ -301,7 +308,7 @@ fn median(mut values: Vec<f64>) -> Option<f64> {
 }
 
 /// Positive price targets published within the window ending `today`.
-fn recent_target_prices(targets: &[PriceTarget], today: NaiveDate) -> Vec<f64> {
+pub(crate) fn recent_target_prices(targets: &[PriceTarget], today: NaiveDate) -> Vec<f64> {
     let cutoff = (today - Duration::days(TARGET_WINDOW_DAYS)).format("%Y-%m-%d").to_string();
     targets
         .iter()
@@ -405,6 +412,64 @@ async fn load_held_positions(state: &AppState) -> Vec<HeldPosition> {
     held.into_iter().filter(|p| p.quantity > 0.0).collect()
 }
 
+/// Daily bars, ascending, with the source that answered. FMP first over `from`..`to`;
+/// Yahoo (`yahoo_range`, e.g. "3mo") when FMP is absent, fails or returns nothing.
+pub(crate) async fn load_daily_bars(
+    fmp: Option<&FmpClient>,
+    yahoo: &YahooClient,
+    symbol: &str,
+    from: &str,
+    to: &str,
+    yahoo_range: &str,
+) -> (&'static str, Vec<CloseBar>) {
+    if let Some(fmp) = fmp {
+        let fetched = fmp.get_daily_closes(symbol, from, to).await;
+        if let Some(bars) = ok_or_warn("FMP daily closes", symbol, fetched).filter(|b| !b.is_empty()) {
+            info!("ride report: {} closes from FMP ({} bars)", symbol, bars.len());
+            let bars = bars.into_iter().map(|b| CloseBar { date: b.date, close: b.close, volume: b.volume }).collect();
+            return ("fmp", bars);
+        }
+    }
+    let fetched = yahoo.get_historical(symbol, "1d", yahoo_range).await;
+    let bars = ok_or_warn("Yahoo daily closes", symbol, fetched).unwrap_or_default();
+    info!("ride report: {} closes from Yahoo ({} bars)", symbol, bars.len());
+    let bars = bars
+        .into_iter()
+        .map(|b| CloseBar { date: b.0.chars().take(10).collect(), close: b.4, volume: Some(b.5) })
+        .collect();
+    ("yahoo", bars)
+}
+
+/// Analyst target for a symbol: FMP consensus, FMP 90-day median, then Yahoo mean, with the count chain.
+pub(crate) async fn load_target(
+    fmp: Option<&FmpClient>,
+    yahoo: &YahooClient,
+    symbol: &str,
+    today: NaiveDate,
+) -> Option<TargetPick> {
+    let (mut consensus, mut summary_count, mut recent) = (None, None, Vec::new());
+    if let Some(fmp) = fmp {
+        let fetched = fmp.get_price_target_consensus(symbol).await;
+        consensus = ok_or_warn("FMP target consensus", symbol, fetched).flatten().and_then(|c| c.target_consensus);
+        let fetched = fmp.get_price_target_summary(symbol).await;
+        summary_count = ok_or_warn("FMP target summary", symbol, fetched).flatten().and_then(|s| s.last_quarter_count);
+        if consensus.is_none() || summary_count.is_none() {
+            let fetched = fmp.get_price_targets(symbol).await;
+            let individual = ok_or_warn("FMP price targets", symbol, fetched).unwrap_or_default();
+            recent = recent_target_prices(&individual, today);
+        }
+    }
+    if let Some(mut pick) = pick_target(consensus, summary_count, &recent, None) {
+        if pick.count.is_none() {
+            // Both FMP counts are missing: Yahoo is consulted for the count only.
+            pick.count = yahoo.get_target_mean(symbol).await.map(|(_, n)| n);
+        }
+        return Some(pick);
+    }
+    let yahoo_target = yahoo.get_target_mean(symbol).await;
+    pick_target(consensus, summary_count, &recent, yahoo_target)
+}
+
 /// Per-report lookups shared by every position.
 struct ReportContext<'a> {
     state: &'a AppState,
@@ -431,43 +496,14 @@ impl ReportContext<'_> {
 
     /// Daily closes, ascending. FMP first, Yahoo when FMP fails or returns nothing.
     async fn closes(&self, symbol: &str) -> Vec<f64> {
-        if let Some(fmp) = &self.fmp {
-            let from = (self.today - Duration::days(CLOSES_LOOKBACK_DAYS)).format("%Y-%m-%d").to_string();
-            let to = self.today.format("%Y-%m-%d").to_string();
-            let fetched = fmp.get_daily_closes(symbol, &from, &to).await;
-            if let Some(bars) = ok_or_warn("FMP daily closes", symbol, fetched).filter(|b| !b.is_empty()) {
-                info!("ride report: {} closes from FMP ({} bars)", symbol, bars.len());
-                return bars.into_iter().map(|b| b.close).collect();
-            }
-        }
-        let fetched = self.yahoo.get_historical(symbol, "1d", "3mo").await;
-        let bars = ok_or_warn("Yahoo daily closes", symbol, fetched).unwrap_or_default();
-        info!("ride report: {} closes from Yahoo ({} bars)", symbol, bars.len());
-        bars.into_iter().map(|b| b.4).collect()
+        let from = (self.today - Duration::days(CLOSES_LOOKBACK_DAYS)).format("%Y-%m-%d").to_string();
+        let to = self.today.format("%Y-%m-%d").to_string();
+        let (_, bars) = load_daily_bars(self.fmp.as_ref(), &self.yahoo, symbol, &from, &to, "3mo").await;
+        bars.into_iter().map(|b| b.close).collect()
     }
 
     async fn target(&self, symbol: &str) -> Option<TargetPick> {
-        let (mut consensus, mut summary_count, mut recent) = (None, None, Vec::new());
-        if let Some(fmp) = &self.fmp {
-            let fetched = fmp.get_price_target_consensus(symbol).await;
-            consensus = ok_or_warn("FMP target consensus", symbol, fetched).flatten().and_then(|c| c.target_consensus);
-            let fetched = fmp.get_price_target_summary(symbol).await;
-            summary_count = ok_or_warn("FMP target summary", symbol, fetched).flatten().and_then(|s| s.last_quarter_count);
-            if consensus.is_none() || summary_count.is_none() {
-                let fetched = fmp.get_price_targets(symbol).await;
-                let individual = ok_or_warn("FMP price targets", symbol, fetched).unwrap_or_default();
-                recent = recent_target_prices(&individual, self.today);
-            }
-        }
-        if let Some(mut pick) = pick_target(consensus, summary_count, &recent, None) {
-            if pick.count.is_none() {
-                // Both FMP counts are missing: Yahoo is consulted for the count only.
-                pick.count = self.yahoo.get_target_mean(symbol).await.map(|(_, n)| n);
-            }
-            return Some(pick);
-        }
-        let yahoo = self.yahoo.get_target_mean(symbol).await;
-        pick_target(consensus, summary_count, &recent, yahoo)
+        load_target(self.fmp.as_ref(), &self.yahoo, symbol, self.today).await
     }
 
     /// Date the current holding run began: cache, then fill history. Manual positions use `added_at`.

@@ -583,5 +583,38 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["scenario_id", "trades"]
             }),
         },
+        ToolDefinition {
+            name: "get_price_history".to_string(),
+            description: "Get daily closing prices for a stock over the last 1 month to 1 year, with derived 30-day numbers: net_move_30d_pct (net change over the last 30 trading days), daily_swing_pct (average absolute day-over-day move over the last 30 days), and high_30d / low_30d (highest and lowest close over the last 30 closes). Data comes from Financial Modeling Prep, with Yahoo Finance as the fallback; the result's \"source\" says which one answered. \"bars\" holds at most the 60 most recent days (date, close, volume) and \"bars_total\" is the full count the derived numbers were computed from. The derived numbers are null when fewer than 30 (high/low) or 31 (net move, swing) closes are available, which happens with the 1mo range. Use for price trend, momentum, volatility, and how far a stock has moved recently.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Ticker symbol (e.g., \"AAPL\")"
+                    },
+                    "range": {
+                        "type": "string",
+                        "enum": ["1mo", "3mo", "6mo", "1y"],
+                        "description": "How far back to fetch daily closes. Defaults to 3mo."
+                    }
+                },
+                "required": ["symbol"]
+            }),
+        },
+        ToolDefinition {
+            name: "get_analyst_targets".to_string(),
+            description: "Get Wall Street analyst price targets for a stock: the consensus target, median, high and low, how many targets were published in the last 90 days, and the 5 most recent individual analyst notes (date, analyst, firm, target, headline). Data comes from Financial Modeling Prep, with Yahoo Finance as the fallback; \"source\" says which one produced the consensus (fmp_consensus, fmp_median, or yahoo), and is null when no source has a target. upside_pct is the percent difference between the consensus target and the current price. It is what analysts expect, not a forecast guarantee: always present it as an analyst expectation and cite the source and date.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Ticker symbol (e.g., \"AAPL\")"
+                    }
+                },
+                "required": ["symbol"]
+            }),
+        },
     ]
 }

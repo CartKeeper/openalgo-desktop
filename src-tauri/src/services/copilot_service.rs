@@ -57,7 +57,7 @@ LEAD WITH THE ANSWER. Do not preface responses with a risk lecture or with quali
 
 CONTENT RULES:
 - Do not invent rules that sound systematic (e.g. "exit if volume drops below 10M") unless grounded and sourced. Do not dress guesses as analysis.
-- Replace price-target language ("room to run to $X") with range + base rate ("traded $A–$B over 52 weeks; a same-day +X% move reverses roughly as often as it continues"). No single price target stated as an expectation.
+- When you cite an analyst target or expected upside, name the source (consensus of N analysts, or the firm) and the as-of date. State targets as what analysts expect, not as a guarantee.
 - If an instrument is already up 10% or more intraday, you MUST state plainly, ADJACENT to that pick, that buying after the move is structurally different from buying before it.
 - Express realistic (not worst-case) downside in the user's ACTUAL dollars (e.g. "a 25% drop is normal here = $500 of your $2,000").
 - NEVER endorse increasing risk as a way to grow capital faster. If the user proposes it, correct the premise: variance is not expected return, and a 50% loss requires a 100% gain to recover.
@@ -261,6 +261,8 @@ The current date and time is {date}, {time} ET. Right now {session}.\n\
             "get_client_portfolio" => Self::tool_get_client_portfolio(tool_input, state).await,
             "get_client_scenario" => Self::tool_get_client_scenario(tool_input, state).await,
             "apply_scenario_trades" => Self::tool_apply_scenario_trades(tool_input, state).await,
+            "get_price_history" => Self::tool_get_price_history(tool_input, state).await,
+            "get_analyst_targets" => Self::tool_get_analyst_targets(tool_input, state).await,
             _ => Err(AppError::Provider(format!("Unknown tool: {}", tool_name))),
         };
 
@@ -1266,6 +1268,144 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
         }))
     }
 
+    /// Daily price history with derived 30-day numbers. Source chain lives in `ride_report`.
+    async fn tool_get_price_history(
+        input: &serde_json::Value,
+        state: &AppState,
+    ) -> Result<serde_json::Value> {
+        use crate::services::ride_report::{daily_swing_pct, load_daily_bars, net_move_pct};
+
+        const MAX_BARS: usize = 60;
+        let symbol = input["symbol"]
+            .as_str()
+            .ok_or_else(|| AppError::Validation("symbol is required".to_string()))?;
+        let range = input["range"].as_str().unwrap_or("3mo");
+        let lookback_days: i64 = match range {
+            "1mo" => 45,
+            "3mo" => 100,
+            "6mo" => 190,
+            "1y" => 370,
+            other => {
+                return Err(AppError::Validation(format!(
+                    "range must be one of 1mo, 3mo, 6mo, 1y (got \"{}\")",
+                    other
+                )))
+            }
+        };
+
+        let today = Utc::now().with_timezone(&New_York).date_naive();
+        let from = (today - chrono::Duration::days(lookback_days)).format("%Y-%m-%d").to_string();
+        let to = today.format("%Y-%m-%d").to_string();
+        let fmp = Self::get_fmp_client(state).ok();
+        let yahoo = YahooClient::new((*state.http_client).clone());
+        let (source, bars) =
+            load_daily_bars(fmp.as_ref(), &yahoo, symbol, &from, &to, range).await;
+
+        let closes: Vec<f64> = bars.iter().map(|b| b.close).collect();
+        let (high_30d, low_30d) = if closes.len() >= 30 {
+            let last30 = &closes[closes.len() - 30..];
+            (
+                Some(last30.iter().cloned().fold(f64::MIN, f64::max)),
+                Some(last30.iter().cloned().fold(f64::MAX, f64::min)),
+            )
+        } else {
+            (None, None)
+        };
+        let shown: Vec<serde_json::Value> = bars[bars.len().saturating_sub(MAX_BARS)..]
+            .iter()
+            .map(|b| serde_json::json!({ "date": b.date, "close": b.close, "volume": b.volume }))
+            .collect();
+
+        Ok(serde_json::json!({
+            "symbol": symbol,
+            "source": source,
+            "bars": shown,
+            "bars_total": bars.len(),
+            "net_move_30d_pct": net_move_pct(&closes),
+            "daily_swing_pct": daily_swing_pct(&closes),
+            "high_30d": high_30d,
+            "low_30d": low_30d,
+        }))
+    }
+
+    /// Analyst targets with the newest notes and upside versus the current price.
+    async fn tool_get_analyst_targets(
+        input: &serde_json::Value,
+        state: &AppState,
+    ) -> Result<serde_json::Value> {
+        use crate::services::ride_report::{load_target, recent_target_prices};
+
+        let symbol = input["symbol"]
+            .as_str()
+            .ok_or_else(|| AppError::Validation("symbol is required".to_string()))?;
+        let today = Utc::now().with_timezone(&New_York).date_naive();
+        let fmp = Self::get_fmp_client(state).ok();
+        let yahoo = YahooClient::new((*state.http_client).clone());
+
+        let pick = load_target(fmp.as_ref(), &yahoo, symbol, today).await;
+
+        let (mut high, mut low, mut median) = (None, None, None);
+        let (mut targets_last_90d, mut recent) = (None, Vec::new());
+        if let Some(fmp) = &fmp {
+            match fmp.get_price_target_consensus(symbol).await {
+                Ok(Some(c)) => {
+                    high = c.target_high;
+                    low = c.target_low;
+                    median = c.target_median;
+                }
+                Ok(None) => {}
+                Err(e) => warn!("analyst targets: FMP consensus failed for {}: {}", symbol, e),
+            }
+            match fmp.get_price_targets(symbol).await {
+                Ok(mut notes) => {
+                    targets_last_90d = Some(recent_target_prices(&notes, today).len());
+                    notes.sort_by(|a, b| b.published_date.cmp(&a.published_date));
+                    recent = notes
+                        .iter()
+                        .take(5)
+                        .map(|n| {
+                            serde_json::json!({
+                                "date": n.published_date.as_deref().and_then(|d| d.get(..10)),
+                                "analyst": n.analyst_name,
+                                "company": n.analyst_company,
+                                "target": n.price_target,
+                                "headline": n.news_title,
+                            })
+                        })
+                        .collect();
+                }
+                Err(e) => warn!("analyst targets: FMP price targets failed for {}: {}", symbol, e),
+            }
+        }
+
+        let upside = match &pick {
+            Some(p) => match yahoo.get_quotes(&[symbol]).await {
+                Ok(quotes) => quotes
+                    .first()
+                    .map(|q| q.price)
+                    .filter(|price| *price > 0.0)
+                    .map(|price| crate::services::ride_report::upside_pct(p.consensus, price)),
+                Err(e) => {
+                    warn!("analyst targets: Yahoo quote failed for {}: {}", symbol, e);
+                    None
+                }
+            },
+            None => None,
+        };
+
+        Ok(serde_json::json!({
+            "symbol": symbol,
+            "source": pick.as_ref().map(|p| p.source),
+            "consensus": pick.as_ref().map(|p| p.consensus),
+            "median": median,
+            "high": high,
+            "low": low,
+            "targets_last_90d": targets_last_90d,
+            "upside_pct": upside,
+            "recent": recent,
+        }))
+    }
+
     // ========== Helpers ==========
 
     /// Get FMP client with API key from the database
@@ -1505,7 +1645,32 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
                 let count = result.get("trades_applied").and_then(|v| v.as_i64()).unwrap_or(0);
                 format!("Applied {} trade(s) to scenario", count)
             }
+            "get_price_history" => {
+                let sym = result.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
+                let n = result.get("bars_total").and_then(|v| v.as_u64()).unwrap_or(0);
+                format!("Fetched {} daily bars for {}", n, sym)
+            }
+            "get_analyst_targets" => {
+                let sym = result.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
+                match result.get("consensus").and_then(|v| v.as_f64()) {
+                    Some(c) => format!("Fetched analyst targets for {}: consensus {:.2}", sym, c),
+                    None => format!("Fetched analyst targets for {}: consensus unavailable", sym),
+                }
+            }
             _ => "Tool executed".to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+
+    #[test]
+    fn system_prompt_allows_analyst_targets() {
+        let p = CopilotService::build_system_prompt();
+        assert!(!p.contains("Replace price-target language"));
+        assert!(!p.contains("No single price target stated as an expectation"));
+        assert!(p.contains("name the source (consensus of N analysts, or the firm)"));
     }
 }
