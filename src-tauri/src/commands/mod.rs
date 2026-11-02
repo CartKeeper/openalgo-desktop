@@ -22,6 +22,7 @@ pub mod providers;
 pub mod portfolio;
 pub mod quant;
 pub mod copilot;
+pub mod ride;
 pub mod greeks;
 pub mod indicators;
 pub mod reports;

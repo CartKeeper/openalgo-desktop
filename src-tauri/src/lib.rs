@@ -299,6 +299,7 @@ pub fn run() {
             commands::copilot::copilot_send_message,
             commands::copilot::copilot_check_configured,
             commands::copilot::generate_briefing,
+            commands::ride::record_protection_dismissal,
             // Greeks commands
             commands::greeks::compute_greeks,
             commands::greeks::compute_greeks_batch,
