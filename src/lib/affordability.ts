@@ -1,4 +1,10 @@
-import { fundsCommands, holdingsCommands, positionCommands, quoteCommands } from '@/api/tauri-client'
+import {
+  fundsCommands,
+  holdingsCommands,
+  orderCommands,
+  positionCommands,
+  quoteCommands,
+} from '@/api/tauri-client'
 import type { OrderRecommendation } from '@/types/actionQueue'
 
 /**
@@ -16,6 +22,33 @@ export interface AffordabilityResult {
 
 const usd = (n: number) =>
   n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
+
+/** Whole-dollar currency for the funded-buy notice, e.g. 334.18 → "$334". */
+const usdWhole = (n: number) =>
+  Math.round(n).toLocaleString('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  })
+
+/** Broker order statuses (uppercase, as the Rust order book serializes them) that can still be cancelled. */
+const OPEN_ORDER_STATUSES = new Set(['OPEN', 'PARTIALLY_FILLED', 'PENDING'])
+
+/** A strategy `cancel` leg: carries a broker order id, no quantity, never a real sell. */
+const isCancel = (rec: OrderRecommendation): boolean => rec.role === 'cancel'
+
+/** A sell that turns shares into cash (MARKET/LIMIT). Stops and cancel legs do not. */
+const isLiquidatingSell = (rec: OrderRecommendation): boolean =>
+  rec.side === 'SELL' && (rec.orderType === 'MARKET' || rec.orderType === 'LIMIT') && !isCancel(rec)
+
+/** A sell-side protective stop. */
+const isSellStop = (rec: OrderRecommendation): boolean =>
+  rec.side === 'SELL' &&
+  (rec.orderType === 'SL' || rec.orderType === 'SL-M' || rec.orderType === 'TRAILING_STOP')
+
+/** Key a group's buy by symbol so its protect stop can be sized to it. */
+const groupSymbolKey = (group: string, symbol: string): string => `${group}|${symbol.toUpperCase()}`
 
 /**
  * Per-share price a BUY will fill at, for affordability purposes.
@@ -50,6 +83,32 @@ async function readHeldLongQty(): Promise<Record<string, number> | null> {
   }
 }
 
+/** Live prices (uppercase symbol → ltp) for the given items; empty on any failure. */
+async function readQuotePrices(items: OrderRecommendation[]): Promise<Map<string, number>> {
+  const prices = new Map<string, number>()
+  if (items.length === 0) return prices
+  try {
+    const quotes = await quoteCommands.getQuote(
+      items.map((r) => ({ exchange: r.exchange, symbol: r.symbol }))
+    )
+    for (const q of quotes) if (q.ltp > 0) prices.set(q.symbol.toUpperCase(), q.ltp)
+  } catch {
+    // Unpriced items are flagged / given no proceeds by the walk.
+  }
+  return prices
+}
+
+/** Ids of broker orders that are still open, or null if the order book couldn't be read. */
+async function readOpenOrderIds(): Promise<Set<string> | null> {
+  try {
+    const orders = await orderCommands.getOrderBook()
+    if (!Array.isArray(orders)) return null
+    return new Set(orders.filter((o) => OPEN_ORDER_STATUSES.has(o.status)).map((o) => o.order_id))
+  } catch {
+    return null
+  }
+}
+
 /**
  * Reconcile AI trade recommendations against the actual account BEFORE they are
  * shown or placed — the deterministic backstop for the model's soft rules:
@@ -61,6 +120,15 @@ async function readHeldLongQty(): Promise<Record<string, number> | null> {
  *    capped to the shares actually held. A sell on a symbol the account does not
  *    hold is dropped (the app is long-only / delivery); a sell larger than the
  *    held quantity is reduced to what is held.
+ *  - Liquidating sells (MARKET/LIMIT) add their proceeds (post-cap quantity x limit
+ *    price or live quote) to the same budget as the walk reaches them, so a sell
+ *    earlier in the batch can fund a later buy; a sell after a buy does not. Stops
+ *    never add proceeds, and an unpriceable sell adds nothing.
+ *  - A `protect` stop whose group has an earlier surviving `buy` of the same symbol
+ *    is capped to that buy's final quantity instead of to held shares.
+ *  - A TRAILING_STOP with no trail distance is dropped. A `cancel` leg is dropped
+ *    when its order is no longer open in the order book (kept, flagged, if the
+ *    order book can't be read); cancel legs skip the held/budget logic entirely.
  *
  * Pricing: LIMIT/SL buys use their limit price; MARKET-style buys are priced from
  * a live quote. A buy that still can't be priced is kept but flagged, never
@@ -75,7 +143,8 @@ export async function reconcileRecommendationsWithAccount(
   }
 
   const buys = recs.filter((r) => r.side === 'BUY')
-  const sells = recs.filter((r) => r.side === 'SELL')
+  const cancels = recs.filter(isCancel)
+  const sells = recs.filter((r) => r.side === 'SELL' && !isCancel(r))
 
   // --- Reads (parallel) -----------------------------------------------------
   const cashPromise: Promise<number | null> =
@@ -89,24 +158,21 @@ export async function reconcileRecommendationsWithAccount(
   const heldPromise: Promise<Record<string, number> | null> =
     sells.length > 0 ? readHeldLongQty() : Promise.resolve({})
 
-  // Price MARKET-style buys from live quotes (LIMIT/SL already carry a price).
-  const needQuote = buys.filter((r) => knownUnitPrice(r) === null)
-  const quotePromise: Promise<Map<string, number>> =
-    needQuote.length > 0
-      ? quoteCommands
-          .getQuote(needQuote.map((r) => ({ exchange: r.exchange, symbol: r.symbol })))
-          .then((quotes) => {
-            const m = new Map<string, number>()
-            for (const q of quotes) if (q.ltp > 0) m.set(q.symbol.toUpperCase(), q.ltp)
-            return m
-          })
-          .catch(() => new Map<string, number>())
-      : Promise.resolve(new Map<string, number>())
+  // Price MARKET-style buys and liquidating sells from live quotes (LIMIT/SL already carry a price).
+  const needQuote = recs.filter(
+    (r) => (r.side === 'BUY' || isLiquidatingSell(r)) && knownUnitPrice(r) === null
+  )
+  const quotePromise = readQuotePrices(needQuote)
 
-  const [availableCash, heldBySymbol, quotePrices] = await Promise.all([
+  // Only cancel legs need the order book.
+  const openOrderIdsPromise: Promise<Set<string> | null> =
+    cancels.length > 0 ? readOpenOrderIds() : Promise.resolve(null)
+
+  const [availableCash, heldBySymbol, quotePrices, openOrderIds] = await Promise.all([
     cashPromise,
     heldPromise,
     quotePromise,
+    openOrderIdsPromise,
   ])
 
   const unitPriceFor = (rec: OrderRecommendation): number | null =>
@@ -119,13 +185,49 @@ export async function reconcileRecommendationsWithAccount(
   const buyUnverified: string[] = []
   const sellAdjusted: string[] = []
   const sellDropped: string[] = []
+  const protectAdjusted: string[] = []
+  const trailDropped: string[] = []
+  const cancelDropped: string[] = []
+  const fundedNotes: string[] = []
+  // Final (post-cap) quantity of each surviving buy, keyed by group + symbol.
+  const boughtQty = new Map<string, number>()
+  // Kept, priced fund sells per group, for the funded-buy notice.
+  const fundSells = new Map<string, { symbols: string[]; proceeds: number }>()
   const out: OrderRecommendation[] = []
 
   for (const rec of recs) {
+    if (isCancel(rec)) {
+      // Cancel legs only need their target order to still be open.
+      if (openOrderIds !== null && !openOrderIds.has(rec.cancelOrderId ?? '')) {
+        cancelDropped.push(rec.symbol)
+      } else {
+        out.push(rec)
+      }
+      continue
+    }
+
     if (rec.side === 'SELL') {
-      // Cap protective sells/stops to actually-held shares.
+      if (rec.orderType === 'TRAILING_STOP' && !((rec.trailPercent ?? 0) > 0)) {
+        trailDropped.push(rec.symbol)
+        continue
+      }
+
+      // A protect stop is sized to its group's surviving buy, not to held shares.
+      const boughtKey = rec.role === 'protect' && rec.group ? groupSymbolKey(rec.group, rec.symbol) : null
+      const bought = boughtKey !== null && isSellStop(rec) ? boughtQty.get(boughtKey) : undefined
+      if (bought !== undefined) {
+        if (rec.quantity > bought) {
+          protectAdjusted.push(`${rec.symbol} ${rec.quantity}→${bought}`)
+          out.push({ ...rec, quantity: bought })
+        } else {
+          out.push(rec)
+        }
+        continue
+      }
+
+      // Cap sells/stops to actually-held shares.
       if (heldBySymbol === null) {
-        // Couldn't read holdings — keep the pick but flag it below.
+        // Couldn't read holdings — keep the pick but flag it below (no proceeds counted).
         out.push(rec)
         continue
       }
@@ -134,25 +236,47 @@ export async function reconcileRecommendationsWithAccount(
         sellDropped.push(rec.symbol)
         continue
       }
+      let sellQty = rec.quantity
       if (rec.quantity > held) {
         sellAdjusted.push(`${rec.symbol} ${rec.quantity}→${held}`)
+        sellQty = held
         out.push({ ...rec, quantity: held })
       } else {
         out.push(rec)
+      }
+
+      // A liquidating sell funds later buys with its (post-cap) proceeds.
+      if (isLiquidatingSell(rec)) {
+        const unit = unitPriceFor(rec)
+        if (unit !== null && unit > 0) {
+          const proceeds = sellQty * unit
+          remaining += proceeds
+          if (rec.role === 'fund' && rec.group) {
+            const entry = fundSells.get(rec.group) ?? { symbols: [], proceeds: 0 }
+            entry.symbols.push(rec.symbol)
+            entry.proceeds += proceeds
+            fundSells.set(rec.group, entry)
+          }
+        }
       }
       continue
     }
 
     // BUY: cap cumulatively to available cash.
+    const rememberBuy = (qty: number) => {
+      if (rec.group) boughtQty.set(groupSymbolKey(rec.group, rec.symbol), qty)
+    }
     if (availableCash === null) {
       // Couldn't read cash — keep the pick but flag the buys as unverified.
       buyUnverified.push(rec.symbol)
+      rememberBuy(rec.quantity)
       out.push(rec)
       continue
     }
     const unit = unitPriceFor(rec)
     if (unit === null || unit <= 0) {
       buyUnverified.push(rec.symbol)
+      rememberBuy(rec.quantity)
       out.push(rec)
       continue
     }
@@ -161,13 +285,23 @@ export async function reconcileRecommendationsWithAccount(
       buyDropped.push(rec.symbol)
       continue
     }
-    if (affordableQty < rec.quantity) {
-      buyAdjusted.push(`${rec.symbol} ${rec.quantity}→${affordableQty}`)
-      out.push({ ...rec, quantity: affordableQty })
-      remaining -= affordableQty * unit
+    const remainingBefore = remaining
+    const keptQty = Math.min(rec.quantity, affordableQty)
+    if (keptQty < rec.quantity) {
+      buyAdjusted.push(`${rec.symbol} ${rec.quantity}→${keptQty}`)
+      out.push({ ...rec, quantity: keptQty })
     } else {
       out.push(rec)
-      remaining -= rec.quantity * unit
+    }
+    remaining -= keptQty * unit
+    rememberBuy(keptQty)
+
+    const funding = rec.group ? fundSells.get(rec.group) : undefined
+    if (funding) {
+      const cashPart = Math.max(0, remainingBefore - funding.proceeds)
+      fundedNotes.push(
+        `${rec.symbol} ×${keptQty} is funded by selling ${funding.symbols.join(', ')} (about ${usdWhole(funding.proceeds)}) plus ${usdWhole(cashPart)} cash`
+      )
     }
   }
 
@@ -179,17 +313,30 @@ export async function reconcileRecommendationsWithAccount(
   if (buyDropped.length > 0) {
     parts.push(`removed ${buyDropped.join(', ')} — not enough cash for a single share`)
   }
+  parts.push(...fundedNotes)
   if (sellAdjusted.length > 0) {
     parts.push(`reduced ${sellAdjusted.join(', ')} to the shares you actually hold`)
   }
+  if (protectAdjusted.length > 0) {
+    parts.push(`reduced ${protectAdjusted.join(', ')} to match its buy`)
+  }
   if (sellDropped.length > 0) {
     parts.push(`removed sell of ${sellDropped.join(', ')} — you don't hold any shares`)
+  }
+  if (trailDropped.length > 0) {
+    parts.push(`removed trailing stop for ${trailDropped.join(', ')} — no trail distance given`)
+  }
+  if (cancelDropped.length > 0) {
+    parts.push(`removed cancel for ${cancelDropped.join(', ')} — that order is no longer open`)
   }
   if (buyUnverified.length > 0) {
     parts.push(`couldn't confirm cash/price for ${buyUnverified.join(', ')}; verify funds before placing`)
   }
   if (sells.length > 0 && heldBySymbol === null) {
     parts.push(`couldn't confirm your holdings; verify positions before placing any sell`)
+  }
+  if (cancels.length > 0 && openOrderIds === null) {
+    parts.push(`couldn't confirm open orders; verify the Order Book before cancelling`)
   }
   const notice = parts.length > 0 ? `Checked against your account: ${parts.join('; ')}.` : null
 
