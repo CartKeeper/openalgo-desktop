@@ -1,4 +1,6 @@
-import type { OrderRecommendation } from '@/types/actionQueue'
+import type { OrderRecommendation, StrategyRole } from '@/types/actionQueue'
+
+const STRATEGY_ROLES: readonly StrategyRole[] = ['cancel', 'fund', 'buy', 'protect', 'standalone']
 
 const ACTIONS_REGEX = /<!--\s*ACTIONS_JSON\s*\n([\s\S]*?)\n\s*-->/g
 
@@ -60,8 +62,23 @@ export function parseActionsFromMarkdown(
       if (!Array.isArray(parsed)) continue
 
       for (const item of parsed) {
-        // Skip items missing required fields
-        if (!item.symbol || !item.side || !item.quantity) continue
+        const role = STRATEGY_ROLES.find((r) => r === item.role)
+        const cancelOrderId =
+          item.cancelOrderId !== undefined && item.cancelOrderId !== null
+            ? String(item.cancelOrderId)
+            : ''
+        const isCancel = role === 'cancel'
+
+        // A cancel leg has no size, so it passes without a quantity — but only with an order id.
+        if (isCancel) {
+          if (!item.symbol || !item.side || !cancelOrderId) continue
+        } else if (!item.symbol || !item.side || !item.quantity) {
+          continue
+        }
+
+        const orderType = item.orderType || 'MARKET'
+        // Trailing stops only make sense as GTC; otherwise honor an explicit GTC, else DAY.
+        const validity = orderType === 'TRAILING_STOP' || item.validity === 'GTC' ? 'GTC' : 'DAY'
 
         results.push(
           normalizeStopOrder({
@@ -69,13 +86,17 @@ export function parseActionsFromMarkdown(
             symbol: String(item.symbol).toUpperCase(),
             exchange: item.exchange || 'US',
             side: item.side === 'SELL' ? 'SELL' : 'BUY',
-            quantity: Math.max(1, Math.floor(Number(item.quantity) || 1)),
-            orderType: item.orderType || 'MARKET',
+            quantity: isCancel ? 0 : Math.max(1, Math.floor(Number(item.quantity) || 1)),
+            orderType,
             product: item.product || 'CNC',
             price: Number(item.price) || 0,
             triggerPrice: item.triggerPrice ? Number(item.triggerPrice) : undefined,
             trailPrice: item.trailPrice ? Number(item.trailPrice) : undefined,
             trailPercent: item.trailPercent ? Number(item.trailPercent) : undefined,
+            validity,
+            group: typeof item.group === 'string' && item.group ? item.group : undefined,
+            role,
+            cancelOrderId: cancelOrderId || undefined,
             rationale: item.rationale || '',
             source,
           })
