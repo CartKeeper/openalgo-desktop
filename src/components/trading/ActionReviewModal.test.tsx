@@ -469,6 +469,55 @@ describe('ActionReviewModal', () => {
     expect(mocks.emit).toHaveBeenCalledWith('basket_order_event', { count: 3 })
   })
 
+  it('cannot be closed while the strategy basket is running, then shows results in the same modal', async () => {
+    let finishPlacement: (results: unknown[]) => void = () => undefined
+    mocks.placeStrategyBasket.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishPlacement = resolve
+        })
+    )
+    const user = userEvent.setup()
+    render(<ActionReviewModal />)
+
+    await acknowledge(user)
+    await waitFor(() => expect(placeButton()).toBeEnabled())
+    await user.click(placeButton())
+    await waitFor(() => expect(mocks.placeStrategyBasket).toHaveBeenCalledTimes(1))
+    expect(useActionQueueStore.getState().isSubmitting).toBe(true)
+
+    const cancelButton = screen.getByRole('button', { name: 'Cancel' })
+    expect(cancelButton).toBeDisabled()
+
+    await user.keyboard('{Escape}')
+    expect(useActionQueueStore.getState().isReviewOpen).toBe(true)
+
+    await user.click(cancelButton)
+    expect(useActionQueueStore.getState().isReviewOpen).toBe(true)
+
+    // The dialog's own X routes through onOpenChange(false), which is ignored mid-run.
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    expect(useActionQueueStore.getState().isReviewOpen).toBe(true)
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
+
+    await act(async () => {
+      finishPlacement([
+        {
+          group: 'g1',
+          role: 'protect',
+          symbol: 'BAC',
+          success: true,
+          order_id: 'ord-p',
+          filled_quantity: 5,
+          message: 'BAC trailing stop placed (GTC)',
+        },
+      ])
+    })
+    expect(await screen.findByText('BAC · protect')).toBeInTheDocument()
+    expect(screen.getByText('BAC trailing stop placed (GTC)')).toBeInTheDocument()
+    expect(useActionQueueStore.getState().isReviewOpen).toBe(true)
+  })
+
   it('shows the clock-read failure on the market-closed line and keeps Place disabled', async () => {
     mocks.getMarketClock.mockRejectedValue('broker unreachable')
     const user = userEvent.setup()

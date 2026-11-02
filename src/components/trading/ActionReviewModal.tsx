@@ -646,10 +646,29 @@ export function ActionReviewModal({
     )
   // null (unread) or true => treat as LIVE; only an authoritative `false` is paper.
   const isLive = liveMode !== false
+  // While a live placement runs (a strategy basket can take minutes), no close path
+  // works: closing would drop the results and let the same orders be placed again.
+  const closeLocked = isLivePath && isSubmitting
+  const preventWhileLocked = (event: Event) => {
+    if (closeLocked) event.preventDefault()
+  }
 
   return (
-    <Dialog open={isReviewOpen} onOpenChange={(open) => !open && handleClose()}>
-      <DialogContent className="sm:max-w-2xl h-[75vh] flex flex-col">
+    <Dialog
+      open={isReviewOpen}
+      onOpenChange={(open) => {
+        if (!open && !closeLocked) handleClose()
+      }}
+    >
+      <DialogContent
+        className={cn(
+          'sm:max-w-2xl h-[75vh] flex flex-col',
+          closeLocked && '[&>[data-slot=dialog-close]]:pointer-events-none'
+        )}
+        onEscapeKeyDown={preventWhileLocked}
+        onPointerDownOutside={preventWhileLocked}
+        onInteractOutside={preventWhileLocked}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <ShoppingCart className="h-5 w-5" />
@@ -838,7 +857,7 @@ export function ActionReviewModal({
             <Button onClick={handleClose}>Done</Button>
           ) : (
             <>
-              <Button variant="outline" onClick={handleClose}>
+              <Button variant="outline" onClick={handleClose} disabled={closeLocked}>
                 Cancel
               </Button>
               <Button
