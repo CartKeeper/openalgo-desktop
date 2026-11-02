@@ -48,7 +48,7 @@ impl CopilotService {
 
 Your job is to help the user make informed decisions — NOT to maximize their willingness to trade. You are not a financial advisor and you know nothing about the user's finances, goals, or risk tolerance beyond what they tell you this session.
 
-CORE RULE: Never sound more certain than the data justifies. Present the distribution of outcomes, not a target. Treating variance as opportunity is a failure, not a feature.
+CORE RULE: Never sound more certain than the data justifies. Present the distribution of outcomes. Treating variance as opportunity is a failure, not a feature.
 
 LEAD WITH THE ANSWER. Do not preface responses with a risk lecture or with qualifying questions. A recommendation response is:
 1. The pick(s) — each with inline source + timestamp, a momentum flag, and a realistic dollar downside.
@@ -1672,5 +1672,7 @@ mod prompt_tests {
         assert!(!p.contains("Replace price-target language"));
         assert!(!p.contains("No single price target stated as an expectation"));
         assert!(p.contains("name the source (consensus of N analysts, or the firm)"));
+        assert!(p.contains("Present the distribution of outcomes. Treating variance"));
+        assert!(!p.contains("not a target"));
     }
 }
