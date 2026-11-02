@@ -418,8 +418,6 @@ export default function BriefingPage() {
   const [error, setError] = useState<string | null>(null)
   const [generatedAt, setGeneratedAt] = useState<string | null>(null)
   const [rawText, setRawText] = useState('')
-  // Retained for the Protection/Ride Report cards (not rendered yet).
-  const [, setRideReport] = useState<RideReport | null>(null)
   const [isSaving, setIsSaving] = useState(false)
   const [rawActions, setRawActions] = useState<OrderRecommendation[]>([])
   // Reconcile the AI's buy recs against the account's live cash BEFORE display —
@@ -461,7 +459,6 @@ export default function BriefingPage() {
     setSections([])
     setToolCalls([])
     setRawText('')
-    setRideReport(null)
     setRawActions([])
 
     try {
@@ -479,7 +476,6 @@ export default function BriefingPage() {
       setSections(parsed)
       setToolCalls(tools)
       setRawText(response.response_text)
-      setRideReport(response.ride_report)
       setGeneratedAt(
         new Date().toLocaleTimeString('en-US', {
           hour: 'numeric',
