@@ -7,12 +7,14 @@ import {
   marketStatusCommands,
   type OrderRequest,
   orderCommands,
+  providerCommands,
   quoteCommands,
   settingsCommands,
   type StrategyLeg,
 } from '@/api/tauri-client'
 import { type PlaceOrderRequest, tradingApi } from '@/api/trading'
 import { reconcileRecommendationsWithAccount } from '@/lib/affordability'
+import { needsLivePrice, priceScenarioItems } from '@/lib/scenarioPricing'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -173,14 +175,20 @@ function useMarketGate(enabled: boolean) {
   return { marketClock, recheck }
 }
 
+/** Scenario mode, $0 trade: 'loading', the live quote it applies at, or null (no quote). */
+type ScenarioPrice = 'loading' | number | null
+
 function RecommendationCard({
   item,
   onUpdate,
   onRemove,
+  scenarioPrice,
 }: {
   item: OrderRecommendation
   onUpdate: (id: string, patch: Partial<OrderRecommendation>) => void
   onRemove: (id: string) => void
+  /** Only set for a scenario trade with no price of its own. */
+  scenarioPrice?: ScenarioPrice
 }) {
   return (
     <div className="rounded-lg border p-3 space-y-2">
@@ -215,6 +223,29 @@ function RecommendationCard({
 
       {item.rationale && (
         <p className="text-xs text-muted-foreground leading-relaxed">{item.rationale}</p>
+      )}
+
+      {scenarioPrice !== undefined && (
+        <p
+          data-testid="scenario-price"
+          className={cn(
+            'text-xs font-semibold leading-[1.4]',
+            scenarioPrice === null ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground'
+          )}
+        >
+          {scenarioPrice === 'loading'
+            ? 'Getting live price…'
+            : scenarioPrice === null
+              ? "No live price — this trade won't be applied."
+              : (
+                  <>
+                    Applies at live price{' '}
+                    <span className="font-mono tabular-nums">
+                      {scenarioPrice.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}
+                    </span>
+                  </>
+                )}
+        </p>
       )}
 
       <div className="grid grid-cols-3 gap-2">
@@ -386,6 +417,9 @@ export function ActionReviewModal({
   // Live quotes (by upper-cased symbol) for MARKET liquidating sells, read once on
   // open so the Gate B line can state the expected sell proceeds.
   const [sellQuotes, setSellQuotes] = useState<Record<string, number>>({})
+  // Scenario mode: live quotes (by upper-cased symbol) for trades with no price of
+  // their own, so a sandbox trade is never recorded at $0. null = still loading.
+  const [scenarioQuotes, setScenarioQuotes] = useState<Record<string, number> | null>(null)
 
   const isLivePath = !onApply
   // Rotation legs (cancel / fund / buy) only make sense while the market is open.
@@ -464,6 +498,40 @@ export function ActionReviewModal({
     }
   }, [isReviewOpen, onApply])
 
+  // Scenario mode: quote every $0 trade once when the modal opens, from the same
+  // source the Scenario page prices positions with. On failure those trades stay
+  // unpriced and are blocked at apply.
+  useEffect(() => {
+    if (!isReviewOpen || !onApply) return
+    setScenarioQuotes(null)
+    const symbols = [
+      ...new Set(
+        useActionQueueStore
+          .getState()
+          .items.filter(needsLivePrice)
+          .map((i) => i.symbol.toUpperCase())
+      ),
+    ]
+    if (symbols.length === 0) {
+      setScenarioQuotes({})
+      return
+    }
+    let cancelled = false
+    providerCommands
+      .getGenericQuote(symbols)
+      .then((quotes) => {
+        if (!cancelled) {
+          setScenarioQuotes(Object.fromEntries(quotes.map((q) => [q.symbol.toUpperCase(), q.price])))
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setScenarioQuotes({})
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isReviewOpen, onApply])
+
   const showPlacementResults = (results: BasketOrderResult[], fromStrategy: boolean) => {
     const successCount = results.filter((r) => r.success).length
     const failCount = results.length - successCount
@@ -494,9 +562,20 @@ export function ActionReviewModal({
 
     // Scenario-mode path: caller-provided onApply handler.
     if (onApply) {
+      const { priced, blocked } = priceScenarioItems(items, scenarioQuotes ?? {})
+      if (priced.length === 0) {
+        toast.error('No trade has a live price, so nothing was applied.')
+        return
+      }
+      if (blocked.length > 0) {
+        toast.warning(
+          `Not applied (no live price): ${blocked.map((i) => i.symbol).join(', ')}`,
+          { duration: 8000 }
+        )
+      }
       setSubmitting(true)
       try {
-        await onApply(items, cloneNameRequired ? cloneName.trim() : undefined)
+        await onApply(priced, cloneNameRequired ? cloneName.trim() : undefined)
         // onApply owns post-apply UX (toasts + navigation). Close the modal.
         setCloneName('')
         close()
@@ -652,13 +731,26 @@ export function ActionReviewModal({
   const showMarketClosed =
     needsMarketGate && !showResults && marketClock !== null && !marketClock.isOpen
 
+  const scenarioPriceFor = (item: OrderRecommendation): ScenarioPrice | undefined => {
+    if (!onApply || !needsLivePrice(item)) return undefined
+    if (scenarioQuotes === null) return 'loading'
+    const quote = scenarioQuotes[item.symbol.toUpperCase()]
+    return quote !== undefined && quote > 0 ? quote : null
+  }
+
   // Strategy groups in first-appearance order; ungrouped items render after them.
   const groupOrder = [...new Set(items.flatMap((item) => (item.group ? [item.group] : [])))]
   const renderCard = (item: OrderRecommendation) =>
     item.role === 'cancel' ? (
       <CancelCard key={item.id} item={item} onRemove={removeItem} />
     ) : (
-      <RecommendationCard key={item.id} item={item} onUpdate={updateItem} onRemove={removeItem} />
+      <RecommendationCard
+        key={item.id}
+        item={item}
+        onUpdate={updateItem}
+        onRemove={removeItem}
+        scenarioPrice={scenarioPriceFor(item)}
+      />
     )
   // null (unread) or true => treat as LIVE; only an authoritative `false` is paper.
   const isLive = liveMode !== false
@@ -882,6 +974,7 @@ export function ActionReviewModal({
                   isSubmitting ||
                   items.length === 0 ||
                   (cloneNameRequired && cloneName.trim().length === 0) ||
+                  (!!onApply && scenarioQuotes === null) ||
                   (showGateB && isLive && !acknowledged) ||
                   (needsMarketGate && (marketClock === null || !marketClock.isOpen))
                 }

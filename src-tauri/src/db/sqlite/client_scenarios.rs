@@ -608,6 +608,24 @@ pub fn apply_trade_to_scenario(
     quantity: f64,
     price: f64,
 ) -> Result<ScenarioPosition> {
+    // Callers say buy/sell (Claude's tool) or long/short (the app); positions store long/short.
+    let side = match side.to_ascii_lowercase().as_str() {
+        "buy" | "long" => "long",
+        "sell" | "short" => "short",
+        other => return Err(AppError::Validation(format!("Unknown trade side: {other}"))),
+    };
+    // A trade that opens or adds to a position sets its cost; at $0 it would corrupt it.
+    // Closing or trimming never uses the price.
+    let require_price = || -> Result<()> {
+        if price > 0.0 {
+            Ok(())
+        } else {
+            Err(AppError::Validation(format!(
+                "{symbol}: a trade that opens or adds to a position needs a price above $0"
+            )))
+        }
+    };
+
     // Check for existing position
     let existing: Option<(i64, f64, f64, String)> = conn
         .query_row(
@@ -622,6 +640,7 @@ pub fn apply_trade_to_scenario(
         let is_same_side = old_side == side;
 
         if is_same_side {
+            require_price()?;
             // Adding to position: weighted average cost basis
             let new_qty = old_qty + quantity;
             let new_avg = if new_qty.abs() > 1e-10 {
@@ -658,6 +677,7 @@ pub fn apply_trade_to_scenario(
                         updated_at: None,
                     });
                 } else {
+                    require_price()?;
                     // Flipped: new position on opposite side
                     conn.execute(
                         "UPDATE client_scenario_positions SET quantity = ?1, avg_price = ?2, side = ?3, updated_at = datetime('now')
@@ -677,6 +697,7 @@ pub fn apply_trade_to_scenario(
         }
         get_scenario_position_by_id(conn, pos_id)
     } else {
+        require_price()?;
         // No existing position — create new
         add_scenario_position(conn, scenario_id, symbol, exchange, quantity, price, side, None)
     }
@@ -910,5 +931,92 @@ mod tests {
             avg
         );
         assert!((avg - 250.0).abs() < 1e-6, "avg should be 250, got {}", avg);
+    }
+}
+
+#[cfg(test)]
+mod apply_trade_tests {
+    use super::*;
+
+    /// A scenario holding 5 VOO @ $679.70 long, as stored by the importer.
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        super::super::migrations::run_migrations(&conn).unwrap();
+        conn.execute("INSERT INTO clients (name) VALUES ('Test')", []).unwrap();
+        conn.execute("INSERT INTO client_scenarios (client_id, name) VALUES (1, 'S')", []).unwrap();
+        add_scenario_position(&conn, 1, "VOO", "GENERIC", 5.0, 679.7, "long", None).unwrap();
+        conn
+    }
+
+    fn voo(conn: &Connection) -> Option<(f64, f64, String)> {
+        conn.query_row(
+            "SELECT quantity, avg_price, side FROM client_scenario_positions WHERE symbol = 'VOO'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .ok()
+    }
+
+    #[test]
+    fn claudes_buy_adds_to_the_long() {
+        let conn = setup();
+        apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "buy", 9.0, 696.94).unwrap();
+        let (qty, avg, side) = voo(&conn).unwrap();
+        assert_eq!(side, "long");
+        assert!((qty - 14.0).abs() < 1e-9);
+        assert!((avg - (5.0 * 679.7 + 9.0 * 696.94) / 14.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn claudes_sell_reduces_the_long() {
+        let conn = setup();
+        apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "sell", 3.0, 696.94).unwrap();
+        let (qty, avg, side) = voo(&conn).unwrap();
+        assert_eq!((qty, avg, side.as_str()), (2.0, 679.7, "long"));
+    }
+
+    #[test]
+    fn long_and_short_still_work() {
+        let conn = setup();
+        apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "long", 1.0, 700.0).unwrap();
+        apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "short", 2.0, 700.0).unwrap();
+        assert_eq!(voo(&conn).unwrap().0, 4.0);
+    }
+
+    #[test]
+    fn a_new_buy_is_stored_as_long() {
+        let conn = setup();
+        let p = apply_trade_to_scenario(&conn, 1, "SPY", "GENERIC", "buy", 2.0, 758.0).unwrap();
+        assert_eq!(p.side, "long");
+    }
+
+    #[test]
+    fn a_buy_with_no_price_is_refused_and_changes_nothing() {
+        let conn = setup();
+        assert!(apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "buy", 9.0, 0.0).is_err());
+        assert!(apply_trade_to_scenario(&conn, 1, "SPY", "GENERIC", "buy", 2.0, 0.0).is_err());
+        assert_eq!(voo(&conn).unwrap(), (5.0, 679.7, "long".to_string()));
+    }
+
+    #[test]
+    fn a_sell_that_flips_to_short_with_no_price_is_refused() {
+        let conn = setup();
+        assert!(apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "sell", 8.0, 0.0).is_err());
+        assert_eq!(voo(&conn).unwrap(), (5.0, 679.7, "long".to_string()));
+    }
+
+    #[test]
+    fn closing_or_trimming_needs_no_price() {
+        let conn = setup();
+        apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "sell", 2.0, 0.0).unwrap();
+        assert_eq!(voo(&conn).unwrap(), (3.0, 679.7, "long".to_string()));
+        apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "sell", 3.0, 0.0).unwrap();
+        assert_eq!(voo(&conn), None);
+    }
+
+    #[test]
+    fn an_unknown_side_is_refused() {
+        let conn = setup();
+        assert!(apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "hold", 1.0, 700.0).is_err());
     }
 }

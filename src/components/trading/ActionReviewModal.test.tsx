@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   placeStrategyBasket: vi.fn(),
   placeBasketOrderCommand: vi.fn(),
   getQuote: vi.fn(),
+  getGenericQuote: vi.fn(),
   recordProtectionDismissal: vi.fn(),
   tradingPlaceBasketOrder: vi.fn(),
   reconcile: vi.fn(),
@@ -31,6 +32,7 @@ vi.mock('@/api/tauri-client', () => ({
     placeBasketOrder: mocks.placeBasketOrderCommand,
   },
   quoteCommands: { getQuote: mocks.getQuote },
+  providerCommands: { getGenericQuote: mocks.getGenericQuote },
   rideCommands: { recordProtectionDismissal: mocks.recordProtectionDismissal },
 }))
 vi.mock('@/api/trading', () => ({
@@ -704,5 +706,82 @@ describe('ActionReviewModal', () => {
     expect(await screen.findByText(/exceed it and will be reduced/)).toBeInTheDocument()
     await waitFor(() => expect(mocks.getQuote).toHaveBeenCalledTimes(1))
     expect(screen.queryByText(/Sell proceeds about/)).toBeNull()
+  })
+
+  describe('scenario mode', () => {
+    const scenario = { exchange: 'GENERIC', product: 'CNC' as const, source: 'copilot' as const }
+    const buyVoo: OrderRecommendation = {
+      ...scenario,
+      id: 's1',
+      symbol: 'VOO',
+      side: 'BUY',
+      quantity: 9,
+      orderType: 'MARKET',
+      price: 0,
+      rationale: 'Redeploy into the index core.',
+    }
+    const sellBngi: OrderRecommendation = {
+      ...buyVoo,
+      id: 's2',
+      symbol: 'BNGI',
+      side: 'SELL',
+      quantity: 100000,
+      rationale: 'Total loss.',
+    }
+
+    it('shows the live price for a $0 trade and applies at it', async () => {
+      const user = userEvent.setup()
+      mocks.getGenericQuote.mockResolvedValue([{ symbol: 'VOO', price: 696.94 }])
+      const onApply = vi.fn().mockResolvedValue(undefined)
+      seed([buyVoo])
+      render(<ActionReviewModal onApply={onApply} />)
+
+      expect(await screen.findByText('$696.94')).toBeInTheDocument()
+      expect(screen.getByTestId('scenario-price').textContent).toBe('Applies at live price $696.94')
+      expect(mocks.getGenericQuote).toHaveBeenCalledWith(['VOO'])
+      await user.click(screen.getByRole('button', { name: 'Apply to Scenario' }))
+      expect(onApply).toHaveBeenCalledWith([{ ...buyVoo, price: 696.94 }], undefined)
+    })
+
+    it('blocks a $0 trade with no live price and applies the rest', async () => {
+      const user = userEvent.setup()
+      mocks.getGenericQuote.mockResolvedValue([{ symbol: 'VOO', price: 696.94 }])
+      const onApply = vi.fn().mockResolvedValue(undefined)
+      seed([buyVoo, sellBngi])
+      render(<ActionReviewModal onApply={onApply} />)
+
+      expect(await screen.findByText("No live price — this trade won't be applied.")).toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: 'Apply to Scenario' }))
+      expect(onApply).toHaveBeenCalledWith([{ ...buyVoo, price: 696.94 }], undefined)
+      expect(mocks.toast.warning).toHaveBeenCalledWith('Not applied (no live price): BNGI', {
+        duration: 8000,
+      })
+    })
+
+    it('keeps Apply disabled until the quotes land, and applies nothing when none price', async () => {
+      const user = userEvent.setup()
+      let resolve: (q: unknown[]) => void = () => {}
+      mocks.getGenericQuote.mockReturnValue(new Promise((r) => (resolve = r)))
+      const onApply = vi.fn()
+      seed([buyVoo])
+      render(<ActionReviewModal onApply={onApply} />)
+
+      expect(await screen.findByText('Getting live price…')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Apply to Scenario' })).toBeDisabled()
+      await act(async () => resolve([]))
+      await user.click(screen.getByRole('button', { name: 'Apply to Scenario' }))
+      expect(onApply).not.toHaveBeenCalled()
+      expect(mocks.toast.error).toHaveBeenCalledWith('No trade has a live price, so nothing was applied.')
+    })
+
+    it('never quotes a trade that already has a price', async () => {
+      seed([{ ...buyVoo, orderType: 'LIMIT', price: 690 }])
+      render(<ActionReviewModal onApply={vi.fn()} />)
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Apply to Scenario' })).toBeEnabled()
+      )
+      expect(mocks.getGenericQuote).not.toHaveBeenCalled()
+      expect(screen.queryByTestId('scenario-price')).toBeNull()
+    })
   })
 })
