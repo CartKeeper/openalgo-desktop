@@ -465,9 +465,14 @@ pub(crate) fn client_ride(
     let price = price.filter(|p| *p > 0.0).or_else(|| closes.last().copied()).unwrap_or(0.0);
     let net_move = net_move_pct(closes);
     let upside = target.filter(|_| price > 0.0).map(|t| upside_pct(t.consensus, price));
-    let status = match classify(Some(CLIENT_HOLDING_AGE_TRADING_DAYS), price, avg_cost, net_move, upside) {
-        RideStatus::TooNew => "Unknown",
-        status => status_label(status),
+    // A cost of 0 means the import had no cost basis, so "at or above cost" can't be judged.
+    let status = if avg_cost <= 0.0 {
+        "Unknown"
+    } else {
+        match classify(Some(CLIENT_HOLDING_AGE_TRADING_DAYS), price, avg_cost, net_move, upside) {
+            RideStatus::TooNew => "Unknown",
+            status => status_label(status),
+        }
     };
     ClientRide {
         status,
@@ -1443,6 +1448,14 @@ mod client_ride_tests {
         let ride = client_ride(Some(101.0), 90.0, &closes_moving(1.0), None);
         assert_eq!(ride.status, "Dormant");
         assert_eq!(ride.upside_pct, None);
+    }
+
+    #[test]
+    fn a_missing_cost_basis_is_unknown_not_dormant() {
+        // Schwab sends no cost basis for some holdings; the import stores 0.
+        let ride = client_ride(Some(0.0085), 0.0, &closes_moving(-3.0), None);
+        assert_eq!(ride.status, "Unknown");
+        assert_eq!(ride.net_move_30d_pct, Some(-3.0));
     }
 
     #[test]

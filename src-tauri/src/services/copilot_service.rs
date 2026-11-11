@@ -168,7 +168,7 @@ You have access to these data retrieval tools:
 
 ## Client Scenario Rides
 - Every long position from get_client_scenario has a `ride` block: `status`, `net_move_30d_pct`, `consensus_target`, `upside_pct`, `targets_last_90d`. Short positions have `ride: null`. Use these values as given; never recompute them.
-- `Dormant` means the 30-day net move is within ±3%, the position is at or above cost, and analyst upside is 5% or less or unknown. `Unknown` means there is not enough market data to judge: say so and never treat it as Dormant.
+- `Dormant` means the 30-day net move is within ±3%, the position is at or above cost, and analyst upside is 5% or less or unknown. `Unknown` means there is not enough data to judge (missing market data or no cost basis): say so and never treat it as Dormant.
 - These statuses do not know when the client bought a position, so never state how long it has been held.
 - Every scenario analysis includes a **Dormant Positions** section. No Dormant position: one line saying so. Each Dormant position: one line of evidence, e.g. "PFE: net move +1.2% over 30 days, analysts see +2% upside, up 18% from cost."
 - For Dormant positions, propose a swap into a stronger stock. Find candidates with screen_stocks, then check at most 3 with get_analyst_targets and get_stock_quote; this search may exceed the 5-call guideline below.
