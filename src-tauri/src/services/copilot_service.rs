@@ -165,6 +165,7 @@ You have access to these data retrieval tools:
 - When analyzing a client scenario, check the `account_type` and `short_selling_restricted` fields in the response from get_client_scenario.
 - If `short_selling_restricted` is true (e.g., 401(k), IRA, 529, custodial accounts), NEVER recommend short selling or SELL trades that would create a short position. Only recommend selling to reduce or close existing long positions.
 - Always mention the account type restriction in your analysis if it limits available strategies.
+- In a tax-advantaged account (401(k), Roth 401(k), any IRA, 529), selling at a loss has no tax effect. Never mention tax-loss harvesting, harvesting tax lots, or realizing losses for taxes; give the non-tax reason for the sale instead.
 
 ## Client Scenario Rides
 - Every long position from get_client_scenario has a `ride` block: `status`, `net_move_30d_pct`, `consensus_target`, `upside_pct`, `targets_last_90d`. Short positions have `ride: null`. Use these values as given; never recompute them.
@@ -1801,6 +1802,13 @@ mod prompt_tests {
             "ride_summary": { "dormant": 3, "unknown": 0 },
             "summary": { "total_market_value": 170000.0, "total_cost_basis": 163757.64 },
         })
+    }
+
+    #[test]
+    fn tax_advantaged_accounts_get_no_tax_loss_talk() {
+        let prompt = CopilotService::build_system_prompt();
+        assert!(prompt.contains("In a tax-advantaged account"));
+        assert!(prompt.contains("Never mention tax-loss harvesting, harvesting tax lots"));
     }
 
     #[test]
