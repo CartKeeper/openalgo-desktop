@@ -58,7 +58,9 @@ impl YahooClient {
 
     /// Fetch a single symbol quote from the v8 chart endpoint
     async fn fetch_single_quote(&self, symbol: &str) -> Result<GenericQuote, ProviderError> {
-        let url = format!("{}/{}?range=5d&interval=1d", YAHOO_CHART_URL, symbol);
+        // range=1d: chartPreviousClose is then yesterday's close, so `change` is today's
+        // move. (With a longer range it is the close before the range began.)
+        let url = format!("{}/{}?range=1d&interval=1d", YAHOO_CHART_URL, symbol);
 
         let resp: serde_json::Value = self.client
             .get(&url)
@@ -68,50 +70,7 @@ impl YahooClient {
             .json()
             .await?;
 
-        let result = resp["chart"]["result"]
-            .as_array()
-            .and_then(|a| a.first())
-            .ok_or_else(|| ProviderError::Parse(format!("No data for {}", symbol)))?;
-
-        let meta = &result["meta"];
-        let price = meta["regularMarketPrice"].as_f64().unwrap_or(0.0);
-        let prev_close = meta["chartPreviousClose"].as_f64()
-            .or_else(|| meta["previousClose"].as_f64());
-
-        let (change, change_pct) = if let Some(pc) = prev_close {
-            if pc > 0.0 {
-                let c = price - pc;
-                (Some(c), Some(c / pc * 100.0))
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
-        };
-
-        Ok(GenericQuote {
-            symbol: meta["symbol"].as_str().unwrap_or(symbol).to_string(),
-            name: meta["longName"].as_str()
-                .or_else(|| meta["shortName"].as_str())
-                .map(String::from),
-            exchange: meta["exchangeName"].as_str()
-                .or_else(|| meta["fullExchangeName"].as_str())
-                .map(String::from),
-            currency: meta["currency"].as_str().map(String::from),
-            price,
-            change,
-            change_percent: change_pct,
-            open: None,
-            high: meta["regularMarketDayHigh"].as_f64(),
-            low: meta["regularMarketDayLow"].as_f64(),
-            previous_close: prev_close,
-            volume: meta["regularMarketVolume"].as_i64(),
-            market_cap: None,
-            pe_ratio: None,
-            fifty_two_week_high: meta["fiftyTwoWeekHigh"].as_f64(),
-            fifty_two_week_low: meta["fiftyTwoWeekLow"].as_f64(),
-            timestamp: Some(chrono::Utc::now().to_rfc3339()),
-        })
+        parse_chart_quote(symbol, &resp)
     }
 
     /// Search for symbols globally
@@ -215,5 +174,89 @@ impl YahooClient {
         let mean = fd["targetMeanPrice"]["raw"].as_f64()?;
         let count = fd["numberOfAnalystOpinions"]["raw"].as_i64()?;
         Some((mean, count as i32))
+    }
+}
+
+/// One quote from a v8 chart response. A symbol Yahoo has no price for (delisted,
+/// or a data gap) is an error, never a $0 quote: callers skip it as "no quote".
+fn parse_chart_quote(symbol: &str, resp: &serde_json::Value) -> Result<GenericQuote, ProviderError> {
+    let result = resp["chart"]["result"]
+        .as_array()
+        .and_then(|a| a.first())
+        .ok_or_else(|| ProviderError::Parse(format!("No data for {}", symbol)))?;
+
+    let meta = &result["meta"];
+    let price = meta["regularMarketPrice"]
+        .as_f64()
+        .filter(|p| *p > 0.0)
+        .ok_or_else(|| ProviderError::Parse(format!("No price for {}", symbol)))?;
+    let prev_close = meta["chartPreviousClose"].as_f64()
+        .or_else(|| meta["previousClose"].as_f64());
+
+    let (change, change_pct) = if let Some(pc) = prev_close {
+        if pc > 0.0 {
+            let c = price - pc;
+            (Some(c), Some(c / pc * 100.0))
+        } else {
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
+
+    Ok(GenericQuote {
+        symbol: meta["symbol"].as_str().unwrap_or(symbol).to_string(),
+        name: meta["longName"].as_str()
+            .or_else(|| meta["shortName"].as_str())
+            .map(String::from),
+        exchange: meta["exchangeName"].as_str()
+            .or_else(|| meta["fullExchangeName"].as_str())
+            .map(String::from),
+        currency: meta["currency"].as_str().map(String::from),
+        price,
+        change,
+        change_percent: change_pct,
+        open: None,
+        high: meta["regularMarketDayHigh"].as_f64(),
+        low: meta["regularMarketDayLow"].as_f64(),
+        previous_close: prev_close,
+        volume: meta["regularMarketVolume"].as_i64(),
+        market_cap: None,
+        pe_ratio: None,
+        fifty_two_week_high: meta["fiftyTwoWeekHigh"].as_f64(),
+        fifty_two_week_low: meta["fiftyTwoWeekLow"].as_f64(),
+        timestamp: Some(chrono::Utc::now().to_rfc3339()),
+    })
+}
+
+#[cfg(test)]
+mod chart_quote_tests {
+    use super::*;
+
+    #[test]
+    fn change_is_against_the_previous_close() {
+        let resp = serde_json::json!({"chart": {"result": [{"meta": {
+            "symbol": "NVDA", "regularMarketPrice": 176.12, "chartPreviousClose": 168.8
+        }}]}});
+        let q = parse_chart_quote("NVDA", &resp).unwrap();
+        assert_eq!(q.price, 176.12);
+        assert_eq!(q.previous_close, Some(168.8));
+        assert!((q.change_percent.unwrap() - (176.12 - 168.8) / 168.8 * 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_symbol_with_no_price_is_no_quote_not_zero() {
+        let resp = serde_json::json!({"chart": {"result": [{"meta": {
+            "symbol": "CPRX", "exchangeName": "NGM"
+        }}]}});
+        assert!(parse_chart_quote("CPRX", &resp).is_err());
+        let zero = serde_json::json!({"chart": {"result": [{"meta": {"regularMarketPrice": 0.0}}]}});
+        assert!(parse_chart_quote("X", &zero).is_err());
+    }
+
+    #[test]
+    fn no_result_is_an_error() {
+        let resp = serde_json::json!({"chart": {"result": null, "error": {"code": "Not Found"}}});
+        assert!(parse_chart_quote("ZZZZ", &resp).is_err());
     }
 }
