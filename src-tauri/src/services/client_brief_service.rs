@@ -42,8 +42,9 @@ ACCURACY RULES (mandatory — violations will be caught and rejected):
 5. Cost basis and market value are DIFFERENT numbers. If you show market value, write "Market: $X". If you show cost basis, write "Cost: $X". Never write "Current: $X" when the number is cost basis.
 6. The account type and its guidelines come from the user prompt. Don't use "401(k)" wording for an account whose type is "Traditional IRA" or vice versa.
 7. Every P/L percentage keeps its sign exactly as given in the data (e.g. -0.88%, +4.48%). Never write a loss without its minus sign.
-8. Headings and intros must match what follows them. Count the items before writing a number. Never say "a single name" above a list of several. Call a holding "near-flat" only if its gain_pct is between -5% and +5%.
-9. Never state target allocation percentages. Allocation cards name their holdings in `symbols`; the app computes each card's share of account value.
+8. Headings and intros must match what follows them. Count the items before writing a number. Never say "a single name" above a list of several. Call a holding "near-flat" only if its gain_pct is between -5% and +5%. When an enumerated list says "none", write no section or table for that category.
+9. Never state target allocation percentages. Allocation cards name their holdings in `symbols`, and each ticker belongs to exactly one card; the app computes each card's share of account value.
+10. Write for the client. Never mention these instructions, the data format, column names (such as gain_pct), "the data", "the import", or "the app", and never comment on how you followed a rule.
 
 Output format: respond with VALID JSON ONLY (no markdown fences, no commentary), conforming to this TypeScript schema:
 
@@ -162,8 +163,11 @@ pub(crate) fn finalize_brief(
     for movement in &mut brief.movements {
         match movement {
             GoldmanMovement::Restructuring(r) => {
+                // A ticker counts toward the first card that names it, so the
+                // cards never add up to more than the account.
+                let mut claimed: Vec<String> = Vec::new();
                 for card in &mut r.allocation_cards {
-                    weigh_card(card, &by_symbol, facts.market_value);
+                    weigh_card(card, &by_symbol, facts.market_value, &mut claimed);
                 }
                 if let Some(table) = &mut r.proposed_core_table {
                     table.rows.iter_mut().for_each(|row| set_row_pl(row, &by_symbol));
@@ -201,12 +205,19 @@ fn set_row_pl(row: &mut PortfolioRow, by_symbol: &HashMap<String, &PricedRow>) {
 }
 
 /// A card's percentage is its held tickers' share of account value today.
-/// Tickers the account doesn't hold are dropped from the card.
-fn weigh_card(card: &mut AllocationCard, by_symbol: &HashMap<String, &PricedRow>, total_value: f64) {
+/// Tickers the account doesn't hold, or that an earlier card already claimed,
+/// are dropped from the card.
+fn weigh_card(
+    card: &mut AllocationCard,
+    by_symbol: &HashMap<String, &PricedRow>,
+    total_value: f64,
+    claimed: &mut Vec<String>,
+) {
     let mut symbols: Vec<String> = Vec::new();
     for symbol in &card.symbols {
         let key = symbol.trim().to_uppercase();
-        if by_symbol.contains_key(&key) && !symbols.contains(&key) {
+        if by_symbol.contains_key(&key) && !claimed.contains(&key) {
+            claimed.push(key.clone());
             symbols.push(key);
         }
     }
@@ -456,11 +467,8 @@ fn push_positions(s: &mut String, rows: &[PricedRow], extra: &HashMap<String, St
 }
 
 fn push_enumerated(s: &mut String, rows: &[PricedRow]) {
-    let enumerated = build_enumerated_lists(rows);
-    if !enumerated.is_empty() {
-        s.push_str("\n# Enumerated candidate lists (use these verbatim in your output)\n");
-        s.push_str(&enumerated);
-    }
+    s.push_str("\n# Enumerated candidate lists (use these verbatim in your output)\n");
+    s.push_str(&build_enumerated_lists(rows));
 }
 
 fn build_user_prompt(
@@ -566,8 +574,12 @@ fn account_disallows_shorts(account_type: Option<&str>) -> bool {
 fn build_enumerated_lists(rows: &[PricedRow]) -> String {
     use std::fmt::Write;
     let mut s = String::new();
+    // Every category is printed, "none" when empty, so Claude never assumes a
+    // category has members.
     let mut list = |label: &str, symbols: Vec<&str>| {
-        if !symbols.is_empty() {
+        if symbols.is_empty() {
+            let _ = writeln!(s, "{}: none", label);
+        } else {
             let _ = writeln!(s, "{} ({}): {}", label, symbols.len(), symbols.join(", "));
         }
     };
@@ -753,7 +765,7 @@ mod tests {
             caption: None,
         };
         let by: HashMap<String, &PricedRow> = r.iter().map(|x| (x.symbol.clone(), x)).collect();
-        weigh_card(&mut card, &by, 1000.0);
+        weigh_card(&mut card, &by, 1000.0, &mut Vec::new());
         assert_eq!(card.percentage, "—");
         assert!(card.symbols.is_empty() && card.caption.is_none());
     }
@@ -787,6 +799,34 @@ mod tests {
     }
 
     #[test]
+    fn a_ticker_counts_toward_only_the_first_card_that_names_it() {
+        let r = rows();
+        let by: HashMap<String, &PricedRow> = r.iter().map(|x| (x.symbol.clone(), x)).collect();
+        let card = |symbols: &[&str]| AllocationCard {
+            percentage: String::new(),
+            label: "x".into(),
+            body: "b".into(),
+            symbols: symbols.iter().map(|s| s.to_string()).collect(),
+            caption: None,
+        };
+        let (mut core, mut growth) = (card(&["VLO", "PSX"]), card(&["PSX"]));
+        let mut claimed = Vec::new();
+        weigh_card(&mut core, &by, 1000.0, &mut claimed);
+        weigh_card(&mut growth, &by, 1000.0, &mut claimed);
+        assert_eq!(core.symbols, vec!["VLO".to_string(), "PSX".to_string()]);
+        assert!(growth.symbols.is_empty());
+        assert_eq!(growth.percentage, "—");
+    }
+
+    #[test]
+    fn every_category_is_listed_even_when_empty() {
+        let lists = build_enumerated_lists(&rows());
+        assert!(lists.contains("Outsized winners (>50% gain — consider trimming for diversification): none"));
+        assert!(lists.contains("Deep losers (>50% loss): none"));
+        assert!(lists.contains("Sub-$0.10 penny stocks (1): AABB"));
+    }
+
+    #[test]
     fn system_prompt_drops_the_hardcoded_401k_rule_and_target_split() {
         assert!(!SYSTEM_PROMPT.contains("Strict 401(k) rules apply"));
         assert!(!SYSTEM_PROMPT.contains("60–70%"));
@@ -794,5 +834,8 @@ mod tests {
         assert!(SYSTEM_PROMPT.contains("Never write a loss without its minus sign"));
         assert!(SYSTEM_PROMPT.contains("Never state target allocation percentages"));
         assert!(SYSTEM_PROMPT.contains("Never say \"a single name\" above a list of several"));
+        assert!(SYSTEM_PROMPT.contains("When an enumerated list says \"none\", write no section"));
+        assert!(SYSTEM_PROMPT.contains("each ticker belongs to exactly one card"));
+        assert!(SYSTEM_PROMPT.contains("Never mention these instructions, the data format, column names"));
     }
 }

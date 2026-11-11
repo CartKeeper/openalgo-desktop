@@ -325,7 +325,7 @@ export function GoldmanReport({ brief: raw, ...docProps }: GoldmanReportProps) {
         </Text>
       </Page>
 
-      {/* Movements */}
+      {/* Movements — each starts on its own page */}
       {brief.movements.map((m, i) => (
         <Page size="LETTER" style={s.page} key={i}>
           {renderMovement(m)}
@@ -428,7 +428,7 @@ function renderMovement(m: GoldmanMovement) {
 
 function MovementHeader({ m }: { m: GoldmanMovement }) {
   return (
-    <>
+    <View>
       <Text style={s.movementLabel}>
         {`MOVEMENT ${m.numeral}`} <Text style={s.movementTempo}>— {m.tempo}</Text>
       </Text>
@@ -437,7 +437,7 @@ function MovementHeader({ m }: { m: GoldmanMovement }) {
       </Text>
       {m.intro && <Text style={s.movementIntro}>{m.intro}</Text>}
       <View style={s.redRule} />
-    </>
+    </View>
   )
 }
 
@@ -505,10 +505,11 @@ function RestructuringView({ m }: { m: RestructuringMovement }) {
       </View>
 
       {m.proposed_core_table && (
-        <View>
-          <Heading>{m.proposed_core_table.heading}</Heading>
-          <CoreTable rows={m.proposed_core_table.rows} columns={['TICKER', 'NAME', 'CURRENT P/L', 'ACTION']} />
-        </View>
+        <CoreTable
+          heading={m.proposed_core_table.heading}
+          rows={m.proposed_core_table.rows}
+          columns={['TICKER', 'NAME', 'CURRENT P/L', 'ACTION']}
+        />
       )}
 
       {m.sector_sleeve && (
@@ -556,8 +557,11 @@ function TacticalView({ m }: { m: TacticalMovement }) {
 }
 
 function TacticalSectionRow({ section }: { section: TacticalSection }) {
+  // A section built around a short table moves to the next page as a unit, so
+  // its heading and intro never sit apart from the table.
+  const keepTogether = !!section.table && section.table.rows.length <= 8
   return (
-    <View style={s.numberedRow}>
+    <View style={s.numberedRow} wrap={keepTogether ? false : undefined}>
       <Text style={s.numeral}>{section.number}.</Text>
       <View style={s.numberedBody}>
         <Heading>{section.title}</Heading>
@@ -682,7 +686,16 @@ function BulletItemView({ item }: { item: BulletItem }) {
   )
 }
 
-function CoreTable({ rows, columns }: { rows: PortfolioRow[]; columns: TableColumn[] }) {
+function CoreTable({
+  heading,
+  rows,
+  columns,
+}: {
+  /** Kept on the same page as the table. */
+  heading?: string
+  rows: PortfolioRow[]
+  columns: TableColumn[]
+}) {
   // Column widths (must sum to 1).
   const widthsByCols: Record<string, number[]> = {
     'TICKER,NAME,CURRENT P/L,ACTION': [0.12, 0.3, 0.16, 0.42],
@@ -698,11 +711,12 @@ function CoreTable({ rows, columns }: { rows: PortfolioRow[]; columns: TableColu
     paddingRight: isPl(col) ? 14 : 10,
   })
 
-  // A short table moves to the next page whole; a long one keeps its header
-  // with at least its first rows.
+  // A short table moves to the next page whole, heading included; a long one
+  // keeps its header with at least its first rows.
   const unbreakable = rows.length <= 8
   return (
     <View wrap={!unbreakable}>
+      {heading && <Heading>{heading}</Heading>}
       <View style={s.tableHeaderRow} minPresenceAhead={unbreakable ? undefined : 60}>
         {columns.map((col, i) => (
           <Text key={col} style={[s.tableHeaderCell, cell(i, col), { textAlign: isPl(col) ? 'right' : 'left' }]}>
