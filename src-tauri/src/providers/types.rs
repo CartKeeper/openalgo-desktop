@@ -735,7 +735,28 @@ pub struct GoldmanBrief {
     pub subtitle: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidential_label: Option<String>,
+    /// Figures the app computes itself (never Claude) for the cover's fact panel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facts: Option<BriefFacts>,
     pub movements: Vec<GoldmanMovement>,
+}
+
+/// Account figures behind a brief, computed from live quotes at generation time.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BriefFacts {
+    /// "401(k)", "Traditional IRA", …
+    pub account_type: String,
+    pub positions: usize,
+    /// Market value of the positions that have a live price.
+    pub market_value: f64,
+    /// Cost basis of those same positions, so the P/L compares like with like.
+    pub cost_basis: f64,
+    pub unrealized_pnl: f64,
+    pub unrealized_pct: Option<f64>,
+    /// "November 11, 2026, 12:06 PM ET"
+    pub prices_as_of: String,
+    /// Positions with no live price (left out of the figures above).
+    pub unpriced: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -793,9 +814,16 @@ pub struct RestructuringMovement {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AllocationCard {
+    /// Set by the app from `symbols`: the sleeve's share of account value today.
     pub percentage: String,
     pub label: String,
     pub body: String,
+    /// The held tickers in this sleeve (Claude names them; the app weighs them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub symbols: Vec<String>,
+    /// What `percentage` measures, e.g. "of account value today".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

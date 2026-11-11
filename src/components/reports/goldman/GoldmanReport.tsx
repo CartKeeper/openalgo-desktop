@@ -2,14 +2,18 @@
  * Goldman Sax & Violins — house report template (React-PDF).
  *
  * Visual reference: cream paper, Times serif, gold/burgundy accents,
- * four-movement layout with tempo annotations and ♪ bullet motif.
+ * four-movement layout with tempo annotations.
  *
  * All exported reports for "recommendations and performance" use this template.
  * Brand wordmark, tagline, and disclaimer are intentionally hardcoded — house brand.
+ *
+ * Tracked-out labels use `letterSpacing`, never spaces between letters: spaces
+ * let a line break inside a word ("I N D E / X"). Words are never hyphenated.
  */
 
 import {
   Document,
+  Font,
   Page,
   StyleSheet,
   Text,
@@ -18,6 +22,7 @@ import {
 } from '@react-pdf/renderer'
 import type {
   AllocationCard,
+  BriefFacts,
   BulletItem,
   ChecklistGroup,
   CodaMovement,
@@ -33,13 +38,17 @@ import type {
   TacticalSection,
 } from './types'
 import { C, FONT } from './tokens'
+import { pdfSafeDeep } from './pdfText'
+
+// Break lines only between words.
+Font.registerHyphenationCallback((word) => [word])
 
 const s = StyleSheet.create({
   page: {
     backgroundColor: C.paper,
     paddingTop: 56,
     paddingHorizontal: 64,
-    paddingBottom: 48,
+    paddingBottom: 64,
     fontFamily: FONT.serif,
     color: C.ink,
     fontSize: 10.5,
@@ -52,66 +61,35 @@ const s = StyleSheet.create({
     alignItems: 'baseline',
     paddingBottom: 24,
   },
-  brandWord: {
-    fontFamily: FONT.serif,
-    fontSize: 22,
-    color: C.gold,
-  },
-  brandWordItalic: {
-    fontFamily: FONT.serifItalic,
-    fontSize: 22,
-    color: C.gold,
-  },
-  brandDate: {
-    fontFamily: FONT.serif,
-    fontSize: 9.5,
-    color: C.muted,
-    letterSpacing: 1.4,
-  },
+  brandWord: { fontFamily: FONT.serif, fontSize: 22, color: C.gold },
+  brandWordItalic: { fontFamily: FONT.serifItalic, fontSize: 22, color: C.gold },
+  brandDate: { fontFamily: FONT.serif, fontSize: 9.5, color: C.muted, letterSpacing: 1.4 },
   confidentialPill: {
     fontFamily: FONT.serif,
     fontSize: 9.5,
     color: C.burgundy,
-    letterSpacing: 3.2,
-    paddingTop: 60,
+    letterSpacing: 3,
+    paddingTop: 52,
   },
-  coverTitle: {
-    fontSize: 48,
-    color: C.ink,
-    lineHeight: 1.05,
-    paddingTop: 24,
-  },
-  coverTitleAccent: {
-    fontFamily: FONT.serifBoldItalic,
-    color: C.gold,
-  },
+  coverTitle: { fontSize: 40, color: C.ink, lineHeight: 1.1, paddingTop: 20 },
+  coverTitleAccent: { fontFamily: FONT.serifBoldItalic, color: C.gold },
   coverSubtitle: {
     fontFamily: FONT.serifItalic,
     fontSize: 12,
     color: C.body,
     lineHeight: 1.45,
-    paddingTop: 28,
+    paddingTop: 24,
   },
   coverDivider: {
     borderBottomWidth: 0.6,
     borderBottomColor: C.burgundy,
-    marginTop: 80,
+    marginTop: 56,
     marginBottom: 12,
   },
-  coverMetaRow: {
-    flexDirection: 'row',
-    gap: 64,
-  },
-  coverMetaLabel: {
-    fontSize: 8,
-    color: C.muted,
-    letterSpacing: 2.2,
-    paddingBottom: 4,
-  },
-  coverMetaValue: {
-    fontSize: 11,
-    color: C.ink,
-  },
+  coverMetaRow: { flexDirection: 'row' },
+  coverMetaCell: { width: '33.33%', paddingRight: 12 },
+  coverMetaLabel: { fontSize: 8, color: C.muted, letterSpacing: 2, paddingBottom: 4 },
+  coverMetaValue: { fontSize: 11, color: C.ink },
   coverFooter: {
     position: 'absolute',
     bottom: 30,
@@ -123,6 +101,47 @@ const s = StyleSheet.create({
     color: C.muted,
   },
 
+  // Cover fact panel ---------------------------------------------------
+  facts: {
+    marginTop: 28,
+    borderTopWidth: 0.6,
+    borderTopColor: C.goldSoft,
+    borderBottomWidth: 0.6,
+    borderBottomColor: C.goldSoft,
+    paddingVertical: 12,
+  },
+  factsHeading: {
+    fontFamily: FONT.serifItalic,
+    fontSize: 10,
+    color: C.gold,
+    paddingBottom: 8,
+  },
+  factsRow: { flexDirection: 'row', paddingTop: 6 },
+  factCell: { width: '33.33%', paddingRight: 12 },
+  factLabel: { fontSize: 8, color: C.muted, letterSpacing: 1.6, paddingBottom: 3 },
+  factValue: { fontFamily: FONT.serifBold, fontSize: 12.5, color: C.ink },
+  factNote: {
+    fontFamily: FONT.serifItalic,
+    fontSize: 9,
+    color: C.body,
+    lineHeight: 1.4,
+    paddingTop: 10,
+  },
+
+  // Running footer (movement pages) ------------------------------------
+  footer: {
+    position: 'absolute',
+    bottom: 28,
+    left: 64,
+    right: 64,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    borderTopWidth: 0.5,
+    borderTopColor: C.goldSoft,
+    paddingTop: 6,
+  },
+  footerText: { fontFamily: FONT.serifItalic, fontSize: 7.5, color: C.muted },
+
   // Movement ----------------------------------------------------------
   movementLabel: {
     fontFamily: FONT.serif,
@@ -131,21 +150,9 @@ const s = StyleSheet.create({
     letterSpacing: 2.4,
     paddingTop: 4,
   },
-  movementTempo: {
-    fontFamily: FONT.serifItalic,
-    fontSize: 9,
-    color: C.muted,
-  },
-  movementTitle: {
-    fontFamily: FONT.serif,
-    fontSize: 26,
-    color: C.ink,
-    paddingTop: 6,
-  },
-  movementTitleAccent: {
-    fontFamily: FONT.serifItalic,
-    color: C.gold,
-  },
+  movementTempo: { fontFamily: FONT.serifItalic, fontSize: 9, color: C.muted, letterSpacing: 0.4 },
+  movementTitle: { fontFamily: FONT.serif, fontSize: 26, color: C.ink, paddingTop: 6 },
+  movementTitleAccent: { fontFamily: FONT.serifItalic, color: C.gold },
   movementIntro: {
     fontFamily: FONT.serifItalic,
     fontSize: 12,
@@ -159,70 +166,39 @@ const s = StyleSheet.create({
     marginTop: 14,
     marginBottom: 12,
   },
-  goldRule: {
-    borderBottomWidth: 0.5,
-    borderBottomColor: C.goldSoft,
-    marginTop: 8,
-    marginBottom: 8,
-  },
 
   // Body --------------------------------------------------------------
-  paragraph: {
-    fontSize: 10.5,
-    color: C.ink,
-    lineHeight: 1.45,
-    paddingTop: 6,
-  },
-  h2: {
-    fontFamily: FONT.serifBold,
-    fontSize: 13.5,
-    color: C.gold,
-    paddingTop: 14,
-    paddingBottom: 4,
-  },
-  h3: {
-    fontFamily: FONT.serifBold,
-    fontSize: 11.5,
-    color: C.ink,
-    paddingTop: 10,
-  },
+  paragraph: { fontSize: 10.5, color: C.ink, lineHeight: 1.45, paddingTop: 6 },
+  h2: { fontFamily: FONT.serifBold, fontSize: 13.5, color: C.gold, paddingTop: 14, paddingBottom: 4 },
+  h3: { fontFamily: FONT.serifBold, fontSize: 11.5, color: C.ink, paddingTop: 10, lineHeight: 1.4 },
 
-  // Diagnosis numerals -------------------------------------------------
-  romanRow: {
-    flexDirection: 'row',
-    paddingTop: 12,
-  },
-  romanNumeral: {
-    fontFamily: FONT.serifItalic,
-    fontSize: 13.5,
-    color: C.burgundy,
-    width: 22,
-  },
-  romanBody: { flex: 1 },
+  // Numbered rows (diagnosis i./ii., tactical 1./2.) --------------------
+  numberedRow: { flexDirection: 'row', paddingTop: 12 },
+  numeral: { fontFamily: FONT.serifItalic, fontSize: 13.5, color: C.burgundy, width: 22, paddingTop: 14 },
+  numberedBody: { flex: 1 },
 
-  // ♪ bullets ---------------------------------------------------------
-  bulletRow: {
-    flexDirection: 'row',
-    paddingTop: 6,
-    alignItems: 'flex-start',
-  },
-  noteGlyph: {
-    fontFamily: FONT.serif,
-    fontSize: 11,
-    color: C.gold,
-    width: 14,
-    paddingTop: 0.5,
-  },
+  // Bullets -----------------------------------------------------------
+  bulletRow: { flexDirection: 'row', paddingTop: 6, alignItems: 'flex-start' },
+  noteGlyph: { fontFamily: FONT.serif, fontSize: 11, color: C.gold, width: 14, paddingTop: 0.5 },
   bulletBody: { flex: 1, fontSize: 10.5, lineHeight: 1.4 },
   bulletLead: { fontFamily: FONT.serifBold, color: C.ink },
   bulletTickerLead: { fontFamily: FONT.sansBold, color: C.gold, fontSize: 9.5 },
 
-  // Allocation cards --------------------------------------------------
-  allocationRow: {
+  // Compact ticker ledger (long lists of single holdings) ---------------
+  ledger: { flexDirection: 'row', flexWrap: 'wrap', paddingTop: 6 },
+  ledgerCell: {
+    width: '50%',
     flexDirection: 'row',
-    gap: 12,
-    paddingTop: 12,
+    paddingVertical: 4,
+    paddingRight: 14,
+    borderBottomWidth: 0.5,
+    borderBottomColor: C.goldSoft,
   },
+  ledgerTicker: { fontFamily: FONT.sansBold, color: C.gold, fontSize: 9, width: 52 },
+  ledgerBody: { flex: 1, fontSize: 9.5, color: C.ink, lineHeight: 1.35 },
+
+  // Allocation cards --------------------------------------------------
+  allocationRow: { flexDirection: 'row', paddingTop: 12 },
   allocationCard: {
     flex: 1,
     borderWidth: 0.7,
@@ -230,27 +206,20 @@ const s = StyleSheet.create({
     paddingHorizontal: 11,
     paddingTop: 11,
     paddingBottom: 14,
-    minHeight: 142,
   },
-  allocationPct: {
-    fontFamily: FONT.serifBold,
-    fontSize: 22,
-    color: C.gold,
-  },
+  allocationGap: { width: 12 },
+  allocationPct: { fontFamily: FONT.serifBold, fontSize: 24, color: C.gold },
+  allocationCaption: { fontFamily: FONT.serifItalic, fontSize: 8.5, color: C.muted, paddingTop: 1 },
   allocationLabel: {
     fontFamily: FONT.serif,
-    fontSize: 9,
+    fontSize: 8.5,
     color: C.burgundy,
-    letterSpacing: 2.4,
-    paddingTop: 6,
-  },
-  allocationBody: {
-    fontFamily: FONT.serif,
-    fontSize: 9.5,
-    color: C.body,
-    lineHeight: 1.4,
+    letterSpacing: 1.6,
+    lineHeight: 1.35,
     paddingTop: 8,
   },
+  allocationSymbols: { fontFamily: FONT.sansBold, fontSize: 7.5, color: C.gold, lineHeight: 1.45, paddingTop: 6 },
+  allocationBody: { fontFamily: FONT.serif, fontSize: 9.5, color: C.body, lineHeight: 1.4, paddingTop: 6 },
 
   // Tables ------------------------------------------------------------
   tableHeaderRow: {
@@ -260,11 +229,7 @@ const s = StyleSheet.create({
     paddingBottom: 4,
     paddingTop: 4,
   },
-  tableHeaderCell: {
-    fontSize: 8,
-    color: C.muted,
-    letterSpacing: 1.6,
-  },
+  tableHeaderCell: { fontSize: 7.5, color: C.muted, letterSpacing: 1.2 },
   tableRow: {
     flexDirection: 'row',
     borderBottomWidth: 0.6,
@@ -273,53 +238,45 @@ const s = StyleSheet.create({
   },
   tableCell: { fontSize: 10, color: C.ink, lineHeight: 1.3 },
   tickerCell: { fontFamily: FONT.sansBold, color: C.gold, fontSize: 10 },
-  plPositive: { fontFamily: FONT.serifBold, color: C.green, fontSize: 10, textAlign: 'right' },
-  plNegative: { fontFamily: FONT.serifBold, color: C.burgundy, fontSize: 10, textAlign: 'right' },
-
-  // Tactical numbered sections ----------------------------------------
-  tacticalRow: {
-    flexDirection: 'row',
-    paddingTop: 14,
-  },
-  tacticalNumeral: {
-    fontFamily: FONT.serifItalic,
-    fontSize: 13.5,
-    color: C.burgundy,
-    width: 22,
-  },
-  tacticalBody: { flex: 1 },
+  plCell: { fontFamily: FONT.serifBold, fontSize: 10, textAlign: 'right' },
 
   // Coda checklist ----------------------------------------------------
-  checkRow: {
-    flexDirection: 'row',
-    paddingTop: 6,
-    alignItems: 'flex-start',
-  },
+  checkRow: { flexDirection: 'row', paddingTop: 7, alignItems: 'flex-start' },
   checkBox: {
-    fontFamily: FONT.serif,
-    fontSize: 13,
-    color: C.gold,
-    width: 18,
-    paddingTop: 0.5,
+    width: 8,
+    height: 8,
+    borderWidth: 0.8,
+    borderColor: C.gold,
+    marginTop: 3,
+    marginRight: 10,
   },
   checkBody: { flex: 1, fontSize: 10.5, lineHeight: 1.45 },
   checkLead: { fontFamily: FONT.serifBold, color: C.ink },
 
   // Closing note + flourish ------------------------------------------
-  closingNote: {
-    fontFamily: FONT.serifBold,
-    fontSize: 10.5,
-    color: C.ink,
-    paddingTop: 18,
-  },
+  closingNote: { fontFamily: FONT.serifBold, fontSize: 10.5, color: C.ink, paddingTop: 18, lineHeight: 1.45 },
   closingBody: { fontFamily: FONT.serifItalic, color: C.body, fontWeight: 'normal' },
-  flourish: {
-    paddingTop: 24,
-    fontSize: 14,
-    color: C.gold,
-    textAlign: 'center',
-  },
+  flourish: { paddingTop: 24, fontSize: 14, color: C.gold, textAlign: 'center' },
 })
+
+// ----- Formatting -----
+
+const usd = (n: number) =>
+  n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
+
+const signedUsd = (n: number) => `${n >= 0 ? '+' : '-'}${usd(Math.abs(n))}`
+
+const signedPct = (n: number) => `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`
+
+/** Green for a gain, burgundy for a loss, muted when the cell holds no number. */
+function plColor(pl: string): string {
+  const t = pl.trim()
+  if (t.startsWith('+')) return C.green
+  if (t.startsWith('-') || t.startsWith('−')) return C.burgundy
+  return C.muted
+}
+
+const TICKER = /^[A-Z0-9.-]{1,6}$/
 
 // ----- Public component -----
 
@@ -327,37 +284,27 @@ export interface GoldmanReportProps extends Omit<DocumentProps, 'children'> {
   brief: GoldmanBrief
 }
 
-export function GoldmanReport({ brief, ...docProps }: GoldmanReportProps) {
-  const confidentialLabel = (
-    brief.confidential_label ?? 'CONFIDENTIAL CLIENT BRIEF — 401(K)'
-  )
-    .toUpperCase()
-    .split('')
-    .join(' ')
+export function GoldmanReport({ brief: raw, ...docProps }: GoldmanReportProps) {
+  // Every string is made drawable by the PDF fonts first (a "−" would vanish).
+  const brief = pdfSafeDeep(raw)
+  const confidentialLabel = (brief.confidential_label ?? 'Confidential client brief').toUpperCase()
 
   return (
-    <Document
-      title={brief.document_label}
-      author="Goldman Sax & Violins"
-      {...docProps}
-    >
+    <Document title={brief.document_label} author="Goldman Sax & Violins" {...docProps}>
       {/* Cover Page */}
       <Page size="LETTER" style={s.page}>
         <View style={s.brandRow}>
           <Text style={s.brandWord}>
-            Goldman Sax{' '}
-            <Text style={s.brandWordItalic}>&amp; </Text>
-            Violins
+            Goldman Sax <Text style={s.brandWordItalic}>&amp;</Text> Violins
           </Text>
           <Text style={s.brandDate}>{brief.generated_date.toUpperCase()}</Text>
         </View>
 
         <Text style={s.confidentialPill}>{confidentialLabel}</Text>
 
-        <Text style={s.coverTitle}>
-          {/* Title: plain text + italic gold accent */}
-          Portfolio Analysis &amp;{' '}
-          <Text style={s.coverTitleAccent}>Strategic Recommendations</Text>
+        <Text style={s.coverTitle}>Portfolio Analysis &amp;</Text>
+        <Text style={[s.coverTitle, s.coverTitleAccent, { paddingTop: 0 }]}>
+          Strategic Recommendations
         </Text>
 
         <Text style={s.coverSubtitle}>{brief.subtitle}</Text>
@@ -365,22 +312,16 @@ export function GoldmanReport({ brief, ...docProps }: GoldmanReportProps) {
         <View style={s.coverDivider} />
 
         <View style={s.coverMetaRow}>
-          <View>
-            <Text style={s.coverMetaLabel}>P R E P A R E D  F O R</Text>
-            <Text style={s.coverMetaValue}>{brief.client_name}</Text>
-          </View>
-          <View>
-            <Text style={s.coverMetaLabel}>D O C U M E N T</Text>
-            <Text style={s.coverMetaValue}>{brief.document_label}</Text>
-          </View>
-          <View>
-            <Text style={s.coverMetaLabel}>T E M P O</Text>
-            <Text style={s.coverMetaValue}>{brief.tempo}</Text>
-          </View>
+          <MetaCell label="PREPARED FOR" value={brief.client_name} />
+          <MetaCell label="DOCUMENT" value={brief.document_label} />
+          <MetaCell label="TEMPO" value={brief.tempo} />
         </View>
 
+        {brief.facts && <FactPanel facts={brief.facts} />}
+
         <Text style={s.coverFooter}>
-          Goldman Sax &amp; Violins, LLP · Equities &amp; Etudes Since 1869 · This document is satirical and is not financial advice.
+          Goldman Sax &amp; Violins, LLP · Equities &amp; Etudes Since 1869 · This document is satirical and
+          is not financial advice.
         </Text>
       </Page>
 
@@ -388,9 +329,83 @@ export function GoldmanReport({ brief, ...docProps }: GoldmanReportProps) {
       {brief.movements.map((m, i) => (
         <Page size="LETTER" style={s.page} key={i}>
           {renderMovement(m)}
+          <RunningFooter brief={brief} />
         </Page>
       ))}
     </Document>
+  )
+}
+
+function MetaCell({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={s.coverMetaCell}>
+      <Text style={s.coverMetaLabel}>{label}</Text>
+      <Text style={s.coverMetaValue}>{value}</Text>
+    </View>
+  )
+}
+
+/** The account as the app measured it — every number here is computed, not written by Claude. */
+function FactPanel({ facts }: { facts: BriefFacts }) {
+  const pnl = `${signedUsd(facts.unrealized_pnl)}${
+    facts.unrealized_pct !== null ? ` (${signedPct(facts.unrealized_pct)})` : ''
+  }`
+  return (
+    <View style={s.facts} wrap={false}>
+      <Text style={s.factsHeading}>The account, at the time of writing</Text>
+      <View style={s.factsRow}>
+        <Fact label="ACCOUNT" value={facts.account_type} />
+        <Fact label="POSITIONS" value={String(facts.positions)} />
+        <Fact label="PRICES AS OF" value={facts.prices_as_of} small />
+      </View>
+      <View style={s.factsRow}>
+        <Fact label="MARKET VALUE" value={usd(facts.market_value)} />
+        <Fact label="COST BASIS" value={usd(facts.cost_basis)} />
+        <Fact label="UNREALIZED P/L" value={pnl} color={plColor(pnl)} />
+      </View>
+      <Text style={s.factNote}>
+        Live quotes, which may be delayed up to 15 minutes. Value, cost and P/L cover the positions with a live
+        price
+        {facts.unpriced.length > 0
+          ? `; ${facts.unpriced.length} without one ${facts.unpriced.length === 1 ? 'is' : 'are'} left out: ${facts.unpriced.join(', ')}.`
+          : '.'}
+      </Text>
+    </View>
+  )
+}
+
+function Fact({
+  label,
+  value,
+  color,
+  small,
+}: {
+  label: string
+  value: string
+  color?: string
+  small?: boolean
+}) {
+  return (
+    <View style={s.factCell}>
+      <Text style={s.factLabel}>{label}</Text>
+      <Text style={[s.factValue, small ? { fontSize: 10, lineHeight: 1.3 } : {}, color ? { color } : {}]}>
+        {value}
+      </Text>
+    </View>
+  )
+}
+
+function RunningFooter({ brief }: { brief: GoldmanBrief }) {
+  return (
+    <View style={s.footer} fixed>
+      <Text style={s.footerText}>
+        Goldman Sax &amp; Violins · {brief.client_name} · {brief.generated_date}
+      </Text>
+      <Text
+        style={s.footerText}
+        render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`}
+      />
+    </View>
   )
 }
 
@@ -415,16 +430,23 @@ function MovementHeader({ m }: { m: GoldmanMovement }) {
   return (
     <>
       <Text style={s.movementLabel}>
-        {`MOVEMENT ${m.numeral}`.split('').join(' ')}{' '}
-        <Text style={s.movementTempo}> — {m.tempo}</Text>
+        {`MOVEMENT ${m.numeral}`} <Text style={s.movementTempo}>— {m.tempo}</Text>
       </Text>
       <Text style={s.movementTitle}>
-        {m.title_main}{' '}
-        <Text style={s.movementTitleAccent}>{m.title_accent}</Text>
+        {m.title_main} <Text style={s.movementTitleAccent}>{m.title_accent}</Text>
       </Text>
       {m.intro && <Text style={s.movementIntro}>{m.intro}</Text>}
       <View style={s.redRule} />
     </>
+  )
+}
+
+/** A heading that never sits alone at the bottom of a page. */
+function Heading({ children }: { children: React.ReactNode }) {
+  return (
+    <Text style={s.h2} minPresenceAhead={48}>
+      {children}
+    </Text>
   )
 }
 
@@ -438,13 +460,11 @@ function DiagnosisView({ m }: { m: DiagnosisMovement }) {
         <DiagnosisIssueRow key={i} issue={issue} index={i} />
       ))}
       {m.headline && (
-        <View>
+        <View wrap={false}>
           <View style={{ height: 14 }} />
           <Text style={s.h3}>
             {m.headline.lead}{' '}
-            <Text style={{ fontFamily: FONT.serifItalic, color: C.body }}>
-              {m.headline.body}
-            </Text>
+            <Text style={{ fontFamily: FONT.serifItalic, color: C.body }}>{m.headline.body}</Text>
           </Text>
         </View>
       )}
@@ -455,13 +475,13 @@ function DiagnosisView({ m }: { m: DiagnosisMovement }) {
 function DiagnosisIssueRow({ issue, index }: { issue: DiagnosisIssue; index: number }) {
   const numerals = ['i.', 'ii.', 'iii.', 'iv.', 'v.', 'vi.', 'vii.']
   return (
-    <View style={s.romanRow}>
-      <Text style={s.romanNumeral}>{numerals[index] ?? `${index + 1}.`}</Text>
-      <View style={s.romanBody}>
-        <Text style={s.h2}>{issue.title}</Text>
+    <View style={s.numberedRow}>
+      <Text style={s.numeral}>{numerals[index] ?? `${index + 1}.`}</Text>
+      <View style={s.numberedBody}>
+        <Heading>{issue.title}</Heading>
         <Text style={s.paragraph}>{issue.body}</Text>
         {issue.bullets.map((b, i) => (
-          <MusicalBullet key={i}>{b}</MusicalBullet>
+          <PlainBullet key={i}>{b}</PlainBullet>
         ))}
       </View>
     </View>
@@ -475,34 +495,33 @@ function RestructuringView({ m }: { m: RestructuringMovement }) {
     <View>
       <MovementHeader m={m} />
 
-      <View style={s.allocationRow}>
+      <View style={s.allocationRow} wrap={false}>
         {m.allocation_cards.map((c, i) => (
-          <AllocationCardView key={i} card={c} />
+          <View key={i} style={{ flex: 1, flexDirection: 'row' }}>
+            {i > 0 && <View style={s.allocationGap} />}
+            <AllocationCardView card={c} />
+          </View>
         ))}
       </View>
 
       {m.proposed_core_table && (
         <View>
-          <Text style={s.h2}>{m.proposed_core_table.heading}</Text>
+          <Heading>{m.proposed_core_table.heading}</Heading>
           <CoreTable rows={m.proposed_core_table.rows} columns={['TICKER', 'NAME', 'CURRENT P/L', 'ACTION']} />
         </View>
       )}
 
       {m.sector_sleeve && (
         <View>
-          <Text style={s.h2}>{m.sector_sleeve.heading}</Text>
-          {m.sector_sleeve.bullets.map((b, i) => (
-            <BulletItemView key={i} item={b} />
-          ))}
+          <Heading>{m.sector_sleeve.heading}</Heading>
+          <Bullets items={m.sector_sleeve.bullets} />
         </View>
       )}
 
       {m.immediate_eliminations && (
         <View>
-          <Text style={s.h2}>{m.immediate_eliminations.heading}</Text>
-          {m.immediate_eliminations.bullets.map((b, i) => (
-            <BulletItemView key={i} item={b} />
-          ))}
+          <Heading>{m.immediate_eliminations.heading}</Heading>
+          <Bullets items={m.immediate_eliminations.bullets} />
         </View>
       )}
     </View>
@@ -513,9 +532,11 @@ function AllocationCardView({ card }: { card: AllocationCard }) {
   return (
     <View style={s.allocationCard}>
       <Text style={s.allocationPct}>{card.percentage}</Text>
-      <Text style={s.allocationLabel}>
-        {card.label.toUpperCase().split('').join(' ')}
-      </Text>
+      {card.caption && <Text style={s.allocationCaption}>{card.caption}</Text>}
+      <Text style={s.allocationLabel}>{card.label.toUpperCase()}</Text>
+      {card.symbols && card.symbols.length > 0 && (
+        <Text style={s.allocationSymbols}>{card.symbols.join(', ')}</Text>
+      )}
       <Text style={s.allocationBody}>{card.body}</Text>
     </View>
   )
@@ -536,18 +557,17 @@ function TacticalView({ m }: { m: TacticalMovement }) {
 
 function TacticalSectionRow({ section }: { section: TacticalSection }) {
   return (
-    <View style={s.tacticalRow}>
-      <Text style={s.tacticalNumeral}>{section.number}.</Text>
-      <View style={s.tacticalBody}>
-        <Text style={s.h2}>{section.title}</Text>
+    <View style={s.numberedRow}>
+      <Text style={s.numeral}>{section.number}.</Text>
+      <View style={s.numberedBody}>
+        <Heading>{section.title}</Heading>
         {section.body && <Text style={s.paragraph}>{section.body}</Text>}
         {section.table && (
           <View style={{ paddingTop: 8 }}>
             <CoreTable rows={section.table.rows} columns={section.table.columns} />
           </View>
         )}
-        {section.bullets &&
-          section.bullets.map((b, i) => <BulletItemView key={i} item={b} />)}
+        {section.bullets && <Bullets items={section.bullets} />}
       </View>
     </View>
   )
@@ -563,9 +583,8 @@ function CodaView({ m }: { m: CodaMovement }) {
         <ChecklistGroupView key={i} group={g} />
       ))}
       {m.closing_note && (
-        <Text style={s.closingNote}>
-          {m.closing_note.lead}{' '}
-          <Text style={s.closingBody}>{m.closing_note.body}</Text>
+        <Text style={s.closingNote} wrap={false}>
+          {m.closing_note.lead} <Text style={s.closingBody}>{m.closing_note.body}</Text>
         </Text>
       )}
       <Text style={s.flourish}>—   ·   —</Text>
@@ -576,10 +595,10 @@ function CodaView({ m }: { m: CodaMovement }) {
 function ChecklistGroupView({ group }: { group: ChecklistGroup }) {
   return (
     <View>
-      <Text style={s.h2}>{group.heading}</Text>
+      <Heading>{group.heading}</Heading>
       {group.items.map((item, i) => (
-        <View key={i} style={s.checkRow}>
-          <Text style={s.checkBox}>□</Text>
+        <View key={i} style={s.checkRow} wrap={false}>
+          <View style={s.checkBox} />
           <Text style={s.checkBody}>
             <Text style={s.checkLead}>{item.lead}</Text>
             {item.body ? <Text>{` ${item.body}`}</Text> : null}
@@ -601,28 +620,54 @@ function NarrativeView({ m }: { m: NarrativeMovement }) {
           {p}
         </Text>
       ))}
-      {m.bullets &&
-        m.bullets.map((b, i) => <BulletItemView key={i} item={b} />)}
+      {m.bullets && <Bullets items={m.bullets} />}
     </View>
   )
 }
 
 // ----- Shared primitives -----
 
-function MusicalBullet({ children }: { children: React.ReactNode }) {
+function PlainBullet({ children }: { children: React.ReactNode }) {
   return (
-    <View style={s.bulletRow}>
+    <View style={s.bulletRow} wrap={false}>
       <Text style={s.noteGlyph}>•</Text>
       <Text style={s.bulletBody}>{children}</Text>
     </View>
   )
 }
 
-function BulletItemView({ item }: { item: BulletItem }) {
-  // Heuristic: if `lead` is all uppercase letters/digits ≤ 5 chars, render as ticker (Arial gold)
-  const isTicker = !!item.lead && /^[A-Z0-9.\-]{1,5}$/.test(item.lead)
+/**
+ * Bullets, or — when eight or more each lead with a ticker — a two-column
+ * ledger, so a long elimination list reads as a list instead of filling a page.
+ */
+function Bullets({ items }: { items: BulletItem[] }) {
+  const allTickers = items.length >= 8 && items.every((b) => !!b.lead && TICKER.test(b.lead))
+  if (allTickers) {
+    return (
+      <View style={s.ledger}>
+        {items.map((b, i) => (
+          <View key={i} style={s.ledgerCell} wrap={false}>
+            <Text style={s.ledgerTicker}>{b.lead}</Text>
+            {/* Drop a leading "— " separator, never a minus sign. */}
+            <Text style={s.ledgerBody}>{b.body.replace(/^\s*[—–]\s+/, '')}</Text>
+          </View>
+        ))}
+      </View>
+    )
+  }
   return (
-    <View style={s.bulletRow}>
+    <>
+      {items.map((b, i) => (
+        <BulletItemView key={i} item={b} />
+      ))}
+    </>
+  )
+}
+
+function BulletItemView({ item }: { item: BulletItem }) {
+  const isTicker = !!item.lead && TICKER.test(item.lead)
+  return (
+    <View style={s.bulletRow} wrap={false}>
       <Text style={s.noteGlyph}>•</Text>
       <Text style={s.bulletBody}>
         {item.lead && (
@@ -638,70 +683,61 @@ function BulletItemView({ item }: { item: BulletItem }) {
 }
 
 function CoreTable({ rows, columns }: { rows: PortfolioRow[]; columns: TableColumn[] }) {
-  // Column widths (must sum to 1) — picked to match HTML proportions.
+  // Column widths (must sum to 1).
   const widthsByCols: Record<string, number[]> = {
-    'TICKER,NAME,CURRENT P/L,ACTION': [0.12, 0.32, 0.18, 0.38],
-    'TICKER,POSITION,P/L,ACTION': [0.12, 0.36, 0.14, 0.38],
-    'TICKER,NAME,P/L,DECISION': [0.14, 0.26, 0.12, 0.48],
+    'TICKER,NAME,CURRENT P/L,ACTION': [0.12, 0.3, 0.16, 0.42],
+    'TICKER,POSITION,P/L,ACTION': [0.12, 0.3, 0.14, 0.44],
+    'TICKER,NAME,P/L,DECISION': [0.12, 0.28, 0.14, 0.46],
   }
-  const key = columns.join(',')
-  const widths = widthsByCols[key] ?? Array(columns.length).fill(1 / columns.length)
+  const widths = widthsByCols[columns.join(',')] ?? Array(columns.length).fill(1 / columns.length)
+  const isPl = (col: string) => col === 'P/L' || col === 'CURRENT P/L'
+  // Every cell gets the same gutter so neighbouring columns never touch.
+  const cell = (i: number, col: string) => ({
+    width: `${widths[i] * 100}%`,
+    paddingLeft: i === 0 ? 4 : 0,
+    paddingRight: isPl(col) ? 14 : 10,
+  })
 
+  // A short table moves to the next page whole; a long one keeps its header
+  // with at least its first rows.
+  const unbreakable = rows.length <= 8
   return (
-    <View>
-      <View style={s.tableHeaderRow}>
-        {columns.map((col, i) => {
-          const isPlOrAction = col === 'P/L' || col === 'CURRENT P/L'
-          return (
-            <Text
-              key={col}
-              style={[
-                s.tableHeaderCell,
-                {
-                  width: `${widths[i] * 100}%`,
-                  textAlign: isPlOrAction ? 'right' : 'left',
-                  paddingRight: isPlOrAction ? 6 : 0,
-                  paddingLeft: i === 0 ? 4 : 0,
-                },
-              ]}
-            >
-              {col.split('').join(' ')}
-            </Text>
-          )
-        })}
+    <View wrap={!unbreakable}>
+      <View style={s.tableHeaderRow} minPresenceAhead={unbreakable ? undefined : 60}>
+        {columns.map((col, i) => (
+          <Text key={col} style={[s.tableHeaderCell, cell(i, col), { textAlign: isPl(col) ? 'right' : 'left' }]}>
+            {col}
+          </Text>
+        ))}
       </View>
       {rows.map((row, ri) => (
-        <View key={ri} style={s.tableRow}>
+        <View key={ri} style={s.tableRow} wrap={unbreakable ? undefined : false}>
           {columns.map((col, ci) => {
-            const w = `${widths[ci] * 100}%`
             switch (col) {
               case 'TICKER':
                 return (
-                  <Text key={ci} style={[s.tickerCell, { width: w, paddingLeft: 4 }]}>
+                  <Text key={ci} style={[s.tickerCell, cell(ci, col)]}>
                     {row.ticker}
                   </Text>
                 )
               case 'NAME':
               case 'POSITION':
                 return (
-                  <Text key={ci} style={[s.tableCell, { width: w }]}>
+                  <Text key={ci} style={[s.tableCell, cell(ci, col)]}>
                     {row.name}
                   </Text>
                 )
               case 'P/L':
               case 'CURRENT P/L':
                 return (
-                  <Text
-                    key={ci}
-                    style={[row.pl_positive ? s.plPositive : s.plNegative, { width: w, paddingRight: 6 }]}
-                  >
+                  <Text key={ci} style={[s.plCell, cell(ci, col), { color: plColor(row.pl) }]}>
                     {row.pl}
                   </Text>
                 )
               case 'ACTION':
               case 'DECISION':
                 return (
-                  <Text key={ci} style={[s.tableCell, { width: w }]}>
+                  <Text key={ci} style={[s.tableCell, cell(ci, col)]}>
                     {row.action}
                   </Text>
                 )

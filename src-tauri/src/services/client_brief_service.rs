@@ -1,39 +1,49 @@
-//! Generates a Goldman Sax & Violins house brief for a client by feeding
-//! their imported holdings, open orders, and 401k violations to Claude and
-//! requesting structured JSON that conforms to `GoldmanBrief`.
+//! Generates a Goldman Sax & Violins house brief for a client (imported holdings)
+//! or for one of their sandbox scenarios, by feeding the positions — priced with
+//! live quotes at generation time — to Claude and requesting structured JSON that
+//! conforms to `GoldmanBrief`.
 //!
-//! The service is brand-agnostic in its inputs (it reads only from the DB) so
-//! later report types ("performance review", "rebalance brief", etc.) can
-//! reuse the same flow with different prompts.
+//! Claude writes the prose. Every figure the reader could check — the date, the
+//! account label, the cover's fact panel, table P/L, and allocation weights — is
+//! set by the app after Claude answers, from the same priced rows.
+
+use std::collections::HashMap;
+
+use chrono::Utc;
+use chrono_tz::America::New_York;
 
 use crate::error::{AppError, Result};
 use crate::providers::anthropic::{AnthropicClient, Message, MessageContent, ResponseContentBlock};
 use crate::providers::types::{
-    Client, ClientHolding, ClientOpenOrder, ClientScenario, ComplianceViolation, GoldmanBrief,
-    ScenarioPosition,
+    AllocationCard, BriefFacts, Client, ClientHolding, ClientOpenOrder, ComplianceViolation,
+    GoldmanBrief, GoldmanMovement, PortfolioRow,
 };
+use crate::providers::yahoo::YahooClient;
 use crate::state::AppState;
 
 const SYSTEM_PROMPT: &str = r#"You are the lead author at Goldman Sax & Violins, LLP — a satirical equities research house ("Equities & Etudes Since 1869"). You write client briefs in a precise, slightly arch financial register that pairs orchestral metaphors with disciplined investment reasoning.
 
 House style (mandatory):
-- Section names use musical terminology: Movements (I–IV), tempo annotations (Andante / Allegro / Coda rallentando), bullets are ♪ musical notes, references to "the score" and "the maestro".
+- Section names use musical terminology: Movements (I–IV), tempo annotations (Andante / Allegro / Coda rallentando), references to "the score" and "the maestro".
 - Tone: confident, dry, professional. Never breathless. Never marketing-speak.
 - All recommendations must be grounded in the data the user provides — do not invent positions or P/L.
-- Strict 401(k) rules apply: no shorts, no leveraged/inverse ETFs, no options/futures/crypto. Surface every violation prominently.
+- Account guidelines come from the user prompt. They are this app's standard guidelines for that account type, not the plan's or custodian's documented rules. Say a holding is "outside the guidelines for this account type"; never claim the plan, the custodian, or the client's documents prohibit it. Surface every such holding prominently.
 - Never give actual financial advice — the disclaimer covers it.
 
 ACCURACY RULES (mandatory — violations will be caught and rejected):
-1. Use `Generated date` from the user prompt as `generated_date` verbatim. Do NOT invent or guess a date.
-2. NEVER fabricate prices. If a holding's `market_value` is "unavailable" in the user prompt, do not state a price for it. Refer to it by quantity only ("100 shares of TQQQ").
-3. NEVER call a position with a positive `gain_percent` "speculative" or "underwater" or "lottery ticket". Use the gain_percent column literally:
-   - gain_percent < -50: "deep loss" / "candidate for elimination"
-   - gain_percent between -50 and 0: "underwater" / "trim or hold"
-   - gain_percent between 0 and +50: "core hold" / "maintain"
-   - gain_percent > +50: "outsized winner" / "consider trimming for diversification"
-4. When the user prompt provides an enumerated list (e.g. `Penny stock candidates`, `Stranded positions`, `Compliance violations`), use those lists verbatim in your output. Do not derive your own subset; do not omit names from the list. If the list has 11 entries, your bullet list has 11 entries.
-5. Cost basis and market value are DIFFERENT numbers. Label table columns accurately. If you show market value, write "Market: $X". If you show cost basis, write "Cost: $X". Never write "Current: $X" when the number is cost basis.
-6. The `account_type` and account-restriction language come from the user prompt. Don't use "401(k)" wording for an account whose type is "Traditional IRA" or vice versa.
+1. The app sets the date, client name, and account label on the cover itself. In prose, never state a different date for the data.
+2. Prices are live quotes taken at the time given under `Prices as of`. Never call the data a snapshot or give it another date. NEVER fabricate prices. A position marked "no live price" has no current quote: say exactly that. Never call it worthless, $0, or a 100% loss, and never state a price for it.
+3. NEVER call a position with a positive `gain_pct` "speculative" or "underwater" or "lottery ticket". Use the gain_pct column literally:
+   - gain_pct < -50: "deep loss" / "candidate for elimination"
+   - gain_pct between -50 and 0: "underwater" / "trim or hold"
+   - gain_pct between 0 and +50: "core hold" / "maintain"
+   - gain_pct > +50: "outsized winner" / "consider trimming for diversification"
+4. When the user prompt provides an enumerated list (e.g. `Sub-$0.10 penny stocks`, `No live price`, `Stranded`, account guideline flags), use those lists verbatim in your output. Do not derive your own subset; do not omit names from the list. If the list has 11 entries, your bullet list has 11 entries.
+5. Cost basis and market value are DIFFERENT numbers. If you show market value, write "Market: $X". If you show cost basis, write "Cost: $X". Never write "Current: $X" when the number is cost basis.
+6. The account type and its guidelines come from the user prompt. Don't use "401(k)" wording for an account whose type is "Traditional IRA" or vice versa.
+7. Every P/L percentage keeps its sign exactly as given in the data (e.g. -0.88%, +4.48%). Never write a loss without its minus sign.
+8. Headings and intros must match what follows them. Count the items before writing a number. Never say "a single name" above a list of several. Call a holding "near-flat" only if its gain_pct is between -5% and +5%.
+9. Never state target allocation percentages. Allocation cards name their holdings in `symbols`; the app computes each card's share of account value.
 
 Output format: respond with VALID JSON ONLY (no markdown fences, no commentary), conforming to this TypeScript schema:
 
@@ -41,7 +51,7 @@ Output format: respond with VALID JSON ONLY (no markdown fences, no commentary),
   client_name: string,
   document_label: string,            // e.g. "Opus N / Combined Brief"
   tempo: string,                     // e.g. "Allegro · Q2 2026"
-  generated_date: string,            // human-readable, e.g. "May 1, 2026"
+  generated_date: string,            // any value; the app replaces it
   subtitle: string,                  // 1-2 sentence italic intro for the cover
   movements: GoldmanMovement[]       // exactly 4 movements: diagnosis, restructuring, tactical, coda
 }
@@ -53,7 +63,7 @@ type GoldmanMovement =
       headline?: { lead: string, body: string } }
   | { kind: "restructuring", numeral: "II", tempo: string, title_main: "The", title_accent: "Restructuring",
       intro?: string,
-      allocation_cards: { percentage: string, label: string, body: string }[],   // EXACTLY 3 cards (core / sector / growth)
+      allocation_cards: { percentage: "", label: string, symbols: string[], body: string }[],   // EXACTLY 3 cards (core / sector / growth); symbols = every held ticker in that sleeve
       proposed_core_table?: { heading: string, rows: PortfolioRow[] },
       sector_sleeve?: { heading: string, bullets: BulletItem[] },
       immediate_eliminations?: { heading: string, bullets: BulletItem[] } }
@@ -67,29 +77,189 @@ type GoldmanMovement =
       groups: { heading: string, items: { lead: string, body?: string }[] }[],
       closing_note?: { lead: string, body: string } }
 
-type BulletItem = { lead?: string, body: string }
-type PortfolioRow = { ticker: string, name: string, pl: string, pl_positive: boolean, action: string }
+type BulletItem = { lead?: string, body: string }   // for a single holding, lead = its ticker
+type PortfolioRow = { ticker: string, name: string, pl: string, pl_positive: boolean, action: string }   // the app rewrites pl from the data
 
 Tactical table columns must be one of: ["TICKER","POSITION","P/L","ACTION"] or ["TICKER","NAME","P/L","DECISION"].
 Restructuring proposed_core_table columns are always ["TICKER","NAME","CURRENT P/L","ACTION"].
 
-Length: keep each movement focused. Diagnosis has 3 issues. Restructuring has exactly 3 allocation cards (60–70% Core, 20–25% Sector, 10–15% Growth). Tactical has 3–5 sections. Coda has 2–4 groups of checklist items."#;
+Length: keep each movement focused. Diagnosis has 3 issues. Restructuring has exactly 3 allocation cards (core, sector, growth). Tactical has 3–5 sections. Coda has 2–4 groups of checklist items."#;
+
+/// What the cover's percentage on an allocation card measures.
+const ALLOCATION_CAPTION: &str = "of account value today";
+
+/// One position priced with a live quote for the brief.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PricedRow {
+    pub symbol: String,
+    pub quantity: f64,
+    pub avg_cost: f64,
+    pub cost_basis: f64,
+    pub price: Option<f64>,
+    pub market_value: Option<f64>,
+    pub gain_pct: Option<f64>,
+}
+
+/// Price `(symbol, quantity, avg_cost)` rows with `quotes` (keyed by uppercase
+/// symbol). No quote means no price — never $0. A $0 cost has no gain %.
+pub(crate) fn price_rows(rows: &[(String, f64, f64)], quotes: &HashMap<String, f64>) -> Vec<PricedRow> {
+    rows.iter()
+        .map(|(symbol, quantity, avg_cost)| {
+            let cost_basis = quantity * avg_cost;
+            let price = quotes.get(&symbol.to_uppercase()).copied().filter(|p| *p > 0.0);
+            let market_value = price.map(|p| p * quantity);
+            let gain_pct = match market_value {
+                Some(mv) if cost_basis > 0.0 => Some((mv - cost_basis) / cost_basis * 100.0),
+                _ => None,
+            };
+            PricedRow {
+                symbol: symbol.clone(),
+                quantity: *quantity,
+                avg_cost: *avg_cost,
+                cost_basis,
+                price,
+                market_value,
+                gain_pct,
+            }
+        })
+        .collect()
+}
+
+/// The cover's fact panel. Value and cost cover only priced positions, so the
+/// P/L compares like with like; unpriced ones are named separately.
+pub(crate) fn brief_facts(account_type: &str, rows: &[PricedRow], prices_as_of: &str) -> BriefFacts {
+    let priced: Vec<&PricedRow> = rows.iter().filter(|r| r.market_value.is_some()).collect();
+    let market_value: f64 = priced.iter().filter_map(|r| r.market_value).sum();
+    let cost_basis: f64 = priced.iter().map(|r| r.cost_basis).sum();
+    let unrealized_pnl = market_value - cost_basis;
+    BriefFacts {
+        account_type: account_type.to_string(),
+        positions: rows.len(),
+        market_value,
+        cost_basis,
+        unrealized_pnl,
+        unrealized_pct: (cost_basis > 0.0).then(|| unrealized_pnl / cost_basis * 100.0),
+        prices_as_of: prices_as_of.to_string(),
+        unpriced: rows.iter().filter(|r| r.price.is_none()).map(|r| r.symbol.clone()).collect(),
+    }
+}
+
+/// Overwrite everything a reader could check against the data: client name,
+/// date, account label, fact panel, table P/L, and allocation weights.
+pub(crate) fn finalize_brief(
+    brief: &mut GoldmanBrief,
+    client_name: &str,
+    generated_date: &str,
+    facts: BriefFacts,
+    rows: &[PricedRow],
+) {
+    brief.client_name = client_name.to_string();
+    brief.generated_date = generated_date.to_string();
+    brief.confidential_label = Some(format!("Confidential client brief — {}", facts.account_type));
+
+    let by_symbol: HashMap<String, &PricedRow> =
+        rows.iter().map(|r| (r.symbol.to_uppercase(), r)).collect();
+    for movement in &mut brief.movements {
+        match movement {
+            GoldmanMovement::Restructuring(r) => {
+                for card in &mut r.allocation_cards {
+                    weigh_card(card, &by_symbol, facts.market_value);
+                }
+                if let Some(table) = &mut r.proposed_core_table {
+                    table.rows.iter_mut().for_each(|row| set_row_pl(row, &by_symbol));
+                }
+            }
+            GoldmanMovement::Tactical(t) => {
+                for section in &mut t.sections {
+                    if let Some(table) = &mut section.table {
+                        table.rows.iter_mut().for_each(|row| set_row_pl(row, &by_symbol));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    brief.facts = Some(facts);
+}
+
+/// A table row's P/L comes from the data, sign included. A ticker the account
+/// doesn't hold is left as written.
+fn set_row_pl(row: &mut PortfolioRow, by_symbol: &HashMap<String, &PricedRow>) {
+    let Some(held) = by_symbol.get(&row.ticker.trim().to_uppercase()) else {
+        return;
+    };
+    match held.gain_pct {
+        Some(g) => {
+            row.pl = format!("{g:+.2}%");
+            row.pl_positive = g >= 0.0;
+        }
+        None => {
+            row.pl = "no price".to_string();
+            row.pl_positive = false;
+        }
+    }
+}
+
+/// A card's percentage is its held tickers' share of account value today.
+/// Tickers the account doesn't hold are dropped from the card.
+fn weigh_card(card: &mut AllocationCard, by_symbol: &HashMap<String, &PricedRow>, total_value: f64) {
+    let mut symbols: Vec<String> = Vec::new();
+    for symbol in &card.symbols {
+        let key = symbol.trim().to_uppercase();
+        if by_symbol.contains_key(&key) && !symbols.contains(&key) {
+            symbols.push(key);
+        }
+    }
+    let value: f64 = symbols.iter().filter_map(|s| by_symbol[s].market_value).sum();
+    card.symbols = symbols;
+    if total_value > 0.0 && !card.symbols.is_empty() {
+        card.percentage = format!("{:.0}%", value / total_value * 100.0);
+        card.caption = Some(ALLOCATION_CAPTION.to_string());
+    } else {
+        card.percentage = "—".to_string();
+        card.caption = None;
+    }
+}
+
+/// "November 11, 2026" and "November 11, 2026, 12:06 PM ET", in New York time.
+fn generation_times() -> (String, String) {
+    let now = Utc::now().with_timezone(&New_York);
+    (
+        now.format("%B %-d, %Y").to_string(),
+        now.format("%B %-d, %Y, %-I:%M %p ET").to_string(),
+    )
+}
+
+/// Live quotes for every tradable symbol, keyed by uppercase symbol. A symbol
+/// Yahoo has no price for is simply absent; a failed batch leaves the map empty.
+async fn live_quotes(state: &AppState, symbols: &[String]) -> HashMap<String, f64> {
+    let tradable: Vec<&str> = symbols
+        .iter()
+        .filter(|s| !symbol_is_stranded(s))
+        .map(|s| s.as_str())
+        .collect();
+    if tradable.is_empty() {
+        return HashMap::new();
+    }
+    let yahoo = YahooClient::new((*state.http_client).clone());
+    match yahoo.get_quotes(&tradable).await {
+        Ok(quotes) => quotes
+            .into_iter()
+            .filter(|q| q.price > 0.0)
+            .map(|q| (q.symbol.to_uppercase(), q.price))
+            .collect(),
+        Err(e) => {
+            tracing::warn!("client brief: live quotes failed: {e}");
+            HashMap::new()
+        }
+    }
+}
 
 pub struct ClientBriefService;
 
 impl ClientBriefService {
     pub async fn generate(state: &AppState, client_id: i64) -> Result<GoldmanBrief> {
-        // 1. Pull required context from DB
-        let api_key = state
-            .sqlite
-            .get_provider_key("anthropic", &state.security)?
-            .ok_or_else(|| {
-                AppError::Provider(
-                    "Anthropic API key not configured. Add it under Settings → Providers."
-                        .to_string(),
-                )
-            })?;
-
+        let api_key = Self::api_key(state)?;
         let client = state.sqlite.get_client_by_id(client_id)?;
         let holdings = state.sqlite.get_client_holdings(client_id)?;
         let open_orders = state.sqlite.get_client_open_orders(client_id)?;
@@ -101,66 +271,29 @@ impl ClientBriefService {
             ));
         }
 
-        // 2. Build prompt
-        let user_prompt = build_user_prompt(&client, &holdings, &open_orders, &violations);
+        let account_type = client.account_type.clone();
+        let raw: Vec<(String, f64, f64)> =
+            holdings.iter().map(|h| (h.symbol.clone(), h.quantity, h.avg_cost)).collect();
+        let symbols: Vec<String> = raw.iter().map(|r| r.0.clone()).collect();
+        let rows = price_rows(&raw, &live_quotes(state, &symbols).await);
+        let (generated_date, prices_as_of) = generation_times();
+        let account = AccountContext::new(account_type.as_deref());
 
-        // 3. Send to Claude
-        let anth = AnthropicClient::new((*state.http_client).clone());
-        let messages = vec![Message {
-            role: "user".to_string(),
-            content: MessageContent::Text(user_prompt),
-        }];
-
-        let response = anth
-            .send_message(&api_key, messages, Some(SYSTEM_PROMPT), None)
-            .await
-            .map_err(|e| AppError::Provider(format!("Anthropic call failed: {}", e)))?;
-
-        // 4. Extract text and parse JSON
-        let text = response
-            .content
-            .iter()
-            .find_map(|b| match b {
-                ResponseContentBlock::Text { text } => Some(text.clone()),
-                _ => None,
-            })
-            .ok_or_else(|| {
-                AppError::Provider("Anthropic response had no text block".to_string())
-            })?;
-
-        let json_str = strip_code_fences(&text);
-        let brief: GoldmanBrief = serde_json::from_str(json_str).map_err(|e| {
-            AppError::Provider(format!(
-                "Failed to parse Claude's brief JSON: {}\n\nRaw response (first 800 chars):\n{}",
-                e,
-                &text.chars().take(800).collect::<String>()
-            ))
-        })?;
-
+        let user_prompt = build_user_prompt(
+            &client, &account, &prices_as_of, &rows, &holdings, &open_orders, &violations,
+        );
+        let mut brief = Self::ask_claude(state, &api_key, user_prompt).await?;
+        let facts = brief_facts(account.label, &rows, &prices_as_of);
+        finalize_brief(&mut brief, &client.name, &generated_date, facts, &rows);
         Ok(brief)
     }
 
     /// Generate a Goldman Sax & Violins brief for a specific **scenario**.
     ///
-    /// Same house style, same structured-JSON output as `generate()`, but the
-    /// Claude prompt is fed scenario positions (a what-if portfolio state)
-    /// instead of imported holdings. The brief is scenario-aware: when the
-    /// scenario is non-baseline, Claude is told to frame recommendations
-    /// against the deltas from baseline.
-    pub async fn generate_for_scenario(
-        state: &AppState,
-        scenario_id: i64,
-    ) -> Result<GoldmanBrief> {
-        let api_key = state
-            .sqlite
-            .get_provider_key("anthropic", &state.security)?
-            .ok_or_else(|| {
-                AppError::Provider(
-                    "Anthropic API key not configured. Add it under Settings → Providers."
-                        .to_string(),
-                )
-            })?;
-
+    /// Same house style and output as `generate()`, fed the scenario's positions.
+    /// When the scenario is non-baseline, Claude is told it is a what-if.
+    pub async fn generate_for_scenario(state: &AppState, scenario_id: i64) -> Result<GoldmanBrief> {
+        let api_key = Self::api_key(state)?;
         let scenario = state.sqlite.get_client_scenario_by_id(scenario_id)?;
         let positions = state.sqlite.get_scenario_positions(scenario_id)?;
         let client = state.sqlite.get_client_by_id(scenario.client_id)?;
@@ -171,24 +304,65 @@ impl ClientBriefService {
             ));
         }
 
-        // Enrich scenario positions with current market value + gain% by joining
-        // on symbol against the parent client's holdings (which were imported
-        // from the Schwab Positions snapshot). Symbols not in holdings get
-        // None — the prompt notes "unavailable" rather than fabricating prices.
-        let holdings = state.sqlite.get_client_holdings(scenario.client_id)?;
-        let user_prompt = build_scenario_prompt(&client, &scenario, &positions, &holdings);
+        // A per-account baseline carries its own account type; fall back to the client's.
+        let account_type = scenario.account_type.clone().or_else(|| client.account_type.clone());
+        let raw: Vec<(String, f64, f64)> =
+            positions.iter().map(|p| (p.symbol.clone(), p.quantity, p.avg_price)).collect();
+        let symbols: Vec<String> = raw.iter().map(|r| r.0.clone()).collect();
+        let rows = price_rows(&raw, &live_quotes(state, &symbols).await);
+        let (generated_date, prices_as_of) = generation_times();
+        let account = AccountContext::new(account_type.as_deref());
 
+        let mut s = String::new();
+        push_header(&mut s, &client, &account, &prices_as_of);
+        s.push_str("# Scenario\n");
+        s.push_str(&format!("Name: {}\n", scenario.name));
+        if let Some(d) = &scenario.description {
+            s.push_str(&format!("Description: {}\n", d));
+        }
+        s.push_str(&format!(
+            "Type: {}\n",
+            if scenario.is_baseline {
+                "Baseline (current portfolio as imported)"
+            } else {
+                "What-if (a hypothetical variant on the baseline)"
+            }
+        ));
+        push_positions(&mut s, &rows, &HashMap::new());
+        push_enumerated(&mut s, &rows);
+        s.push_str("\n# Task\nProduce the four-movement brief analyzing THIS scenario. Use the positions above as the source of truth — do not invent positions or fabricate prices/P/L. ");
+        if scenario.is_baseline {
+            s.push_str("This is the current portfolio as imported; recommend structural improvements and tactical moves grounded in what's actually held.");
+        } else {
+            s.push_str("This is a what-if scenario; analyze whether the proposed structure works and what tactical moves would refine it.");
+        }
+        s.push_str(" Keep the satirical orchestral voice but be substantively useful — every recommendation should reference specific tickers from the positions list, and respect the accuracy rules in the system prompt.\n");
+        s.push_str("\nRespond with JSON only — no markdown fences, no preamble.");
+
+        let mut brief = Self::ask_claude(state, &api_key, s).await?;
+        let facts = brief_facts(account.label, &rows, &prices_as_of);
+        finalize_brief(&mut brief, &client.name, &generated_date, facts, &rows);
+        Ok(brief)
+    }
+
+    fn api_key(state: &AppState) -> Result<String> {
+        state.sqlite.get_provider_key("anthropic", &state.security)?.ok_or_else(|| {
+            AppError::Provider(
+                "Anthropic API key not configured. Add it under Settings → Providers.".to_string(),
+            )
+        })
+    }
+
+    async fn ask_claude(state: &AppState, api_key: &str, user_prompt: String) -> Result<GoldmanBrief> {
         let anth = AnthropicClient::new((*state.http_client).clone());
         let messages = vec![Message {
             role: "user".to_string(),
             content: MessageContent::Text(user_prompt),
         }];
-
         let response = anth
-            .send_message(&api_key, messages, Some(SYSTEM_PROMPT), None)
+            .send_message(api_key, messages, Some(SYSTEM_PROMPT), None)
             .await
             .map_err(|e| AppError::Provider(format!("Anthropic call failed: {}", e)))?;
-
         let text = response
             .content
             .iter()
@@ -197,17 +371,14 @@ impl ClientBriefService {
                 _ => None,
             })
             .ok_or_else(|| AppError::Provider("Anthropic response had no text block".to_string()))?;
-
         let json_str = strip_code_fences(&text);
-        let brief: GoldmanBrief = serde_json::from_str(json_str).map_err(|e| {
+        serde_json::from_str(json_str).map_err(|e| {
             AppError::Provider(format!(
-                "Failed to parse Claude's scenario brief JSON: {}\n\nRaw response (first 800 chars):\n{}",
+                "Failed to parse Claude's brief JSON: {}\n\nRaw response (first 800 chars):\n{}",
                 e,
                 &text.chars().take(800).collect::<String>()
             ))
-        })?;
-
-        Ok(brief)
+        })
     }
 }
 
@@ -223,58 +394,98 @@ fn strip_code_fences(s: &str) -> &str {
     }
 }
 
+/// The account type's display label and the app's guidelines for it.
+struct AccountContext {
+    label: &'static str,
+    guidelines: &'static str,
+}
+
+impl AccountContext {
+    fn new(account_type: Option<&str>) -> Self {
+        let label = account_type.map(account_type_label).unwrap_or("Unspecified account");
+        let guidelines = if account_disallows_shorts(account_type) {
+            "long only — no shorts, no leveraged or inverse funds, no options, futures, crypto, or MLPs"
+        } else {
+            "taxable account — a broader instrument set is permitted"
+        };
+        Self { label, guidelines }
+    }
+}
+
+fn push_header(s: &mut String, client: &Client, account: &AccountContext, prices_as_of: &str) {
+    s.push_str(&format!("# Client\nName: {}\n", client.name));
+    if let Some(b) = &client.broker {
+        s.push_str(&format!("Broker: {}\n", b));
+    }
+    s.push_str(&format!("Account type: {}\n", account.label));
+    s.push_str(&format!(
+        "Account guidelines (this app's standard guidelines for the account type, not the plan's documented rules): {}\n\n",
+        account.guidelines
+    ));
+    s.push_str(&format!(
+        "# Prices as of\n{} (live quotes, may be delayed up to 15 minutes)\n\n",
+        prices_as_of
+    ));
+}
+
+/// The positions table. `extra` adds per-symbol trailing columns (realized P/L,
+/// last activity) for the holdings brief.
+fn push_positions(s: &mut String, rows: &[PricedRow], extra: &HashMap<String, String>) {
+    s.push_str(&format!("# Positions ({})\n", rows.len()));
+    s.push_str("symbol | qty | avg_cost | cost_basis | price | market_value | gain_pct");
+    s.push_str(if extra.is_empty() { "\n" } else { " | realized_pnl | last_activity\n" });
+    for r in rows {
+        let (price, market_value) = match (r.price, r.market_value) {
+            (Some(p), Some(mv)) => (format!("{p:.4}"), format!("{mv:.2}")),
+            _ => ("no live price".to_string(), "no live price".to_string()),
+        };
+        let gain = match (r.gain_pct, r.market_value) {
+            (Some(g), _) => format!("{g:+.2}%"),
+            (None, Some(_)) => "unavailable (no cost basis)".to_string(),
+            (None, None) => "no live price".to_string(),
+        };
+        s.push_str(&format!(
+            "{} | {} | {:.4} | {:.2} | {} | {} | {}",
+            r.symbol, r.quantity, r.avg_cost, r.cost_basis, price, market_value, gain
+        ));
+        if let Some(e) = extra.get(&r.symbol.to_uppercase()) {
+            s.push_str(&format!(" | {e}"));
+        }
+        s.push('\n');
+    }
+}
+
+fn push_enumerated(s: &mut String, rows: &[PricedRow]) {
+    let enumerated = build_enumerated_lists(rows);
+    if !enumerated.is_empty() {
+        s.push_str("\n# Enumerated candidate lists (use these verbatim in your output)\n");
+        s.push_str(&enumerated);
+    }
+}
+
 fn build_user_prompt(
     client: &Client,
+    account: &AccountContext,
+    prices_as_of: &str,
+    rows: &[PricedRow],
     holdings: &[ClientHolding],
     open_orders: &[ClientOpenOrder],
     violations: &[ComplianceViolation],
 ) -> String {
     let mut s = String::new();
+    push_header(&mut s, client, account, prices_as_of);
 
-    // Date the brief is being generated. Claude must use this verbatim as
-    // `generated_date` rather than guessing.
-    let today = chrono::Local::now().format("%B %-d, %Y").to_string();
-    s.push_str(&format!("# Generated date\n{}\n\n", today));
-
-    s.push_str(&format!("# Client\nName: {}\n", client.name));
-    if let Some(b) = &client.broker {
-        s.push_str(&format!("Broker: {}\n", b));
-    }
-    let at_label = client
-        .account_type
-        .as_deref()
-        .map(account_type_label)
-        .unwrap_or("Unspecified");
-    s.push_str(&format!("Account type: {} ", at_label));
-    if account_disallows_shorts(client.account_type.as_deref()) {
-        s.push_str("(long only — no shorts, no leveraged/inverse, no options/futures/crypto, no MLPs)\n\n");
-    } else {
-        s.push_str("(taxable account — broader instrument set permitted)\n\n");
-    }
-
-    s.push_str(&format!("# Holdings ({})\n", holdings.len()));
-    s.push_str("symbol | qty | avg_cost | cost_basis | market_value | gain_pct | realized_pnl | last_activity\n");
-    for h in holdings {
-        s.push_str(&format!(
-            "{} | {} | {:.4} | {:.2} | {} | {} | {:.2} | {}\n",
-            h.symbol,
-            h.quantity,
-            h.avg_cost,
-            h.total_cost,
-            h.market_value.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "unavailable".into()),
-            h.gain_percent.map(|v| format!("{:+.2}%", v)).unwrap_or_else(|| "unavailable".into()),
-            h.realized_pnl,
-            h.last_activity_date.as_deref().unwrap_or("—"),
-        ));
-    }
-
-    // Enumerated lists for the rules engine. When market data is present,
-    // surface candidates by category so Claude doesn't have to derive them.
-    let enumerated = build_enumerated_lists(holdings);
-    if !enumerated.is_empty() {
-        s.push_str("\n# Enumerated candidate lists (use these verbatim in your output)\n");
-        s.push_str(&enumerated);
-    }
+    let extra: HashMap<String, String> = holdings
+        .iter()
+        .map(|h| {
+            (
+                h.symbol.to_uppercase(),
+                format!("{:.2} | {}", h.realized_pnl, h.last_activity_date.as_deref().unwrap_or("—")),
+            )
+        })
+        .collect();
+    push_positions(&mut s, rows, &extra);
+    push_enumerated(&mut s, rows);
 
     s.push_str(&format!("\n# Open Orders ({})\n", open_orders.len()));
     if open_orders.is_empty() {
@@ -296,9 +507,13 @@ fn build_user_prompt(
         }
     }
 
-    s.push_str(&format!("\n# 401(k) Violations ({})\n", violations.len()));
+    s.push_str(&format!(
+        "\n# Holdings outside the {} guidelines ({})\n",
+        account.label,
+        violations.len()
+    ));
     if violations.is_empty() {
-        s.push_str("(none — portfolio is rule-compliant)\n");
+        s.push_str("(none)\n");
     } else {
         for v in violations {
             s.push_str(&format!(
@@ -311,124 +526,12 @@ fn build_user_prompt(
         }
     }
 
-    s.push_str("\n# Task\nProduce the four-movement brief for this client. Use the data above as the source of truth — do not invent positions, P/L, or violations. Where you make recommendations (e.g. 'trim 25–50%', 'add MSFT'), tie them to specific holdings or violations from the data. Keep the satirical orchestral voice but be substantively useful.\n");
+    s.push_str("\n# Task\nProduce the four-movement brief for this client. Use the data above as the source of truth — do not invent positions, P/L, or flags. Where you make recommendations (e.g. 'trim 25–50%', 'add MSFT'), tie them to specific holdings or flags from the data. Keep the satirical orchestral voice but be substantively useful.\n");
     s.push_str("\nRespond with JSON only — no markdown fences, no preamble.");
     s
 }
 
-/// Build the scenario-specific user prompt fed to Claude.
-///
-/// Scenario positions only carry symbol/qty/avg_price; we enrich each row
-/// with current market_value and gain_percent by joining on symbol against
-/// the parent client's holdings (sourced from the Positions snapshot).
-fn build_scenario_prompt(
-    client: &Client,
-    scenario: &ClientScenario,
-    positions: &[ScenarioPosition],
-    holdings: &[ClientHolding],
-) -> String {
-    use std::collections::HashMap;
-    let mut s = String::new();
-
-    let today = chrono::Local::now().format("%B %-d, %Y").to_string();
-    s.push_str(&format!("# Generated date\n{}\n\n", today));
-
-    s.push_str(&format!("# Client\nName: {}\n", client.name));
-    if let Some(b) = &client.broker {
-        s.push_str(&format!("Broker: {}\n", b));
-    }
-    let at_label = client
-        .account_type
-        .as_deref()
-        .map(account_type_label)
-        .unwrap_or("Unspecified");
-    s.push_str(&format!("Account type: {} ", at_label));
-    if account_disallows_shorts(client.account_type.as_deref()) {
-        s.push_str("(long only — no shorts, no leveraged/inverse, no options/futures/crypto, no MLPs)\n\n");
-    } else {
-        s.push_str("(taxable account — broader instrument set permitted)\n\n");
-    }
-
-    s.push_str("# Scenario\n");
-    s.push_str(&format!("Name: {}\n", scenario.name));
-    if let Some(d) = &scenario.description {
-        s.push_str(&format!("Description: {}\n", d));
-    }
-    s.push_str(&format!(
-        "Type: {}\n",
-        if scenario.is_baseline {
-            "Baseline (current portfolio as imported)"
-        } else {
-            "What-if (a hypothetical variant on the baseline)"
-        }
-    ));
-
-    // Build a symbol → (market_value, gain_percent, current_price) map
-    let mut market_lookup: HashMap<String, &ClientHolding> = HashMap::new();
-    for h in holdings {
-        market_lookup.insert(h.symbol.to_uppercase(), h);
-    }
-
-    s.push_str(&format!("\n# Positions ({})\n", positions.len()));
-    s.push_str("symbol | qty | avg_price | cost_basis | market_value | gain_pct | side\n");
-
-    // Project enriched holdings rows for the enumerated-list helper. We
-    // reuse ClientHolding so the same `build_enumerated_lists` logic applies.
-    let mut enriched: Vec<ClientHolding> = Vec::with_capacity(positions.len());
-
-    for p in positions {
-        let cost_basis = p.quantity * p.avg_price;
-        let lookup = market_lookup.get(&p.symbol.to_uppercase());
-        let market_value = lookup.and_then(|h| h.market_value);
-        let gain_percent = lookup.and_then(|h| h.gain_percent);
-        let current_price = lookup.and_then(|h| h.current_price);
-
-        s.push_str(&format!(
-            "{} | {} | {:.4} | {:.2} | {} | {} | {}\n",
-            p.symbol,
-            p.quantity,
-            p.avg_price,
-            cost_basis,
-            market_value.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "unavailable".into()),
-            gain_percent.map(|v| format!("{:+.2}%", v)).unwrap_or_else(|| "unavailable".into()),
-            p.side,
-        ));
-
-        enriched.push(ClientHolding {
-            id: None,
-            client_id: client.id.unwrap_or(0),
-            symbol: p.symbol.clone(),
-            description: None,
-            quantity: p.quantity,
-            avg_cost: p.avg_price,
-            total_cost: cost_basis,
-            realized_pnl: 0.0,
-            last_activity_date: None,
-            updated_at: None,
-            current_price,
-            market_value,
-            gain_percent,
-        });
-    }
-
-    let enumerated = build_enumerated_lists(&enriched);
-    if !enumerated.is_empty() {
-        s.push_str("\n# Enumerated candidate lists (use these verbatim in your output)\n");
-        s.push_str(&enumerated);
-    }
-
-    s.push_str("\n# Task\nProduce the four-movement brief analyzing THIS scenario. Use the positions above as the source of truth — do not invent positions or fabricate prices/P/L. ");
-    if scenario.is_baseline {
-        s.push_str("This is the current portfolio as imported; recommend structural improvements and tactical moves grounded in what's actually held.");
-    } else {
-        s.push_str("This is a what-if scenario; analyze whether the proposed structure works and what tactical moves would refine it.");
-    }
-    s.push_str(" Keep the satirical orchestral voice but be substantively useful — every recommendation should reference specific tickers from the positions list, and respect the accuracy rules in the system prompt.\n");
-    s.push_str("\nRespond with JSON only — no markdown fences, no preamble.");
-    s
-}
-
-fn account_type_label(value: &str) -> &str {
+fn account_type_label(value: &str) -> &'static str {
     match value {
         "individual" => "Individual Brokerage",
         "joint" => "Joint Brokerage",
@@ -442,8 +545,7 @@ fn account_type_label(value: &str) -> &str {
         "529" => "529 Plan",
         "trust" => "Trust",
         "custodial" => "Custodial",
-        "other" => "Other",
-        _ => value,
+        _ => "Other account",
     }
 }
 
@@ -458,70 +560,41 @@ fn account_disallows_shorts(account_type: Option<&str>) -> bool {
     }
 }
 
-/// Build enumerated candidate lists from holdings so Claude can apply rules
+/// Build enumerated candidate lists from priced rows so Claude can apply rules
 /// without having to derive lists from a position table. Each line names a
 /// category and lists every matching symbol.
-fn build_enumerated_lists(holdings: &[ClientHolding]) -> String {
+fn build_enumerated_lists(rows: &[PricedRow]) -> String {
     use std::fmt::Write;
     let mut s = String::new();
+    let mut list = |label: &str, symbols: Vec<&str>| {
+        if !symbols.is_empty() {
+            let _ = writeln!(s, "{} ({}): {}", label, symbols.len(), symbols.join(", "));
+        }
+    };
 
-    // Penny stocks (current price under $0.10) — only if we have prices
-    let pennies: Vec<&str> = holdings
-        .iter()
-        .filter(|h| h.current_price.map(|p| p < 0.10).unwrap_or(false))
-        .map(|h| h.symbol.as_str())
-        .collect();
-    if !pennies.is_empty() {
-        let _ = writeln!(
-            s,
-            "Sub-$0.10 penny stocks ({}): {}",
-            pennies.len(),
-            pennies.join(", ")
-        );
-    }
-
-    // Deep losers — over 50% drawdown by gain_percent
-    let deep_losers: Vec<&str> = holdings
-        .iter()
-        .filter(|h| h.gain_percent.map(|g| g < -50.0).unwrap_or(false))
-        .map(|h| h.symbol.as_str())
-        .collect();
-    if !deep_losers.is_empty() {
-        let _ = writeln!(
-            s,
-            "Deep losers (>50% loss): {}",
-            deep_losers.join(", ")
-        );
-    }
-
-    // Outsized winners — over 50% gain
-    let big_winners: Vec<&str> = holdings
-        .iter()
-        .filter(|h| h.gain_percent.map(|g| g > 50.0).unwrap_or(false))
-        .map(|h| h.symbol.as_str())
-        .collect();
-    if !big_winners.is_empty() {
-        let _ = writeln!(
-            s,
-            "Outsized winners (>50% gain — consider trimming for diversification): {}",
-            big_winners.join(", ")
-        );
-    }
-
-    // Stranded — symbols matching CUSIP heuristic
-    let stranded: Vec<&str> = holdings
-        .iter()
-        .filter(|h| symbol_is_stranded(&h.symbol))
-        .map(|h| h.symbol.as_str())
-        .collect();
-    if !stranded.is_empty() {
-        let _ = writeln!(
-            s,
-            "Stranded / untradable (no live price — account hygiene): {}",
-            stranded.join(", ")
-        );
-    }
-
+    list(
+        "Sub-$0.10 penny stocks",
+        rows.iter().filter(|r| r.price.is_some_and(|p| p < 0.10)).map(|r| r.symbol.as_str()).collect(),
+    );
+    list(
+        "No live price (no current quote — say so; do not call it worthless)",
+        rows.iter()
+            .filter(|r| r.price.is_none() && !symbol_is_stranded(&r.symbol))
+            .map(|r| r.symbol.as_str())
+            .collect(),
+    );
+    list(
+        "Deep losers (>50% loss)",
+        rows.iter().filter(|r| r.gain_pct.is_some_and(|g| g < -50.0)).map(|r| r.symbol.as_str()).collect(),
+    );
+    list(
+        "Outsized winners (>50% gain — consider trimming for diversification)",
+        rows.iter().filter(|r| r.gain_pct.is_some_and(|g| g > 50.0)).map(|r| r.symbol.as_str()).collect(),
+    );
+    list(
+        "Stranded / untradable (account hygiene)",
+        rows.iter().filter(|r| symbol_is_stranded(&r.symbol)).map(|r| r.symbol.as_str()).collect(),
+    );
     s
 }
 
@@ -532,4 +605,194 @@ fn symbol_is_stranded(symbol: &str) -> bool {
     symbol.len() >= 6
         && symbol.chars().any(|c| c.is_ascii_digit())
         && symbol.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::types::{
+        ProposedCoreTable, RestructuringMovement, TacticalMovement, TacticalSection, TacticalTable,
+    };
+
+    fn quotes(pairs: &[(&str, f64)]) -> HashMap<String, f64> {
+        pairs.iter().map(|(s, p)| (s.to_string(), *p)).collect()
+    }
+
+    fn rows() -> Vec<PricedRow> {
+        price_rows(
+            &[
+                ("VLO".into(), 50.0, 359.861),
+                ("PSX".into(), 25.0, 241.172),
+                ("YOURF".into(), 600.0, 0.2561),
+                ("AABB".into(), 723.0, 0.0),
+            ],
+            &quotes(&[("VLO", 356.685), ("PSX", 251.98), ("AABB", 0.0085)]),
+        )
+    }
+
+    fn row(ticker: &str, pl: &str) -> PortfolioRow {
+        PortfolioRow {
+            ticker: ticker.into(),
+            name: ticker.into(),
+            pl: pl.into(),
+            pl_positive: true,
+            action: "hold".into(),
+        }
+    }
+
+    fn brief() -> GoldmanBrief {
+        GoldmanBrief {
+            client_name: "Borst".into(),
+            document_label: "Opus 46".into(),
+            tempo: "Andante".into(),
+            generated_date: "November 5, 2026".into(),
+            subtitle: "s".into(),
+            confidential_label: None,
+            facts: None,
+            movements: vec![
+                GoldmanMovement::Restructuring(RestructuringMovement {
+                    numeral: "II".into(),
+                    tempo: "t".into(),
+                    title_main: "The".into(),
+                    title_accent: "Restructuring".into(),
+                    intro: None,
+                    allocation_cards: vec![AllocationCard {
+                        percentage: "65%".into(),
+                        label: "Energy".into(),
+                        body: "b".into(),
+                        symbols: vec!["vlo".into(), "PSX".into(), "PSX".into(), "TSLA".into()],
+                        caption: None,
+                    }],
+                    proposed_core_table: Some(ProposedCoreTable {
+                        heading: "h".into(),
+                        rows: vec![row("VLO", "0.88%"), row("NVDA", "+3%")],
+                    }),
+                    sector_sleeve: None,
+                    immediate_eliminations: None,
+                }),
+                GoldmanMovement::Tactical(TacticalMovement {
+                    numeral: "III".into(),
+                    tempo: "t".into(),
+                    title_main: "The".into(),
+                    title_accent: "Tactical Refrain".into(),
+                    intro: None,
+                    sections: vec![TacticalSection {
+                        number: "1".into(),
+                        title: "t".into(),
+                        body: None,
+                        bullets: None,
+                        table: Some(TacticalTable {
+                            columns: vec!["TICKER".into(), "NAME".into(), "P/L".into(), "DECISION".into()],
+                            rows: vec![row("YOURF", "-100.00%")],
+                        }),
+                    }],
+                }),
+            ],
+        }
+    }
+
+    #[test]
+    fn no_quote_is_no_price_and_zero_cost_has_no_gain() {
+        let r = rows();
+        assert!((r[0].gain_pct.unwrap() - (356.685 * 50.0 - 359.861 * 50.0) / (359.861 * 50.0) * 100.0).abs() < 1e-9);
+        assert_eq!((r[2].price, r[2].market_value, r[2].gain_pct), (None, None, None));
+        assert_eq!(r[3].market_value, Some(0.0085 * 723.0));
+        assert_eq!(r[3].gain_pct, None);
+    }
+
+    #[test]
+    fn facts_compare_priced_value_with_priced_cost() {
+        let f = brief_facts("401(k)", &rows(), "November 11, 2026, 12:06 PM ET");
+        let value = 356.685 * 50.0 + 251.98 * 25.0 + 0.0085 * 723.0;
+        let cost = 359.861 * 50.0 + 241.172 * 25.0;
+        assert!((f.market_value - value).abs() < 1e-9);
+        assert!((f.cost_basis - cost).abs() < 1e-9);
+        assert!((f.unrealized_pnl - (value - cost)).abs() < 1e-9);
+        assert_eq!(f.positions, 4);
+        assert_eq!(f.unpriced, vec!["YOURF".to_string()]);
+    }
+
+    #[test]
+    fn finalize_sets_cover_fields_signs_and_weights() {
+        let r = rows();
+        let facts = brief_facts("401(k)", &r, "November 11, 2026, 12:06 PM ET");
+        let total = facts.market_value;
+        let mut b = brief();
+        finalize_brief(&mut b, "Casey Borst", "November 11, 2026", facts.clone(), &r);
+
+        assert_eq!(b.client_name, "Casey Borst");
+        assert_eq!(b.generated_date, "November 11, 2026");
+        assert_eq!(b.confidential_label.as_deref(), Some("Confidential client brief — 401(k)"));
+        assert_eq!(b.facts, Some(facts));
+
+        let GoldmanMovement::Restructuring(rm) = &b.movements[0] else { panic!() };
+        let card = &rm.allocation_cards[0];
+        assert_eq!(card.symbols, vec!["VLO".to_string(), "PSX".to_string()]);
+        let expected = (356.685 * 50.0 + 251.98 * 25.0) / total * 100.0;
+        assert_eq!(card.percentage, format!("{expected:.0}%"));
+        assert_eq!(card.caption.as_deref(), Some("of account value today"));
+
+        let table = &rm.proposed_core_table.as_ref().unwrap().rows;
+        assert!(table[0].pl.starts_with("-0.88"), "VLO keeps its minus sign: {}", table[0].pl);
+        assert!(!table[0].pl_positive);
+        assert_eq!(table[1].pl, "+3%", "a ticker not held is left as written");
+
+        let GoldmanMovement::Tactical(tm) = &b.movements[1] else { panic!() };
+        let t = &tm.sections[0].table.as_ref().unwrap().rows[0];
+        assert_eq!(t.pl, "no price");
+    }
+
+    #[test]
+    fn a_card_with_no_held_symbols_shows_no_number() {
+        let r = rows();
+        let mut card = AllocationCard {
+            percentage: "65%".into(),
+            label: "Growth".into(),
+            body: "b".into(),
+            symbols: vec!["TSLA".into()],
+            caption: None,
+        };
+        let by: HashMap<String, &PricedRow> = r.iter().map(|x| (x.symbol.clone(), x)).collect();
+        weigh_card(&mut card, &by, 1000.0);
+        assert_eq!(card.percentage, "—");
+        assert!(card.symbols.is_empty() && card.caption.is_none());
+    }
+
+    #[test]
+    fn prompt_states_guidelines_as_the_apps_and_prices_as_live() {
+        let client = Client {
+            id: Some(10),
+            name: "Casey Borst".into(),
+            email: None,
+            phone: None,
+            broker: None,
+            account_id: None,
+            account_type: Some("401k".into()),
+            notes: None,
+            created_at: None,
+            updated_at: None,
+        };
+        let account = AccountContext::new(Some("401k"));
+        let mut s = String::new();
+        push_header(&mut s, &client, &account, "November 11, 2026, 12:06 PM ET");
+        push_positions(&mut s, &rows(), &HashMap::new());
+        push_enumerated(&mut s, &rows());
+        assert!(s.contains("Account type: 401(k)"));
+        assert!(s.contains("this app's standard guidelines for the account type, not the plan's documented rules"));
+        assert!(s.contains("November 11, 2026, 12:06 PM ET (live quotes"));
+        assert!(s.contains("YOURF | 600 | 0.2561 | 153.66 | no live price | no live price | no live price"));
+        assert!(s.contains("AABB | 723 | 0.0000 | 0.00 | 0.0085 | 6.15 | unavailable (no cost basis)"));
+        assert!(s.contains("No live price (no current quote — say so; do not call it worthless) (1): YOURF"));
+        assert!(s.contains("VLO | 50 | 359.8610 | 17993.05 | 356.6850 | 17834.25 | -0.88%"));
+    }
+
+    #[test]
+    fn system_prompt_drops_the_hardcoded_401k_rule_and_target_split() {
+        assert!(!SYSTEM_PROMPT.contains("Strict 401(k) rules apply"));
+        assert!(!SYSTEM_PROMPT.contains("60–70%"));
+        assert!(SYSTEM_PROMPT.contains("not the plan's or custodian's documented rules"));
+        assert!(SYSTEM_PROMPT.contains("Never write a loss without its minus sign"));
+        assert!(SYSTEM_PROMPT.contains("Never state target allocation percentages"));
+        assert!(SYSTEM_PROMPT.contains("Never say \"a single name\" above a list of several"));
+    }
 }

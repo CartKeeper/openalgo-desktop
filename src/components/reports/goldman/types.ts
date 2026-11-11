@@ -17,10 +17,28 @@ export interface GoldmanBrief {
   generated_date: string
   /** Italic subtitle on cover ("A combined diagnostic and tactical brief…"). */
   subtitle: string
-  /** Confidential pill text on cover; defaults to "CONFIDENTIAL CLIENT BRIEF — 401(K)". */
+  /** Confidential line on the cover, set by the app from the account type, e.g. "Confidential client brief — 401(k)". */
   confidential_label?: string
+  /** Account figures the app computes from live quotes (never Claude). Shown on the cover. */
+  facts?: BriefFacts
   /** Ordered movements rendered after cover. Renderer treats `kind` as discriminator. */
   movements: GoldmanMovement[]
+}
+
+export interface BriefFacts {
+  /** "401(k)", "Traditional IRA", … */
+  account_type: string
+  positions: number
+  /** Market value of the positions that have a live price. */
+  market_value: number
+  /** Cost basis of those same positions. */
+  cost_basis: number
+  unrealized_pnl: number
+  unrealized_pct: number | null
+  /** "November 11, 2026, 12:06 PM ET" */
+  prices_as_of: string
+  /** Positions with no live price (left out of the figures above). */
+  unpriced: string[]
 }
 
 export type GoldmanMovement =
@@ -65,12 +83,16 @@ export interface RestructuringMovement extends MovementBase {
 }
 
 export interface AllocationCard {
-  /** Big number/range, e.g. "60–70%". */
+  /** The sleeve's share of account value today, computed by the app from `symbols`, e.g. "38%". */
   percentage: string
-  /** Letter-spaced sublabel, e.g. "CORE HOLDINGS". */
+  /** Sleeve name, e.g. "Core — index & mega-cap". */
   label: string
   /** Body paragraph beneath. */
   body: string
+  /** Held tickers in this sleeve. */
+  symbols?: string[]
+  /** What `percentage` measures, e.g. "of account value today". */
+  caption?: string
 }
 
 export interface TacticalMovement extends MovementBase {
