@@ -152,6 +152,8 @@ export default function AnalyzeWithClaudeDialog({
         conversationHistoryJson: JSON.stringify(
           conversationHistory.length > 0 ? conversationHistory : []
         ),
+        // A client's sandbox: the backend must not size buys to the user's own broker cash.
+        context: 'client_scenario',
       })
 
       const assistantMessage: MessageEntry = {

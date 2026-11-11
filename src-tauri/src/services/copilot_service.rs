@@ -38,6 +38,26 @@ pub struct CopilotResponse {
 }
 
 /// Copilot service for orchestrating AI research interactions
+/// Whose money a Copilot conversation is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopilotContext {
+    /// The user's own connected broker account (Copilot page, briefing, fundamentals).
+    OwnAccount,
+    /// A client's sandbox scenario (Clients → Analyze with Claude).
+    ClientScenario,
+}
+
+impl CopilotContext {
+    /// `None` is the user's own account; `"client_scenario"` is a client scenario.
+    pub fn from_param(param: Option<&str>) -> Result<Self> {
+        match param {
+            None => Ok(Self::OwnAccount),
+            Some("client_scenario") => Ok(Self::ClientScenario),
+            Some(other) => Err(AppError::Validation(format!("Unknown copilot context: {other}"))),
+        }
+    }
+}
+
 pub struct CopilotService;
 
 impl CopilotService {
@@ -154,7 +174,8 @@ You have access to these data retrieval tools:
 - For Dormant positions, propose a swap into a stronger stock. Find candidates with screen_stocks, then check at most 3 with get_analyst_targets and get_stock_quote; this search may exceed the 5-call guideline below.
 - A replacement must have consensus upside at least 10 percentage points higher than the Dormant position being sold (treat unknown upside as 5%), a `targets_last_90d` of 3 or more, must not be up more than 10% today, and must be allowed by the account type. If no candidate qualifies, say so and propose nothing.
 - Show the money for each swap: sell the whole Dormant position at its current price, the proceeds, the whole-share quantity of the buy those proceeds cover, and the leftover cash.
-- Call apply_scenario_trades only after the user asks to apply a swap. These are sandbox trades; never present them as live orders.
+- Put every scenario trade you propose (swap sells and buys, cleanup sells) in the ACTIONS_JSON block. In a scenario analysis that block becomes a Review Recommendations button that applies the trades to the sandbox scenario only, never to a live account, so always include it when you propose trades. Never mention the block by name.
+- Call apply_scenario_trades only after the user asks to apply trades. These are sandbox trades; never present them as live orders.
 
 ## Response Strategy
 - Plan your tool calls efficiently. Batch related lookups (e.g., screen first, then profile the top 3-5 results). Avoid making more than 5 tool calls per question.
@@ -286,34 +307,56 @@ The current date and time is {date}, {time} ET. Right now {session}.\n\
         }
     }
 
+    /// The budget section appended to the system prompt, if any.
+    fn budget_section(context: CopilotContext, available_cash: Option<f64>) -> Option<String> {
+        match context {
+            CopilotContext::ClientScenario => Some(
+                "## Client scenario budget\n\
+This conversation is about a client's sandbox scenario, not the user's own account. \
+The user's own broker cash does not apply and must never be mentioned. \
+Fund any scenario buy from the proceeds of the sells you propose in the same scenario."
+                    .to_string(),
+            ),
+            CopilotContext::OwnAccount => available_cash.filter(|c| *c > 0.0).map(|cash| format!(
+                "## CRITICAL — Cash budget for BUY recommendations\n\
+The account currently has ${cash:.2} in available cash. Before recommending ANY buy you MUST confirm it fits this budget:\n\
+- The TOTAL cost of ALL BUY orders in your ACTIONS_JSON block (for each buy: quantity × the price it will fill at — the limit price for LIMIT orders, the current market price for MARKET orders) MUST NOT exceed ${cash:.2}.\n\
+- Treat available cash as one shared budget across all buys. Size each buy's whole-share quantity so the cumulative cost of every buy stays within ${cash:.2}.\n\
+- If a pick does not fit the remaining cash, reduce its quantity to what remains; if not even one whole share fits, omit that buy entirely.\n\
+- This cash budget constrains BUY orders only. SELL and stop orders are unaffected."
+            )),
+        }
+    }
+
     /// Process a user message through the full copilot loop
     pub async fn process_message(
         api_key: &str,
         conversation_history: Vec<Message>,
         user_message: &str,
+        context: CopilotContext,
         state: &AppState,
     ) -> Result<CopilotResponse> {
         let client = AnthropicClient::new((*state.http_client).clone());
         let tools = build_tool_definitions();
         let system_prompt = Self::build_system_prompt();
 
-        // Append the account's available cash so BUY recommendations are sized to
-        // funds the account actually holds. Best-effort: if funds can't be read we
-        // leave the prompt unchanged — the frontend applies a hard affordability
-        // cap on the parsed recommendations regardless. Routes to sandbox cash in
-        // analyze (paper) mode, matching where the orders would actually execute.
-        let system_prompt = match crate::services::FundsService::get_funds(state, None).await {
-            Ok(result) if result.funds.available_cash > 0.0 => format!(
-                "{prompt}\n\n## CRITICAL — Cash budget for BUY recommendations\n\
-The account currently has ${cash:.2} in available cash. Before recommending ANY buy you MUST confirm it fits this budget:\n\
-- The TOTAL cost of ALL BUY orders in your ACTIONS_JSON block (for each buy: quantity × the price it will fill at — the limit price for LIMIT orders, the current market price for MARKET orders) MUST NOT exceed ${cash:.2}.\n\
-- Treat available cash as one shared budget across all buys. Size each buy's whole-share quantity so the cumulative cost of every buy stays within ${cash:.2}.\n\
-- If a pick does not fit the remaining cash, reduce its quantity to what remains; if not even one whole share fits, omit that buy entirely.\n\
-- This cash budget constrains BUY orders only. SELL and stop orders are unaffected.",
-                prompt = system_prompt,
-                cash = result.funds.available_cash,
-            ),
-            _ => system_prompt,
+        // Own account: append the broker's available cash so BUY recommendations
+        // are sized to funds the account actually holds. Best-effort: if funds
+        // can't be read we leave the prompt unchanged — the frontend applies a
+        // hard affordability cap on the parsed recommendations regardless. Routes
+        // to sandbox cash in analyze (paper) mode, matching where orders execute.
+        // Client scenario: the user's broker cash has nothing to do with the
+        // client's account, so it is never read or shown to Claude.
+        let available_cash = match context {
+            CopilotContext::OwnAccount => crate::services::FundsService::get_funds(state, None)
+                .await
+                .ok()
+                .map(|r| r.funds.available_cash),
+            CopilotContext::ClientScenario => None,
+        };
+        let system_prompt = match Self::budget_section(context, available_cash) {
+            Some(section) => format!("{system_prompt}\n\n{section}"),
+            None => system_prompt,
         };
 
         // Build conversation with the new user message
@@ -1758,6 +1801,41 @@ mod prompt_tests {
             "ride_summary": { "dormant": 3, "unknown": 0 },
             "summary": { "total_market_value": 170000.0, "total_cost_basis": 163757.64 },
         })
+    }
+
+    #[test]
+    fn scenario_trades_go_in_the_actions_block() {
+        let prompt = CopilotService::build_system_prompt();
+        assert!(prompt.contains("Put every scenario trade you propose"));
+        assert!(prompt.contains("Review Recommendations button that applies the trades to the sandbox scenario only"));
+        assert!(!prompt.contains("only after the user asks to apply a swap"));
+    }
+
+    #[test]
+    fn client_scenario_never_sees_own_cash() {
+        let section = CopilotService::budget_section(CopilotContext::ClientScenario, Some(183.03))
+            .expect("client scenarios get a budget note");
+        assert!(!section.contains("183.03"));
+        assert!(section.contains("The user's own broker cash does not apply"));
+        assert!(section.contains("proceeds of the sells you propose"));
+    }
+
+    #[test]
+    fn own_account_keeps_the_cash_budget() {
+        let section = CopilotService::budget_section(CopilotContext::OwnAccount, Some(183.03)).unwrap();
+        assert!(section.contains("$183.03 in available cash"));
+        assert_eq!(CopilotService::budget_section(CopilotContext::OwnAccount, None), None);
+        assert_eq!(CopilotService::budget_section(CopilotContext::OwnAccount, Some(0.0)), None);
+    }
+
+    #[test]
+    fn context_param_is_strict() {
+        assert_eq!(CopilotContext::from_param(None).unwrap(), CopilotContext::OwnAccount);
+        assert_eq!(
+            CopilotContext::from_param(Some("client_scenario")).unwrap(),
+            CopilotContext::ClientScenario
+        );
+        assert!(CopilotContext::from_param(Some("client")).is_err());
     }
 
     #[test]

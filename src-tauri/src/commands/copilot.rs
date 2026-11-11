@@ -6,7 +6,7 @@
 
 use crate::error::AppError;
 use crate::providers::anthropic::Message;
-use crate::services::copilot_service::{CopilotResponse, CopilotService};
+use crate::services::copilot_service::{CopilotContext, CopilotResponse, CopilotService};
 use crate::services::ride_report::{build_ride_report, render_for_prompt, RideReport};
 use crate::state::AppState;
 use serde::Serialize;
@@ -22,7 +22,10 @@ pub async fn copilot_send_message(
     state: State<'_, AppState>,
     message: String,
     conversation_history_json: String,
+    context: Option<String>,
 ) -> Result<CopilotResponse, AppError> {
+    let context = CopilotContext::from_param(context.as_deref())?;
+
     // Get the Anthropic API key
     let api_key = state
         .sqlite
@@ -47,7 +50,8 @@ pub async fn copilot_send_message(
 
     // Process through the copilot service
     let response =
-        CopilotService::process_message(&api_key, conversation_history, &message, &state).await?;
+        CopilotService::process_message(&api_key, conversation_history, &message, context, &state)
+            .await?;
 
     Ok(response)
 }
@@ -179,6 +183,7 @@ pub async fn generate_briefing(
         &api_key,
         Vec::new(),
         &briefing_prompt,
+        CopilotContext::OwnAccount,
         &state,
     )
     .await?;
