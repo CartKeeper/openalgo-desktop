@@ -6,8 +6,52 @@
 use super::ProviderError;
 use super::types::*;
 use reqwest::Client;
+use std::collections::VecDeque;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 const FMP_BASE_URL: &str = "https://financialmodelingprep.com/stable";
+
+/// The user's FMP plan (Starter) allows 300 calls per minute. The app paces itself
+/// a little under that so calls landing at a window edge never tip it over.
+const FMP_CALLS_PER_MINUTE: usize = 290;
+const FMP_WINDOW: Duration = Duration::from_secs(60);
+
+/// Send times of the FMP calls in the last minute, shared by every FmpClient
+/// (each command builds its own client, but they all spend the same key's budget).
+fn fmp_sent() -> &'static tokio::sync::Mutex<VecDeque<Instant>> {
+    static SENT: OnceLock<tokio::sync::Mutex<VecDeque<Instant>>> = OnceLock::new();
+    SENT.get_or_init(|| tokio::sync::Mutex::new(VecDeque::new()))
+}
+
+/// Record a call at `now` if the window has room, else say how long to wait.
+fn pace_step(sent: &mut VecDeque<Instant>, now: Instant, limit: usize, window: Duration) -> Option<Duration> {
+    while sent.front().is_some_and(|t| now.duration_since(*t) >= window) {
+        sent.pop_front();
+    }
+    if sent.len() < limit {
+        sent.push_back(now);
+        return None;
+    }
+    sent.front().map(|oldest| window - now.duration_since(*oldest))
+}
+
+/// Wait until one more FMP call fits in the per-minute budget, then claim it.
+async fn pace_fmp_call() {
+    loop {
+        let wait = {
+            let mut sent = fmp_sent().lock().await;
+            pace_step(&mut sent, Instant::now(), FMP_CALLS_PER_MINUTE, FMP_WINDOW)
+        };
+        match wait {
+            None => return,
+            Some(d) => {
+                tracing::info!("FMP: {} calls in the last minute, waiting {:?}", FMP_CALLS_PER_MINUTE, d);
+                tokio::time::sleep(d).await;
+            }
+        }
+    }
+}
 
 /// FMP API client
 pub struct FmpClient {
@@ -302,6 +346,7 @@ impl FmpClient {
 
     /// Helper to fetch FMP JSON, handling error objects gracefully
     async fn fetch_fmp_json(&self, url: &str) -> Result<Vec<serde_json::Value>, ProviderError> {
+        pace_fmp_call().await;
         let response = self.client.get(url).send().await?;
         let status = response.status();
         let body = response.text().await.map_err(|e| {
@@ -898,5 +943,50 @@ mod target_mapping_tests {
         let t = map_price_target_news(&v, "PFE");
         assert_eq!(t.price_target, Some(28.0));
         assert_eq!(t.analyst_company.as_deref(), Some("Cantor"));
+    }
+}
+
+#[cfg(test)]
+mod pacing_tests {
+    use super::*;
+
+    const WINDOW: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn calls_go_through_until_the_limit() {
+        let mut sent = VecDeque::new();
+        let t0 = Instant::now();
+        for i in 0..3 {
+            assert_eq!(pace_step(&mut sent, t0 + Duration::from_millis(i), 3, WINDOW), None);
+        }
+        assert_eq!(sent.len(), 3);
+    }
+
+    #[test]
+    fn the_next_call_waits_for_the_oldest_to_age_out() {
+        let mut sent = VecDeque::new();
+        let t0 = Instant::now();
+        for _ in 0..3 {
+            pace_step(&mut sent, t0, 3, WINDOW);
+        }
+        let wait = pace_step(&mut sent, t0 + Duration::from_secs(20), 3, WINDOW);
+        assert_eq!(wait, Some(Duration::from_secs(40)));
+        assert_eq!(sent.len(), 3, "a refused call is not recorded");
+    }
+
+    #[test]
+    fn calls_older_than_a_minute_free_their_slots() {
+        let mut sent = VecDeque::new();
+        let t0 = Instant::now();
+        for _ in 0..3 {
+            pace_step(&mut sent, t0, 3, WINDOW);
+        }
+        assert_eq!(pace_step(&mut sent, t0 + WINDOW, 3, WINDOW), None);
+        assert_eq!(sent.len(), 1);
+    }
+
+    #[test]
+    fn the_budget_stays_under_the_starter_plan() {
+        assert!(FMP_CALLS_PER_MINUTE < 300);
     }
 }

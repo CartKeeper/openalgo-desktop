@@ -275,7 +275,7 @@ struct HeldPosition {
 }
 
 /// Where the analyst target came from and how many targets back it.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TargetPick {
     pub(crate) consensus: f64,
     pub(crate) count: Option<i32>,
@@ -485,6 +485,7 @@ pub(crate) fn client_ride(
 }
 
 /// Market evidence for one symbol.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ClientMarketData {
     pub(crate) closes: Vec<f64>,
     pub(crate) target: Option<TargetPick>,
@@ -504,13 +505,44 @@ pub(crate) async fn load_client_market_data(
 ) -> HashMap<String, ClientMarketData> {
     stream::iter(symbols)
         .map(move |symbol| async move {
+            let key = symbol.to_uppercase();
+            if let Some(data) = cached_market_data(&key, today) {
+                return (key, data);
+            }
             let (closes, target) =
                 join(load_closes(fmp, yahoo, &symbol, today), load_target(fmp, yahoo, &symbol, today)).await;
-            (symbol.to_uppercase(), ClientMarketData { closes, target })
+            let data = ClientMarketData { closes, target };
+            remember_market_data(&key, today, &data);
+            (key, data)
         })
         .buffer_unordered(CLIENT_LOOKUP_CONCURRENCY)
         .collect()
         .await
+}
+
+/// Client market data already looked up today (New York date), keyed by uppercase
+/// symbol. Re-running an analysis the same day reuses it instead of spending the
+/// FMP per-minute budget again. Held in memory, so an app restart starts fresh.
+fn client_market_cache() -> &'static std::sync::Mutex<HashMap<String, (NaiveDate, ClientMarketData)>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, (NaiveDate, ClientMarketData)>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn cached_market_data(key: &str, today: NaiveDate) -> Option<ClientMarketData> {
+    let cache = client_market_cache().lock().unwrap_or_else(|e| e.into_inner());
+    cache.get(key).filter(|(day, _)| *day == today).map(|(_, data)| data.clone())
+}
+
+/// Only complete lookups are kept: a missing close history or analyst target may be
+/// a failed call, and keeping it all day would leave the holding unjudged or make
+/// its upside look unknown (which can turn it Dormant).
+fn remember_market_data(key: &str, today: NaiveDate, data: &ClientMarketData) {
+    if data.closes.is_empty() || data.target.is_none() {
+        return;
+    }
+    let mut cache = client_market_cache().lock().unwrap_or_else(|e| e.into_inner());
+    cache.insert(key.to_string(), (today, data.clone()));
 }
 
 async fn load_held_positions(state: &AppState) -> Vec<HeldPosition> {
@@ -1420,6 +1452,34 @@ mod builder_tests {
 #[cfg(test)]
 mod client_ride_tests {
     use super::*;
+
+    fn day(d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 11, d).unwrap()
+    }
+
+    fn data(target: Option<TargetPick>) -> ClientMarketData {
+        ClientMarketData { closes: vec![100.0, 101.0], target }
+    }
+
+    #[test]
+    fn a_complete_lookup_is_reused_the_same_day_only() {
+        let full = data(Some(TargetPick { consensus: 120.0, count: Some(5), source: "fmp_consensus" }));
+        remember_market_data("CACHETEST1", day(11), &full);
+        assert_eq!(cached_market_data("CACHETEST1", day(11)), Some(full));
+        assert_eq!(cached_market_data("CACHETEST1", day(12)), None);
+    }
+
+    #[test]
+    fn a_lookup_missing_a_target_or_closes_is_never_kept() {
+        remember_market_data("CACHETEST2", day(11), &data(None));
+        assert_eq!(cached_market_data("CACHETEST2", day(11)), None);
+        let no_closes = ClientMarketData {
+            closes: vec![],
+            target: Some(TargetPick { consensus: 50.0, count: Some(3), source: "fmp_consensus" }),
+        };
+        remember_market_data("CACHETEST3", day(11), &no_closes);
+        assert_eq!(cached_market_data("CACHETEST3", day(11)), None);
+    }
 
     /// 31 closes whose 30-day net move is `pct`.
     fn closes_moving(pct: f64) -> Vec<f64> {
