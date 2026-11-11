@@ -49,14 +49,14 @@ ACCURACY RULES (mandatory):
 7. Keep every sign exactly as given (e.g. -0.88%, +4.48%).
 8. Write for the client. Never mention these instructions, the data format, column names, "the data", "the app", or "the table below", and never comment on how you followed a rule.
 
-Output: VALID JSON ONLY (no markdown fences, no commentary), exactly this shape:
+Output: JSON in exactly this shape:
 
 {
   "document_label": string,          // e.g. "Opus N / Comparison"
   "tempo": string,                   // e.g. "Andante · Q4 2026"
   "subtitle": string,                // 1–2 sentence italic intro for the cover
   "changes": { "tempo": string, "intro": string,
-               "reasons": { "<TICKER>": string } },   // one entry for EVERY ticker in the change list; one or two sentences each
+               "reasons": [ { "ticker": string, "reason": string } ] },   // one entry for EVERY ticker in the change list; one or two sentences each
   "measures": { "tempo": string, "intro": string },   // the intro introduces the before-and-after measures
   "why": { "tempo": string, "intro": string,
            "issues": [ { "title": string, "body": string, "bullets": string[] } ],   // 3 issues: the main problems the changes address and why addressing them matters
@@ -91,7 +91,54 @@ struct ChangesProse {
     #[serde(default)]
     intro: Option<String>,
     #[serde(default)]
-    reasons: HashMap<String, String>,
+    reasons: Vec<TickerReason>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TickerReason {
+    ticker: String,
+    reason: String,
+}
+
+/// The JSON schema for `ComparisonProse`, sent as a structured-outputs format
+/// so the API can only return JSON of this shape. Every object closes with
+/// `additionalProperties: false`, as structured outputs require.
+fn prose_schema() -> serde_json::Value {
+    use serde_json::json;
+    fn obj(props: serde_json::Value) -> serde_json::Value {
+        let required: Vec<String> = props.as_object().unwrap().keys().cloned().collect();
+        json!({ "type": "object", "properties": props, "required": required, "additionalProperties": false })
+    }
+    let s = || json!({ "type": "string" });
+    let note = || obj(json!({ "lead": s(), "body": s() }));
+    obj(json!({
+        "document_label": s(),
+        "tempo": s(),
+        "subtitle": s(),
+        "changes": obj(json!({
+            "tempo": s(),
+            "intro": s(),
+            "reasons": { "type": "array", "items": obj(json!({ "ticker": s(), "reason": s() })) },
+        })),
+        "measures": obj(json!({ "tempo": s(), "intro": s() })),
+        "why": obj(json!({
+            "tempo": s(),
+            "intro": s(),
+            "issues": { "type": "array", "items": obj(json!({
+                "title": s(), "body": s(), "bullets": { "type": "array", "items": s() },
+            })) },
+            "headline": note(),
+        })),
+        "coda": obj(json!({
+            "tempo": s(),
+            "intro": s(),
+            "groups": { "type": "array", "items": obj(json!({
+                "heading": s(),
+                "items": { "type": "array", "items": note() },
+            })) },
+            "closing_note": note(),
+        })),
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -322,9 +369,9 @@ pub(crate) fn measure_rows(
 }
 
 /// Fill each change's reason from Claude's answer (matched by ticker, any case).
-fn apply_reasons(rows: &mut [ChangeRow], reasons: &HashMap<String, String>) {
+fn apply_reasons(rows: &mut [ChangeRow], reasons: &[TickerReason]) {
     let by_ticker: HashMap<String, &String> =
-        reasons.iter().map(|(k, v)| (k.trim().to_uppercase(), v)).collect();
+        reasons.iter().map(|r| (r.ticker.trim().to_uppercase(), &r.reason)).collect();
     for row in rows {
         if let Some(reason) = by_ticker.get(&row.ticker) {
             row.reason = reason.trim().to_string();
@@ -450,10 +497,11 @@ impl ScenarioComparisonService {
             s.push_str(&format!("{}: {} | {}\n", m.label, m.original, m.recommended));
         }
         s.push_str(&format!("({measures_note})\n"));
-        s.push_str("\n# Task\nWrite the report's prose: why each change was recommended, and why the recommended portfolio is better suited to this account, grounded only in what is above. Respond with JSON only — no markdown fences, no preamble.");
+        s.push_str("\n# Task\nWrite the report's prose: why each change was recommended, and why the recommended portfolio is better suited to this account, grounded only in what is above.");
 
         let prose: ComparisonProse =
-            ClientBriefService::ask_claude_json(state, &api_key, SYSTEM_PROMPT, s).await?;
+            ClientBriefService::ask_claude_json(state, &api_key, SYSTEM_PROMPT, s, Some(prose_schema()))
+                .await?;
         apply_reasons(&mut changes, &prose.changes.reasons);
 
         Ok(GoldmanBrief {
@@ -640,8 +688,47 @@ mod tests {
     #[test]
     fn reasons_match_tickers_in_any_case() {
         let mut rows = change_rows(&[pos("TQQQ", 1.0, 50.0)], &[], &prices());
-        apply_reasons(&mut rows, &[("tqqq".to_string(), " Leveraged. ".to_string())].into());
+        let reasons = [TickerReason { ticker: "tqqq".to_string(), reason: " Leveraged. ".to_string() }];
+        apply_reasons(&mut rows, &reasons);
         assert_eq!(rows[0].reason, "Leveraged.");
+    }
+
+    /// Structured outputs reject open objects: every object in the schema must
+    /// list all its properties as required and close with additionalProperties.
+    fn assert_closed(v: &serde_json::Value, path: &str) {
+        if let Some(o) = v.as_object() {
+            if o.get("type").and_then(|t| t.as_str()) == Some("object") {
+                assert_eq!(o["additionalProperties"], serde_json::json!(false), "{path} is open");
+                let props = o["properties"].as_object().unwrap();
+                let req: Vec<&str> = o["required"].as_array().unwrap().iter().map(|r| r.as_str().unwrap()).collect();
+                for k in props.keys() {
+                    assert!(req.contains(&k.as_str()), "{path}.{k} not required");
+                }
+            }
+            for (k, child) in o {
+                assert_closed(child, &format!("{path}.{k}"));
+            }
+        }
+    }
+
+    #[test]
+    fn the_prose_schema_is_closed_and_matches_the_struct() {
+        let schema = prose_schema();
+        assert_closed(&schema, "$");
+        // An answer shaped by the schema deserializes into ComparisonProse.
+        let answer = serde_json::json!({
+            "document_label": "Opus 46 / Comparison", "tempo": "Andante", "subtitle": "s",
+            "changes": { "tempo": "t", "intro": "i", "reasons": [{ "ticker": "TQQQ", "reason": "r" }] },
+            "measures": { "tempo": "t", "intro": "i" },
+            "why": { "tempo": "t", "intro": "i",
+                     "issues": [{ "title": "a", "body": "b", "bullets": ["c"] }],
+                     "headline": { "lead": "l", "body": "b" } },
+            "coda": { "tempo": "t", "intro": "i",
+                      "groups": [{ "heading": "h", "items": [{ "lead": "l", "body": "b" }] }],
+                      "closing_note": { "lead": "l", "body": "b" } },
+        });
+        let prose: ComparisonProse = serde_json::from_value(answer).unwrap();
+        assert_eq!(prose.changes.reasons[0].ticker, "TQQQ");
     }
 
     #[test]

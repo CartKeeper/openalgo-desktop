@@ -66,6 +66,9 @@ struct MessagesRequest {
     messages: Vec<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ToolDefinition>>,
+    /// Structured outputs: `{"format": {"type": "json_schema", "schema": ...}}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<serde_json::Value>,
 }
 
 /// Response from the Anthropic Messages API
@@ -146,8 +149,34 @@ impl AnthropicClient {
             system: system_prompt.map(String::from),
             messages,
             tools,
+            output_config: None,
         };
+        self.send(api_key, request).await
+    }
 
+    /// Send a message whose answer must be JSON matching `schema`. The API
+    /// constrains the output to the schema, so the text block always parses.
+    pub async fn send_structured(
+        &self,
+        api_key: &str,
+        messages: Vec<Message>,
+        system_prompt: Option<&str>,
+        schema: serde_json::Value,
+    ) -> Result<MessagesResponse, ProviderError> {
+        let request = MessagesRequest {
+            model: ANTHROPIC_MODEL.to_string(),
+            max_tokens: MAX_TOKENS,
+            system: system_prompt.map(String::from),
+            messages,
+            tools: None,
+            output_config: Some(serde_json::json!({
+                "format": { "type": "json_schema", "schema": schema }
+            })),
+        };
+        self.send(api_key, request).await
+    }
+
+    async fn send(&self, api_key: &str, request: MessagesRequest) -> Result<MessagesResponse, ProviderError> {
         let resp = self
             .client
             .post(ANTHROPIC_API_URL)

@@ -373,25 +373,40 @@ impl ClientBriefService {
     }
 
     async fn ask_claude(state: &AppState, api_key: &str, user_prompt: String) -> Result<GoldmanBrief> {
-        Self::ask_claude_json(state, api_key, SYSTEM_PROMPT, user_prompt).await
+        Self::ask_claude_json(state, api_key, SYSTEM_PROMPT, user_prompt, None).await
     }
 
-    /// Ask Claude for a JSON answer and parse it as `T`.
+    /// Ask Claude for a JSON answer and parse it as `T`. With `schema`, the API
+    /// constrains the answer to that JSON schema (structured outputs), so it
+    /// cannot come back malformed.
     pub(crate) async fn ask_claude_json<T: serde::de::DeserializeOwned>(
         state: &AppState,
         api_key: &str,
         system_prompt: &str,
         user_prompt: String,
+        schema: Option<serde_json::Value>,
     ) -> Result<T> {
         let anth = AnthropicClient::new((*state.http_client).clone());
         let messages = vec![Message {
             role: "user".to_string(),
             content: MessageContent::Text(user_prompt),
         }];
-        let response = anth
-            .send_message(api_key, messages, Some(system_prompt), None)
-            .await
-            .map_err(|e| AppError::Provider(format!("Anthropic call failed: {}", e)))?;
+        let response = match schema {
+            Some(schema) => anth.send_structured(api_key, messages, Some(system_prompt), schema).await,
+            None => anth.send_message(api_key, messages, Some(system_prompt), None).await,
+        }
+        .map_err(|e| AppError::Provider(format!("Anthropic call failed: {}", e)))?;
+        match response.stop_reason.as_deref() {
+            Some("max_tokens") => {
+                return Err(AppError::Provider(
+                    "Claude's answer was cut off at the length limit before it finished.".to_string(),
+                ))
+            }
+            Some("refusal") => {
+                return Err(AppError::Provider("Claude declined to write this report.".to_string()))
+            }
+            _ => {}
+        }
         let text = response
             .content
             .iter()
