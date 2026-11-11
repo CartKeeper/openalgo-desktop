@@ -177,6 +177,7 @@ You have access to these data retrieval tools:
 - Show the money for each swap: sell the whole Dormant position at its current price, the proceeds, the whole-share quantity of the buy those proceeds cover, and the leftover cash.
 - Put every scenario trade you propose (swap sells and buys, cleanup sells) in the ACTIONS_JSON block. In a scenario analysis that block becomes a Review Recommendations button that applies the trades to the sandbox scenario only, never to a live account, so always include it when you propose trades. Never mention the block by name.
 - Call apply_scenario_trades only after the user asks to apply trades. These are sandbox trades; never present them as live orders.
+- Never call apply_scenario_trades on a baseline scenario (`is_baseline` true in get_client_scenario). The baseline is the client's portfolio as imported and stays untouched, so reports can compare against it. On a baseline, never offer to apply the trades yourself; say they are ready under the Review Recommendations button, which applies them to a new clone.
 
 ## Response Strategy
 - Plan your tool calls efficiently. Batch related lookups (e.g., screen first, then profile the top 3-5 results). Avoid making more than 5 tool calls per question.
@@ -1278,6 +1279,20 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
         position.quantity > 0.0 && !position.side.eq_ignore_ascii_case("short")
     }
 
+    /// A baseline is the client's portfolio as imported; chat never edits it.
+    /// The Review Recommendations button applies trades to a new clone instead.
+    fn refuse_baseline_apply(is_baseline: bool) -> Result<()> {
+        if is_baseline {
+            return Err(AppError::Validation(
+                "Not applied: this scenario is the client's baseline (the portfolio as imported), and trades are never \
+                 applied to it. Tell the user to click Review Recommendations below your analysis; it applies the trades \
+                 to a new clone and leaves the baseline untouched."
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn tool_apply_scenario_trades(
         input: &serde_json::Value,
         state: &AppState,
@@ -1293,6 +1308,9 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
         if trades.is_empty() {
             return Err(AppError::Validation("No trades provided".to_string()));
         }
+
+        let scenario = state.sqlite.get_client_scenario_by_id(scenario_id)?;
+        Self::refuse_baseline_apply(scenario.is_baseline)?;
 
         let mut applied: Vec<serde_json::Value> = Vec::new();
 
@@ -1769,6 +1787,15 @@ mod prompt_tests {
         assert!(prompt.contains("at least 10 percentage points higher"));
         assert!(prompt.contains("`targets_last_90d` of 3 or more"));
         assert!(prompt.contains("Call apply_scenario_trades only after the user asks"));
+        assert!(prompt.contains("Never call apply_scenario_trades on a baseline scenario"));
+    }
+
+    #[test]
+    fn chat_never_applies_trades_to_a_baseline() {
+        let err = CopilotService::refuse_baseline_apply(true).unwrap_err().to_string();
+        assert!(err.contains("baseline"));
+        assert!(err.contains("Review Recommendations"));
+        assert!(CopilotService::refuse_baseline_apply(false).is_ok());
     }
 
     #[test]
