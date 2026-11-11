@@ -41,6 +41,7 @@ import type {
   TacticalMovement,
   TacticalSection,
 } from './types'
+import type { ComponentProps } from 'react'
 import { C, FONT } from './tokens'
 import { pdfSafeDeep } from './pdfText'
 
@@ -138,6 +139,7 @@ const s = StyleSheet.create({
   compareLabelCell: { width: '34%', paddingRight: 10 },
   compareValueCell: { width: '33%', paddingRight: 10 },
   compareName: { fontFamily: FONT.serifItalic, fontSize: 10, color: C.gold, lineHeight: 1.3 },
+  compareRole: { fontSize: 8, color: C.muted, letterSpacing: 1.6, paddingBottom: 2 },
   compareValue: { fontFamily: FONT.serifBold, fontSize: 12, color: C.ink },
 
   // Running footer (movement pages) ------------------------------------
@@ -406,8 +408,8 @@ function ComparisonPanel({ comparison }: { comparison: BriefComparison }) {
       </Text>
       <View style={s.compareHeaderRow}>
         <View style={s.compareLabelCell} />
-        <Text style={[s.compareValueCell, s.compareName]}>Original — {o.name}</Text>
-        <Text style={[s.compareValueCell, s.compareName]}>Recommended — {r.name}</Text>
+        <SideHeading role="ORIGINAL" name={o.name} style={s.compareValueCell} />
+        <SideHeading role="RECOMMENDED" name={r.name} style={s.compareValueCell} />
       </View>
       {rows.map(([label, a, b]) => (
         <View key={label} style={s.compareRow}>
@@ -423,6 +425,16 @@ function ComparisonPanel({ comparison }: { comparison: BriefComparison }) {
           ? `; ${unpriced.length} without one ${unpriced.length === 1 ? 'is' : 'are'} left out: ${unpriced.join(', ')}.`
           : '.'}
       </Text>
+    </View>
+  )
+}
+
+/** A portfolio column heading: the role ("ORIGINAL") over the scenario's name. */
+function SideHeading({ role, name, style }: { role: string; name: string; style: ComponentProps<typeof View>["style"] }) {
+  return (
+    <View style={style}>
+      <Text style={s.compareRole}>{role}</Text>
+      <Text style={s.compareName}>{name}</Text>
     </View>
   )
 }
@@ -691,6 +703,13 @@ const price = (p: number | null) => {
   })
 }
 
+/** Whole dollars from $10, cents below ("$0.20"), "under $0.01" for a sliver. Mirrors `value_text` in scenario_comparison.rs. */
+const valueToday = (v: number) => {
+  if (v >= 10) return usd(v)
+  if (v > 0 && v < 0.005) return 'under $0.01'
+  return v.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
 function ChangesView({ m }: { m: ChangesMovement }) {
   return (
     <View>
@@ -717,12 +736,13 @@ function ChangeTable({ heading, rows }: { heading: string; rows: ChangeRow[] }) 
     paddingRight: cols[i].right ? 12 : 8,
     textAlign: (cols[i].right ? 'right' : 'left') as 'right' | 'left',
   })
-  // A short table moves to the next page whole; a long one keeps its header with its first rows.
+  // A short table moves to the next page whole; a long one keeps its header with its first rows
+  // and repeats it at the top of each page it continues onto.
   const unbreakable = rows.length <= 6
   return (
     <View wrap={!unbreakable}>
       <Heading>{heading}</Heading>
-      <View style={s.tableHeaderRow} minPresenceAhead={unbreakable ? undefined : 60}>
+      <View style={s.tableHeaderRow} minPresenceAhead={unbreakable ? undefined : 60} fixed={!unbreakable}>
         {cols.map((c, i) => (
           <Text key={c.label} style={[s.tableHeaderCell, cell(i)]}>
             {c.label}
@@ -734,7 +754,7 @@ function ChangeTable({ heading, rows }: { heading: string; rows: ChangeRow[] }) 
           <Text style={[s.tickerCell, cell(0)]}>{r.ticker}</Text>
           <Text style={[s.tableCell, cell(1)]}>{r.change}</Text>
           <Text style={[s.tableCell, cell(2)]}>{price(r.price)}</Text>
-          <Text style={[s.tableCell, cell(3)]}>{r.value_today === null ? '—' : usd(r.value_today)}</Text>
+          <Text style={[s.tableCell, cell(3)]}>{r.value_today === null ? '—' : valueToday(r.value_today)}</Text>
           <Text style={[s.tableCell, cell(4), { fontSize: 9.5 }]}>{r.reason || '—'}</Text>
         </View>
       ))}
@@ -752,10 +772,8 @@ function MeasuresView({ m }: { m: MeasuresMovement }) {
       <View wrap={false}>
         <View style={s.tableHeaderRow}>
           <Text style={[s.tableHeaderCell, { width: widths[0], paddingLeft: 4 }]}>MEASURE</Text>
-          <Text style={[s.compareName, { width: widths[1], paddingRight: 10 }]}>Original — {m.original_label}</Text>
-          <Text style={[s.compareName, { width: widths[2], paddingRight: 10 }]}>
-            Recommended — {m.recommended_label}
-          </Text>
+          <SideHeading role="ORIGINAL" name={m.original_label} style={{ width: widths[1], paddingRight: 10 }} />
+          <SideHeading role="RECOMMENDED" name={m.recommended_label} style={{ width: widths[2], paddingRight: 10 }} />
         </View>
         {m.rows.map((row) => (
           <View key={row.label} style={s.tableRow}>

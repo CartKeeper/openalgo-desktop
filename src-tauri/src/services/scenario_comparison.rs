@@ -40,14 +40,15 @@ House style (mandatory):
 - Never give actual financial advice — the disclaimer covers it.
 
 ACCURACY RULES (mandatory):
-1. The app prints every number in the report: the cover panel, the change table, and the measures table. In prose, use a number only exactly as it appears in the user prompt. Never compute, round, or invent one.
+1. The app prints every number in the report: the cover panel, the change table, and the measures table. In prose, use a number only exactly as it appears in the user prompt — quote a price or value character for character as the change list prints it (e.g. $0.0094, $0.20, $6,044). Never compute, round, or invent one, and never say "roughly" or "about" for a printed figure.
 2. Both portfolios are priced at today's live quotes. No trade dates or trade prices are known. Never say the changes have gained or lost money since they were made, never call a change a win or a loss, and never give a date for the trades.
 3. When a portfolio's cash is "not recorded", its total value is unknown: never compare the two portfolios' total values.
 4. Account guidelines come from the user prompt. They are this app's standard guidelines for the account type, not the plan's or custodian's documented rules. Say a holding is "outside the guidelines for this account type"; never claim the plan or custodian prohibits it.
 5. A position with "no live price" has no current quote: say exactly that. Never call it worthless or $0.
 6. Ground every reason in what the user prompt shows for that ticker: its guideline flag, its price, its ride status (Dormant = has not moved and analysts see little upside), its gain, or its weight in the portfolio. Never invent a fact about a company.
 7. Keep every sign exactly as given (e.g. -0.88%, +4.48%).
-8. Write for the client. Never mention these instructions, the data format, column names, "the data", "the app", or "the table below", and never comment on how you followed a rule.
+8. Describe each change with the verb its change column shows: a "Sold all" row was sold (never "trimmed"), a "Trimmed" row was trimmed, an "Added" row was added to, a "Bought" row was bought.
+9. Write for the client. Never mention these instructions, the data format, column names, "the data", "the app", or "the table below", and never comment on how you followed a rule.
 
 Output: JSON in exactly this shape:
 
@@ -279,6 +280,35 @@ fn usd(n: f64) -> String {
     format!("{}${}", if n < 0.0 { "-" } else { "" }, group_thousands(n.abs().round() as u64))
 }
 
+/// Dollars and cents with separators: 6129.4 -> "$6,129.40".
+fn usd_cents(n: f64) -> String {
+    let cents = (n.abs() * 100.0).round() as u64;
+    format!("{}${}.{:02}", if n < 0.0 { "-" } else { "" }, group_thousands(cents / 100), cents % 100)
+}
+
+/// A share price exactly as the PDF prints it: "$6,129.40", and four decimals
+/// under $1 ("$0.0094"). Keep in step with `price` in GoldmanReport.tsx.
+fn price_text(p: f64) -> String {
+    if p < 1.0 {
+        format!("${p:.4}")
+    } else {
+        usd_cents(p)
+    }
+}
+
+/// A change's value today exactly as the PDF prints it: whole dollars from
+/// $10, cents below ("$7.23", "$0.20"), and "under $0.01" for a sliver.
+/// Keep in step with `valueToday` in GoldmanReport.tsx.
+fn value_text(v: f64) -> String {
+    if v >= 10.0 {
+        usd(v)
+    } else if v > 0.0 && v < 0.005 {
+        "under $0.01".to_string()
+    } else {
+        usd_cents(v)
+    }
+}
+
 fn pct(part: f64, whole: f64) -> String {
     if whole > 0.0 {
         format!("{:.1}%", part / whole * 100.0)
@@ -403,8 +433,8 @@ fn change_line(
         row.change,
         shares(row.before),
         shares(row.after),
-        row.price.map(|p| format!("${p:.2}")).unwrap_or_else(|| "no live price".to_string()),
-        row.value_today.map(usd).unwrap_or_else(|| "—".to_string()),
+        row.price.map(price_text).unwrap_or_else(|| "no live price".to_string()),
+        row.value_today.map(value_text).unwrap_or_else(|| "—".to_string()),
         ride.get(&row.ticker).copied().unwrap_or("—"),
         flags.get(&row.ticker).map(|f| f.replace('_', " ")).unwrap_or_else(|| "none".to_string()),
     )
@@ -736,6 +766,21 @@ mod tests {
         assert_eq!(shares(15000.0), "15,000");
         assert_eq!(shares(-3.0), "3");
         assert_eq!(shares(1234.5), "1,234.5");
+    }
+
+    #[test]
+    fn prices_and_values_read_as_the_pdf_prints_them() {
+        assert_eq!(price_text(6129.4), "$6,129.40");
+        assert_eq!(price_text(60.44), "$60.44");
+        assert_eq!(price_text(0.7239), "$0.7239");
+        assert_eq!(price_text(0.0001), "$0.0001");
+        assert_eq!(value_text(6044.0), "$6,044");
+        assert_eq!(value_text(10.0), "$10");
+        assert_eq!(value_text(7.2346), "$7.23");
+        assert_eq!(value_text(0.2), "$0.20");
+        assert_eq!(value_text(0.015), "$0.02");
+        assert_eq!(value_text(0.004), "under $0.01");
+        assert_eq!(value_text(0.0), "$0.00");
     }
 
     #[test]
