@@ -414,7 +414,7 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
 
                         // Serialize the result, truncating large payloads to preserve token budget.
                         // For arrays: keep first N items. For strings: byte-level truncation.
-                        let result_str = Self::truncate_tool_result(&result);
+                        let result_str = Self::truncate_tool_result(name, &result);
 
                         tool_result_blocks.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
@@ -1480,10 +1480,18 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
     /// Truncate a tool result to keep the conversation context small.
     /// For JSON arrays: keep only the first N items.
     /// For everything else: byte-level truncation at 4000 bytes.
+    /// Tools in `WHOLE_RESULT_TOOLS` are sent complete: a portfolio analysis
+    /// built on a cut-off holdings list is wrong, not just shorter.
     const MAX_RESULT_BYTES: usize = 4000;
     const MAX_ARRAY_ITEMS: usize = 10;
+    const WHOLE_RESULT_TOOLS: &'static [&'static str] = &["get_client_scenario"];
 
-    fn truncate_tool_result(result: &serde_json::Value) -> String {
+    fn truncate_tool_result(tool_name: &str, result: &serde_json::Value) -> String {
+        if Self::WHOLE_RESULT_TOOLS.contains(&tool_name) {
+            return serde_json::to_string(result).unwrap_or_else(|_| {
+                r#"{"error": true, "message": "Failed to serialize tool result"}"#.to_string()
+            });
+        }
         // If it's an array, limit items first
         let truncated = if let Some(arr) = result.as_array() {
             if arr.len() > Self::MAX_ARRAY_ITEMS {
@@ -1729,6 +1737,43 @@ mod prompt_tests {
     }
 
     use super::*;
+
+    /// A 46-position scenario with ride blocks, shaped like the real tool output.
+    fn large_scenario() -> serde_json::Value {
+        let positions: Vec<serde_json::Value> = (0..46)
+            .map(|i| serde_json::json!({
+                "symbol": format!("SYM{i:02}"), "exchange": "NASDAQ", "quantity": 25.0,
+                "avg_price": 276.334, "side": "long", "current_price": 348.51,
+                "market_value": 8712.75, "cost_basis": 6908.35, "unrealized_pnl": 1804.4,
+                "pnl_pct": 26.12, "day_change_pct": 0.42, "company_name": "Example Holdings Inc.",
+                "notes": null,
+                "ride": { "status": "Dormant", "net_move_30d_pct": 0.7, "consensus_target": 341.94,
+                          "upside_pct": -1.9, "targets_last_90d": 17, "target_source": "fmp" },
+            }))
+            .collect();
+        serde_json::json!({
+            "scenario": { "id": 27, "name": "Current Portfolio — 401(k)", "account_type": "401k" },
+            "positions": positions,
+            "position_count": 46,
+            "ride_summary": { "dormant": 3, "unknown": 0 },
+            "summary": { "total_market_value": 170000.0, "total_cost_basis": 163757.64 },
+        })
+    }
+
+    #[test]
+    fn client_scenario_reaches_claude_whole() {
+        let result = large_scenario();
+        let sent = CopilotService::truncate_tool_result("get_client_scenario", &result);
+        assert!(!sent.contains("[truncated"), "scenario was cut");
+        let parsed: serde_json::Value = serde_json::from_str(&sent).expect("valid JSON");
+        assert_eq!(parsed, result);
+    }
+
+    #[test]
+    fn other_tools_keep_the_size_cap() {
+        let sent = CopilotService::truncate_tool_result("get_quote", &large_scenario());
+        assert!(sent.contains("[truncated from"));
+    }
 
     #[test]
     fn system_prompt_allows_analyst_targets() {
