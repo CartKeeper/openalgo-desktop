@@ -12,7 +12,8 @@ use crate::providers::anthropic::{
 use crate::providers::fmp::FmpClient;
 use crate::providers::fred::FredClient;
 use crate::providers::yahoo::YahooClient;
-use crate::providers::types::ScreenerFilters;
+use crate::providers::types::{ScenarioPosition, ScreenerFilters};
+use crate::services::ride_report::{client_ride, load_client_market_data};
 use crate::state::AppState;
 use chrono::{Datelike, Timelike, Utc, Weekday};
 use chrono_tz::America::New_York;
@@ -130,7 +131,7 @@ You have access to these data retrieval tools:
 15. **get_my_portfolio** - Get the USER'S OWN live portfolio on their connected broker: actual current positions, holdings, OPEN ORDERS (working buys/sells/stops), and available cash. available_cash is the settled, spendable number — funds reserved by open orders are already excluded. This is the source of truth for what the user personally owns and has committed. Call this WHENEVER the user asks about "my account", "my portfolio", "my positions", what they hold, what they can spend, how their account is doing, or wants recommendations about their own holdings. Do NOT use get_client_portfolio for the user's own account — that tool is for other people's client accounts.
 16. **list_clients** - List all clients in the client management system with their names, IDs, and account info. Use ONLY when the user asks about clients or needs to find a specific client.
 17. **get_client_portfolio** - Look up a client's portfolio from the local client management system. Returns positions (symbols, quantities, avg price, P&L) and recent trades. Use when the user asks about a specific client's portfolio, holdings, or trades. Search by name (partial match works).
-18. **get_client_scenario** - Retrieve a sandbox what-if scenario with positions and live market prices. Use when the user asks you to analyze a scenario portfolio.
+18. **get_client_scenario** - Retrieve a sandbox what-if scenario with positions, live market prices, and each long position's `ride` block (see Client Scenario Rides). Use when the user asks you to analyze a scenario portfolio.
 19. **apply_scenario_trades** - Apply a batch of simulated trades to a sandbox scenario. Use when you have specific trade recommendations and the user wants them applied. Each trade adjusts position quantity and recalculates weighted-average cost basis.
 
 ## CRITICAL RULES
@@ -144,6 +145,16 @@ You have access to these data retrieval tools:
 - When analyzing a client scenario, check the `account_type` and `short_selling_restricted` fields in the response from get_client_scenario.
 - If `short_selling_restricted` is true (e.g., 401(k), IRA, 529, custodial accounts), NEVER recommend short selling or SELL trades that would create a short position. Only recommend selling to reduce or close existing long positions.
 - Always mention the account type restriction in your analysis if it limits available strategies.
+
+## Client Scenario Rides
+- Every long position from get_client_scenario has a `ride` block: `status`, `net_move_30d_pct`, `consensus_target`, `upside_pct`, `targets_last_90d`. Short positions have `ride: null`. Use these values as given; never recompute them.
+- `Dormant` means the 30-day net move is within ±3%, the position is at or above cost, and analyst upside is 5% or less or unknown. `Unknown` means there is not enough market data to judge: say so and never treat it as Dormant.
+- These statuses do not know when the client bought a position, so never state how long it has been held.
+- Every scenario analysis includes a **Dormant Positions** section. No Dormant position: one line saying so. Each Dormant position: one line of evidence, e.g. "PFE: net move +1.2% over 30 days, analysts see +2% upside, up 18% from cost."
+- For Dormant positions, propose a swap into a stronger stock. Find candidates with screen_stocks, then check at most 3 with get_analyst_targets and get_stock_quote; this search may exceed the 5-call guideline below.
+- A replacement must have consensus upside at least 10 percentage points higher than the Dormant position being sold (treat unknown upside as 5%), a `targets_last_90d` of 3 or more, must not be up more than 10% today, and must be allowed by the account type. If no candidate qualifies, say so and propose nothing.
+- Show the money for each swap: sell the whole Dormant position at its current price, the proceeds, the whole-share quantity of the buy those proceeds cover, and the leftover cash.
+- Call apply_scenario_trades only after the user asks to apply a swap. These are sandbox trades; never present them as live orders.
 
 ## Response Strategy
 - Plan your tool calls efficiently. Batch related lookups (e.g., screen first, then profile the top 3-5 results). Avoid making more than 5 tool calls per question.
@@ -1121,9 +1132,22 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
             }
         }
 
+        let yahoo = YahooClient::new((*state.http_client).clone());
+        let fmp = Self::get_fmp_client(state).ok();
+        let today = Utc::now().with_timezone(&New_York).date_naive();
+        let long_symbols: Vec<String> = positions
+            .iter()
+            .filter(|p| Self::is_long(p))
+            .map(|p| p.symbol.to_uppercase())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let market = load_client_market_data(fmp.as_ref(), &yahoo, long_symbols, today).await;
+
         // Build enriched position data
         let mut total_value = 0.0f64;
         let mut total_cost = 0.0f64;
+        let (mut dormant, mut unknown) = (0, 0);
         let position_data: Vec<serde_json::Value> = positions
             .iter()
             .map(|p| {
@@ -1139,6 +1163,17 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
                 let pnl = market_value.map(|mv| mv - cost);
                 let pnl_pct = if cost > 0.0 { pnl.map(|pl| pl / cost * 100.0) } else { None };
 
+                let ride = Self::is_long(p).then(|| {
+                    let data = market.get(&p.symbol.to_uppercase());
+                    let closes = data.map_or(&[][..], |d| d.closes.as_slice());
+                    client_ride(current_price, p.avg_price, closes, data.and_then(|d| d.target.as_ref()))
+                });
+                match ride.as_ref().map(|r| r.status) {
+                    Some("Dormant") => dormant += 1,
+                    Some("Unknown") => unknown += 1,
+                    _ => {}
+                }
+
                 serde_json::json!({
                     "symbol": p.symbol,
                     "exchange": p.exchange,
@@ -1153,6 +1188,7 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
                     "day_change_pct": pricing.and_then(|pv| pv["change_percent"].as_f64()),
                     "company_name": pricing.and_then(|pv| pv["name"].as_str()),
                     "notes": p.notes,
+                    "ride": ride,
                 })
             })
             .collect();
@@ -1181,6 +1217,7 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
             },
             "positions": position_data,
             "position_count": positions.len(),
+            "ride_summary": { "dormant": dormant, "unknown": unknown },
             "summary": {
                 "total_market_value": total_value,
                 "total_cost_basis": total_cost,
@@ -1188,6 +1225,10 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
                 "return_pct": if total_cost > 0.0 { (total_value - total_cost) / total_cost * 100.0 } else { 0.0 },
             }
         }))
+    }
+
+    fn is_long(position: &ScenarioPosition) -> bool {
+        position.quantity > 0.0 && !position.side.eq_ignore_ascii_case("short")
     }
 
     async fn tool_apply_scenario_trades(
@@ -1636,7 +1677,8 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
             "get_client_scenario" => {
                 if let Some(name) = result.get("scenario").and_then(|s| s["name"].as_str()) {
                     let count = result.get("position_count").and_then(|v| v.as_i64()).unwrap_or(0);
-                    format!("Retrieved scenario \"{}\" ({} positions)", name, count)
+                    let dormant = result.get("ride_summary").and_then(|r| r["dormant"].as_i64()).unwrap_or(0);
+                    format!("Retrieved scenario \"{}\" ({} positions, {} Dormant)", name, count, dormant)
                 } else {
                     "Retrieved scenario".to_string()
                 }
@@ -1664,6 +1706,28 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
 
 #[cfg(test)]
 mod prompt_tests {
+    #[test]
+    fn system_prompt_carries_the_client_swap_rules() {
+        let prompt = CopilotService::build_system_prompt();
+        assert!(prompt.contains("## Client Scenario Rides"));
+        assert!(prompt.contains("at least 10 percentage points higher"));
+        assert!(prompt.contains("`targets_last_90d` of 3 or more"));
+        assert!(prompt.contains("Call apply_scenario_trades only after the user asks"));
+    }
+
+    #[test]
+    fn scenario_summary_reports_the_dormant_count() {
+        let result = serde_json::json!({
+            "scenario": { "name": "Baseline" },
+            "position_count": 20,
+            "ride_summary": { "dormant": 3, "unknown": 1 },
+        });
+        assert_eq!(
+            CopilotService::summarize_tool_result("get_client_scenario", &result),
+            "Retrieved scenario \"Baseline\" (20 positions, 3 Dormant)"
+        );
+    }
+
     use super::*;
 
     #[test]

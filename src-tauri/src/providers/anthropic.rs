@@ -526,7 +526,7 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_client_scenario".to_string(),
-            description: "Retrieve a client's sandbox scenario with its positions and current market prices. Returns scenario info, each position (symbol, quantity, avg price, side), and live pricing from Yahoo Finance (current price, day change). Use when the user asks to analyze or review a specific scenario.".to_string(),
+            description: "Retrieve a client's sandbox scenario with its positions and current market prices. Returns scenario info, each position (symbol, quantity, avg price, side), live pricing from Yahoo Finance (current price, day change), and a `ride` block per long position (status such as Dormant, 30-day net move, analyst upside). Use when the user asks to analyze or review a specific scenario.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

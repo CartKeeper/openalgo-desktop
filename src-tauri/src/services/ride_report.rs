@@ -17,7 +17,9 @@ use crate::services::position_service::PositionService;
 use crate::state::AppState;
 use chrono::{DateTime, Datelike, Duration, Months, NaiveDate, NaiveDateTime, Utc, Weekday};
 use chrono_tz::America::New_York;
+use futures_util::{future::join, stream, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use tracing::{info, warn};
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
@@ -429,6 +431,83 @@ fn is_full_size_trailing_stop(s: &ExistingStop, position_qty: f64) -> bool {
 }
 
 /// Positions exactly as `generate_briefing` reads them: broker first, manual portfolio as fallback.
+/// Daily closes, ascending. FMP first, Yahoo when FMP fails or returns nothing.
+async fn load_closes(fmp: Option<&FmpClient>, yahoo: &YahooClient, symbol: &str, today: NaiveDate) -> Vec<f64> {
+    let from = (today - Duration::days(CLOSES_LOOKBACK_DAYS)).format("%Y-%m-%d").to_string();
+    let to = today.format("%Y-%m-%d").to_string();
+    let (_, bars) = load_daily_bars(fmp, yahoo, symbol, &from, &to, "3mo").await;
+    bars.into_iter().map(|b| b.close).collect()
+}
+
+/// Ride numbers for one client holding, as the Client AI analyzer sees them.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub(crate) struct ClientRide {
+    pub(crate) status: &'static str,
+    pub(crate) net_move_30d_pct: Option<f64>,
+    pub(crate) consensus_target: Option<f64>,
+    pub(crate) upside_pct: Option<f64>,
+    pub(crate) targets_last_90d: Option<i32>,
+    pub(crate) target_source: Option<String>,
+}
+
+/// Client data has no purchase dates, so `classify` is told a holding is old enough
+/// to judge. A holding without 30 days of closes still comes back as too new.
+const CLIENT_HOLDING_AGE_TRADING_DAYS: u32 = 30;
+
+/// Classify a client holding by the briefing's rules. A missing live price falls back
+/// to the last close; a holding that can't be judged is `Unknown`, never `Dormant`.
+pub(crate) fn client_ride(
+    price: Option<f64>,
+    avg_cost: f64,
+    closes: &[f64],
+    target: Option<&TargetPick>,
+) -> ClientRide {
+    let price = price.filter(|p| *p > 0.0).or_else(|| closes.last().copied()).unwrap_or(0.0);
+    let net_move = net_move_pct(closes);
+    let upside = target.filter(|_| price > 0.0).map(|t| upside_pct(t.consensus, price));
+    let status = match classify(Some(CLIENT_HOLDING_AGE_TRADING_DAYS), price, avg_cost, net_move, upside) {
+        RideStatus::TooNew => "Unknown",
+        status => status_label(status),
+    };
+    ClientRide {
+        status,
+        net_move_30d_pct: net_move,
+        consensus_target: target.map(|t| t.consensus),
+        upside_pct: upside,
+        targets_last_90d: target.and_then(|t| t.count),
+        target_source: target.map(|t| t.source.to_string()),
+    }
+}
+
+/// Market evidence for one symbol.
+pub(crate) struct ClientMarketData {
+    pub(crate) closes: Vec<f64>,
+    pub(crate) target: Option<TargetPick>,
+}
+
+/// Symbols looked up at once. A client account can hold dozens of positions, each
+/// needing several provider calls, so one at a time would stall the analyzer.
+const CLIENT_LOOKUP_CONCURRENCY: usize = 6;
+
+/// Closes and analyst target per symbol, keyed by uppercase symbol. A failed lookup
+/// leaves that field empty rather than failing the whole scenario.
+pub(crate) async fn load_client_market_data(
+    fmp: Option<&FmpClient>,
+    yahoo: &YahooClient,
+    symbols: Vec<String>,
+    today: NaiveDate,
+) -> HashMap<String, ClientMarketData> {
+    stream::iter(symbols)
+        .map(move |symbol| async move {
+            let (closes, target) =
+                join(load_closes(fmp, yahoo, &symbol, today), load_target(fmp, yahoo, &symbol, today)).await;
+            (symbol.to_uppercase(), ClientMarketData { closes, target })
+        })
+        .buffer_unordered(CLIENT_LOOKUP_CONCURRENCY)
+        .collect()
+        .await
+}
+
 async fn load_held_positions(state: &AppState) -> Vec<HeldPosition> {
     let live = match PositionService::get_positions(state, None).await {
         Ok(result) if !result.positions.is_empty() => Some(result.positions),
@@ -567,12 +646,8 @@ impl ReportContext<'_> {
             .and_then(|f| f.date.clone())
     }
 
-    /// Daily closes, ascending. FMP first, Yahoo when FMP fails or returns nothing.
     async fn closes(&self, symbol: &str) -> Vec<f64> {
-        let from = (self.today - Duration::days(CLOSES_LOOKBACK_DAYS)).format("%Y-%m-%d").to_string();
-        let to = self.today.format("%Y-%m-%d").to_string();
-        let (_, bars) = load_daily_bars(self.fmp.as_ref(), &self.yahoo, symbol, &from, &to, "3mo").await;
-        bars.into_iter().map(|b| b.close).collect()
+        load_closes(self.fmp.as_ref(), &self.yahoo, symbol, self.today).await
     }
 
     async fn target(&self, symbol: &str) -> Option<TargetPick> {
@@ -1334,5 +1409,77 @@ mod builder_tests {
         assert!(scoreboard_from(None, today, NOW_STAMP, &[], &[]).is_none());
         // History of only zeros counts as no history.
         assert!(scoreboard_from(None, today, NOW_STAMP, &[1_790_000_000], &[0.0]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod client_ride_tests {
+    use super::*;
+
+    /// 31 closes whose 30-day net move is `pct`.
+    fn closes_moving(pct: f64) -> Vec<f64> {
+        let mut closes = vec![100.0; 30];
+        closes.push(100.0 * (1.0 + pct / 100.0));
+        closes
+    }
+
+    fn target(consensus: f64) -> TargetPick {
+        TargetPick { consensus, count: Some(12), source: "fmp_consensus" }
+    }
+
+    #[test]
+    fn flat_with_little_upside_is_dormant_without_an_entry_date() {
+        let ride = client_ride(Some(101.2), 90.0, &closes_moving(1.2), Some(&target(103.0)));
+        assert_eq!(ride.status, "Dormant");
+        assert_eq!(ride.net_move_30d_pct, Some(1.2));
+        assert_eq!(ride.upside_pct, Some(1.8));
+        assert_eq!(ride.consensus_target, Some(103.0));
+        assert_eq!(ride.targets_last_90d, Some(12));
+        assert_eq!(ride.target_source.as_deref(), Some("fmp_consensus"));
+    }
+
+    #[test]
+    fn flat_with_no_analyst_target_counts_as_dormant() {
+        let ride = client_ride(Some(101.0), 90.0, &closes_moving(1.0), None);
+        assert_eq!(ride.status, "Dormant");
+        assert_eq!(ride.upside_pct, None);
+    }
+
+    #[test]
+    fn flat_with_real_upside_is_not_dormant() {
+        let ride = client_ride(Some(101.0), 90.0, &closes_moving(1.0), Some(&target(120.0)));
+        assert_eq!(ride.status, "Flat, with upside");
+    }
+
+    #[test]
+    fn a_position_below_cost_is_falling_not_dormant() {
+        let ride = client_ride(Some(101.0), 110.0, &closes_moving(1.0), Some(&target(103.0)));
+        assert_eq!(ride.status, "Falling");
+    }
+
+    #[test]
+    fn a_rising_position_is_climbing() {
+        let ride = client_ride(Some(110.0), 90.0, &closes_moving(10.0), Some(&target(115.0)));
+        assert_eq!(ride.status, "Climbing");
+    }
+
+    #[test]
+    fn short_price_history_is_unknown_never_dormant() {
+        let ride = client_ride(Some(100.0), 90.0, &[100.0; 10], None);
+        assert_eq!(ride.status, "Unknown");
+        assert_eq!(ride.net_move_30d_pct, None);
+    }
+
+    #[test]
+    fn missing_live_price_falls_back_to_the_last_close() {
+        let ride = client_ride(None, 90.0, &closes_moving(1.0), Some(&target(110.0)));
+        assert_eq!(ride.upside_pct, Some(8.9));
+    }
+
+    #[test]
+    fn no_market_data_at_all_is_unknown() {
+        let ride = client_ride(None, 90.0, &[], Some(&target(110.0)));
+        assert_eq!(ride.status, "Unknown");
+        assert_eq!(ride.upside_pct, None);
     }
 }
