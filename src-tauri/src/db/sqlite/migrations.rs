@@ -74,6 +74,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "056_backtest_runs", CREATE_BACKTEST_RUNS_TABLE)?;
     run_migration(conn, "057_ride_entries", CREATE_RIDE_ENTRIES_TABLE)?;
     run_migration(conn, "058_dismissed_protection", CREATE_DISMISSED_PROTECTION_TABLE)?;
+    run_migration(conn, "059_report_scenario_link", ADD_REPORT_SCENARIO_LINK)?;
 
     tracing::info!("Database migrations completed");
     Ok(())
@@ -645,6 +646,12 @@ CREATE INDEX IF NOT EXISTS idx_portfolio_exchange ON portfolio_positions(exchang
 
 -- Add generic_mode flag to settings
 ALTER TABLE settings ADD COLUMN generic_mode INTEGER NOT NULL DEFAULT 0;
+"#;
+
+/// A report saved from Analyze with Claude remembers its client scenario, so its
+/// recommended trades can be applied to that sandbox later (never as live orders).
+const ADD_REPORT_SCENARIO_LINK: &str = r#"
+ALTER TABLE research_reports ADD COLUMN scenario_id INTEGER;
 "#;
 
 const CREATE_RESEARCH_REPORTS_TABLES: &str = r#"

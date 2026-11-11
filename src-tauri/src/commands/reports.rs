@@ -13,6 +13,7 @@ pub async fn save_research_report(
     tags: Option<String>,
     messages_json: String,
     tool_calls_json: Option<String>,
+    scenario_id: Option<i64>,
 ) -> Result<ResearchReport, AppError> {
     state.sqlite.save_research_report(
         &title,
@@ -20,7 +21,20 @@ pub async fn save_research_report(
         tags.as_deref(),
         &messages_json,
         tool_calls_json.as_deref(),
+        scenario_id,
     )
+}
+
+/// Link a saved report to the client scenario it analyzes.
+#[tauri::command]
+pub async fn link_research_report_scenario(
+    state: State<'_, AppState>,
+    id: i64,
+    scenario_id: i64,
+) -> Result<ResearchReport, AppError> {
+    // Fail here, not at apply time, if the scenario doesn't exist.
+    state.sqlite.get_client_scenario_by_id(scenario_id)?;
+    state.sqlite.set_research_report_scenario(id, scenario_id)
 }
 
 #[tauri::command]

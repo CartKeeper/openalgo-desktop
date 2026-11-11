@@ -27,6 +27,7 @@ import { ActionReviewModal } from '@/components/trading/ActionReviewModal'
 import { applyScenarioRecommendations } from '@/lib/applyScenarioRecommendations'
 import { formatRecommendationsAsCsv } from '@/lib/csvRecommendations'
 import { filterRecommendationsForAccount } from '@/lib/filterRecommendationsForAccount'
+import { allowedScenarioTrades } from '@/lib/scenarioReview'
 import { useActionQueueStore } from '@/stores/actionQueueStore'
 import type { OrderRecommendation } from '@/types/actionQueue'
 import { useClientScenarioStore } from '@/stores/clientScenarioStore'
@@ -194,31 +195,11 @@ export default function AnalyzeWithClaudeDialog({
   }
 
   const handleReviewRecommendations = (messageContent: string) => {
-    const actions = parseActionsFromMarkdown(messageContent, 'copilot')
-    if (actions.length === 0) {
-      toast.error('No recommended trades found in this message')
-      return
-    }
-    const { allowed, dropped } = filterRecommendationsForAccount(actions, {
+    const allowed = allowedScenarioTrades(parseActionsFromMarkdown(messageContent, 'copilot'), {
       accountType,
       longQtyBySymbol,
     })
-    if (dropped.length > 0) {
-      toast.warning(
-        `${dropped.length} recommendation${dropped.length === 1 ? '' : 's'} dropped — account type restriction`,
-        {
-          description: dropped
-            .map((d) => `${d.item.side} ${d.item.quantity} ${d.item.symbol}: ${d.reason}`)
-            .join('\n'),
-          duration: 8000,
-        }
-      )
-    }
-    if (allowed.length === 0) {
-      toast.error('All recommendations were disallowed for this account type')
-      return
-    }
-    setItemsAndOpen(allowed)
+    if (allowed.length > 0) setItemsAndOpen(allowed)
   }
 
   const handleApplyToScenario = async (
@@ -285,7 +266,8 @@ export default function AnalyzeWithClaudeDialog({
         toolCalls: m.toolCalls,
         timestamp: ts + i,
       }))
-      const report = await saveReport(title, summary, tags, reportMessages)
+      // The link lets the saved report apply its trades to this scenario later.
+      const report = await saveReport(title, summary, tags, reportMessages, scenarioId)
       toast.success('Conversation saved as report')
       onOpenChange(false)
       navigate(`/reports/${report.id}`)

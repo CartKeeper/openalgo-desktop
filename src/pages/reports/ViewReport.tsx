@@ -13,7 +13,8 @@ import {
   Wrench,
   X,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { ActionReviewModal } from '@/components/trading/ActionReviewModal'
@@ -23,11 +24,23 @@ import { Card } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ReportBuilderDialog } from '@/components/reports/ReportBuilderDialog'
+import { ScenarioPickerDialog } from '@/components/reports/ScenarioPickerDialog'
+import { applyScenarioRecommendations } from '@/lib/applyScenarioRecommendations'
 import { parseActionsFromMarkdown } from '@/lib/parseActions'
 import { renderMarkdown, formatToolName } from '@/lib/markdown'
+import {
+  allowedScenarioTrades,
+  loadScenarioReviewContext,
+  type ScenarioReviewContext,
+} from '@/lib/scenarioReview'
 import { useActionQueueStore } from '@/stores/actionQueueStore'
+import { useClientScenarioStore } from '@/stores/clientScenarioStore'
 import { useReportsStore, type ReportNote } from '@/stores/reportsStore'
 import type { CopilotMessage, ToolCallInfo } from '@/stores/copilotStore'
+import type { OrderRecommendation } from '@/types/actionQueue'
+
+/** Tag Analyze with Claude puts on reports about a client's sandbox scenario. */
+const SCENARIO_ANALYSIS_TAG = 'Scenario Analysis'
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr + 'Z')
@@ -217,6 +230,7 @@ export default function ViewReport() {
     deleteNote,
     deleteReport,
     updateReportTitle,
+    linkReportScenario,
     clearCurrentReport,
   } = useReportsStore()
 
@@ -259,6 +273,86 @@ export default function ViewReport() {
     [currentMessages]
   )
   const reviewWithFundsCheck = useActionQueueStore((s) => s.setItemsAndOpenWithFundsCheck)
+  const reviewInSandbox = useActionQueueStore((s) => s.setItemsAndOpen)
+  const cloneScenario = useClientScenarioStore((s) => s.cloneScenario)
+
+  // A report about a client's scenario applies its trades to that sandbox, never
+  // to the live account. Reports saved before the link existed carry only the tag.
+  const isScenarioReport =
+    currentReport != null &&
+    (currentReport.scenario_id != null ||
+      parseTags(currentReport.tags).includes(SCENARIO_ANALYSIS_TAG))
+  const [scenarioCtx, setScenarioCtx] = useState<ScenarioReviewContext | null>(null)
+  const [showScenarioPicker, setShowScenarioPicker] = useState(false)
+  const [isLoadingScenario, setIsLoadingScenario] = useState(false)
+
+  useEffect(() => setScenarioCtx(null), [reportId])
+
+  const reviewScenarioTrades = async (scenarioId: number) => {
+    setIsLoadingScenario(true)
+    try {
+      const ctx = await loadScenarioReviewContext(scenarioId)
+      setScenarioCtx(ctx)
+      const allowed = allowedScenarioTrades(reportActions, ctx)
+      if (allowed.length > 0) reviewInSandbox(allowed)
+    } finally {
+      setIsLoadingScenario(false)
+    }
+  }
+
+  const handleReviewActions = async () => {
+    if (!isScenarioReport) {
+      reviewWithFundsCheck(reportActions)
+      return
+    }
+    const scenarioId = currentReport?.scenario_id
+    if (scenarioId == null) {
+      setShowScenarioPicker(true)
+      return
+    }
+    try {
+      await reviewScenarioTrades(scenarioId)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error(`Couldn't load this report's scenario (${msg}). Choose the scenario to apply the trades to.`)
+      setShowScenarioPicker(true)
+    }
+  }
+
+  const handleScenarioPicked = async (scenarioId: number) => {
+    if (!reportId) return
+    await linkReportScenario(reportId, scenarioId)
+    await reviewScenarioTrades(scenarioId)
+  }
+
+  const handleApplyToScenario = useCallback(
+    async (items: OrderRecommendation[], cloneName: string | undefined) => {
+      if (!scenarioCtx?.scenario.id) throw new Error('No client scenario is loaded for this report.')
+      const { scenario } = scenarioCtx
+      const result = await applyScenarioRecommendations({
+        items,
+        clientId: scenario.client_id,
+        currentScenarioId: scenario.id!,
+        isBaseline: scenario.is_baseline,
+        cloneName,
+        invoke,
+        cloneScenario,
+      })
+      if (result.failures.length > 0) {
+        toast.warning(
+          `${result.applied} applied, ${result.failures.length} failed (${result.failures.map((f) => f.symbol).join(', ')})`
+        )
+      } else if (result.cloned) {
+        toast.success(`Created "${cloneName}" with ${result.applied} trades applied`)
+      } else {
+        toast.success(`Applied ${result.applied} trades to "${scenario.name}"`)
+      }
+      if (result.cloned) {
+        navigate(`/clients/${scenario.client_id}/scenarios/${result.targetScenarioId}`)
+      }
+    },
+    [scenarioCtx, cloneScenario, navigate]
+  )
 
   const handleTitleSave = async () => {
     if (!reportId || !titleDraft.trim()) return
@@ -400,9 +494,14 @@ export default function ViewReport() {
                     variant="outline"
                     size="sm"
                     className="h-8"
-                    onClick={() => reviewWithFundsCheck(reportActions)}
+                    onClick={handleReviewActions}
+                    disabled={isLoadingScenario}
                   >
-                    <ShoppingCart className="h-4 w-4 mr-1" />
+                    {isLoadingScenario ? (
+                      <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                    ) : (
+                      <ShoppingCart className="h-4 w-4 mr-1" />
+                    )}
                     Review {reportActions.length} Action{reportActions.length !== 1 ? 's' : ''}
                   </Button>
                 )}
@@ -565,7 +664,21 @@ export default function ViewReport() {
         notes={notes}
       />
 
-      <ActionReviewModal />
+      {isScenarioReport ? (
+        <>
+          <ActionReviewModal
+            onApply={handleApplyToScenario}
+            cloneNameRequired={scenarioCtx?.scenario.is_baseline ?? false}
+          />
+          <ScenarioPickerDialog
+            open={showScenarioPicker}
+            onOpenChange={setShowScenarioPicker}
+            onPick={handleScenarioPicked}
+          />
+        </>
+      ) : (
+        <ActionReviewModal />
+      )}
     </div>
   )
 }

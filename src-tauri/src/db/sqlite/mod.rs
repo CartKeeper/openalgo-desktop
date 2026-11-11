@@ -1087,9 +1087,15 @@ impl SqliteDb {
         tags: Option<&str>,
         messages_json: &str,
         tool_calls_json: Option<&str>,
+        scenario_id: Option<i64>,
     ) -> Result<ResearchReport> {
         let conn = self.conn.lock();
-        reports::save_report(&conn, title, summary, tags, messages_json, tool_calls_json)
+        reports::save_report(&conn, title, summary, tags, messages_json, tool_calls_json, scenario_id)
+    }
+
+    pub fn set_research_report_scenario(&self, id: i64, scenario_id: i64) -> Result<ResearchReport> {
+        let conn = self.conn.lock();
+        reports::set_report_scenario(&conn, id, scenario_id)
     }
 
     pub fn get_research_reports(&self) -> Result<Vec<ResearchReportSummary>> {

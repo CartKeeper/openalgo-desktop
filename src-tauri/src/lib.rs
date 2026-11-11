@@ -314,6 +314,7 @@ pub fn run() {
             commands::reports::get_research_report,
             commands::reports::delete_research_report,
             commands::reports::update_research_report_title,
+            commands::reports::link_research_report_scenario,
             commands::reports::add_report_note,
             commands::reports::get_report_notes,
             commands::reports::update_report_note,
