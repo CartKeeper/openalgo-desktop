@@ -738,7 +738,45 @@ pub struct GoldmanBrief {
     /// Figures the app computes itself (never Claude) for the cover's fact panel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facts: Option<BriefFacts>,
+    /// A comparison report's cover panel: the original and recommended
+    /// portfolios side by side, computed by the app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<BriefComparison>,
+    /// Replaces the cover's default "Portfolio Analysis & Strategic Recommendations".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover_title: Option<CoverTitle>,
     pub movements: Vec<GoldmanMovement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CoverTitle {
+    pub main: String,
+    pub accent: String,
+}
+
+/// Two portfolios priced at the same live quotes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BriefComparison {
+    pub account_type: String,
+    /// "November 11, 2026, 12:06 PM ET"
+    pub prices_as_of: String,
+    pub original: ComparisonSide,
+    pub recommended: ComparisonSide,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ComparisonSide {
+    /// The scenario's name.
+    pub name: String,
+    pub positions: usize,
+    /// Market value of the positions with a live price.
+    pub holdings_value: f64,
+    /// `None` = cash not recorded for this scenario.
+    pub cash: Option<f64>,
+    /// Holdings plus cash; `None` when cash is not recorded.
+    pub total_value: Option<f64>,
+    /// Positions with no live price (left out of `holdings_value`).
+    pub unpriced: Vec<String>,
 }
 
 /// Account figures behind a brief, computed from live quotes at generation time.
@@ -767,6 +805,62 @@ pub enum GoldmanMovement {
     Tactical(TacticalMovement),
     Coda(CodaMovement),
     Narrative(NarrativeMovement),
+    Changes(ChangesMovement),
+    Measures(MeasuresMovement),
+}
+
+/// Every difference between two portfolios. The app builds the rows; only
+/// `reason` is written by Claude.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangesMovement {
+    pub numeral: String,
+    pub tempo: String,
+    pub title_main: String,
+    pub title_accent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intro: Option<String>,
+    pub rows: Vec<ChangeRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChangeRow {
+    pub ticker: String,
+    /// "sold", "trimmed", "added" or "bought".
+    pub kind: String,
+    /// "Sold all 3", "Bought 9", …
+    pub change: String,
+    /// Shares held before and after (negative = short).
+    pub before: f64,
+    pub after: f64,
+    /// Today's live price; `None` = no live price.
+    pub price: Option<f64>,
+    /// Shares changed × today's price.
+    pub value_today: Option<f64>,
+    pub reason: String,
+}
+
+/// Measures of both portfolios side by side, computed by the app.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeasuresMovement {
+    pub numeral: String,
+    pub tempo: String,
+    pub title_main: String,
+    pub title_accent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intro: Option<String>,
+    pub original_label: String,
+    pub recommended_label: String,
+    pub rows: Vec<MeasureRow>,
+    /// What the shares are measured against, and what was left out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MeasureRow {
+    pub label: String,
+    pub original: String,
+    pub recommended: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -932,6 +1026,9 @@ pub struct ClientScenario {
     pub is_baseline: bool,
     pub cloned_from_id: Option<i64>,
     pub account_type: Option<String>,
+    /// Uninvested cash. `None` = not recorded (see migration 060).
+    #[serde(default)]
+    pub cash: Option<f64>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }

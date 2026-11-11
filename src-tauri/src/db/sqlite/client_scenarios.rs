@@ -48,7 +48,7 @@ fn account_type_label(value: &str) -> &str {
 /// Get all scenarios for a client
 pub fn get_scenarios(conn: &Connection, client_id: i64) -> Result<Vec<ClientScenario>> {
     let mut stmt = conn.prepare(
-        "SELECT id, client_id, name, description, is_baseline, cloned_from_id, account_type, created_at, updated_at
+        "SELECT id, client_id, name, description, is_baseline, cloned_from_id, account_type, created_at, updated_at, cash
          FROM client_scenarios WHERE client_id = ?1 ORDER BY is_baseline DESC, name ASC",
     )?;
 
@@ -62,6 +62,7 @@ pub fn get_scenarios(conn: &Connection, client_id: i64) -> Result<Vec<ClientScen
                 is_baseline: row.get::<_, i32>(4)? != 0,
                 cloned_from_id: row.get(5)?,
                 account_type: row.get(6)?,
+                cash: row.get(9)?,
                 created_at: row.get(7)?,
                 updated_at: row.get(8)?,
             })
@@ -74,7 +75,7 @@ pub fn get_scenarios(conn: &Connection, client_id: i64) -> Result<Vec<ClientScen
 /// Get a single scenario by ID
 pub fn get_scenario_by_id(conn: &Connection, id: i64) -> Result<ClientScenario> {
     conn.query_row(
-        "SELECT id, client_id, name, description, is_baseline, cloned_from_id, account_type, created_at, updated_at
+        "SELECT id, client_id, name, description, is_baseline, cloned_from_id, account_type, created_at, updated_at, cash
          FROM client_scenarios WHERE id = ?1",
         [id],
         |row| {
@@ -86,6 +87,7 @@ pub fn get_scenario_by_id(conn: &Connection, id: i64) -> Result<ClientScenario> 
                 is_baseline: row.get::<_, i32>(4)? != 0,
                 cloned_from_id: row.get(5)?,
                 account_type: row.get(6)?,
+                cash: row.get(9)?,
                 created_at: row.get(7)?,
                 updated_at: row.get(8)?,
             })
@@ -150,20 +152,19 @@ pub fn clone_scenario(
     name: &str,
     description: Option<&str>,
 ) -> Result<ClientScenario> {
-    // Copy account_type from source scenario
-    let source_account_type: Option<String> = conn
+    // Copy account_type and cash from the source scenario
+    let (source_account_type, source_cash): (Option<String>, Option<f64>) = conn
         .query_row(
-            "SELECT account_type FROM client_scenarios WHERE id = ?1",
+            "SELECT account_type, cash FROM client_scenarios WHERE id = ?1",
             [source_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .ok()
-        .flatten();
+        .unwrap_or((None, None));
 
     conn.execute(
-        "INSERT INTO client_scenarios (client_id, name, description, is_baseline, cloned_from_id, account_type)
-         VALUES (?1, ?2, ?3, 0, ?4, ?5)",
-        rusqlite::params![client_id, name, description, source_id, source_account_type],
+        "INSERT INTO client_scenarios (client_id, name, description, is_baseline, cloned_from_id, account_type, cash)
+         VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6)",
+        rusqlite::params![client_id, name, description, source_id, source_account_type, source_cash],
     )?;
     let new_id = conn.last_insert_rowid();
 
@@ -187,14 +188,21 @@ pub fn clone_scenario(
 ///   - Otherwise fall back to the legacy `client_trades` + `import_batches`
 ///     reconstruction, preserving behavior for clients imported via the older
 ///     CSV-trades flow.
-pub fn sync_baseline_scenarios(conn: &Connection, client_id: i64) -> Result<Vec<ClientScenario>> {
+///
+/// `cash` is the account's cash from the latest import (`None` = not recorded);
+/// it sets the holdings baseline's cash.
+pub fn sync_baseline_scenarios(
+    conn: &Connection,
+    client_id: i64,
+    cash: Option<f64>,
+) -> Result<Vec<ClientScenario>> {
     let has_holdings: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM client_holdings WHERE client_id = ?1)",
         [client_id],
         |row| row.get(0),
     )?;
     if has_holdings {
-        return sync_baseline_from_holdings(conn, client_id);
+        return sync_baseline_from_holdings(conn, client_id, cash);
     }
     sync_baseline_from_trades(conn, client_id)
 }
@@ -207,6 +215,7 @@ pub fn sync_baseline_scenarios(conn: &Connection, client_id: i64) -> Result<Vec<
 fn sync_baseline_from_holdings(
     conn: &Connection,
     client_id: i64,
+    cash: Option<f64>,
 ) -> Result<Vec<ClientScenario>> {
     // 1. Look up account_type on the client record (set by the importer)
     let account_type: Option<String> = conn.query_row(
@@ -232,8 +241,8 @@ fn sync_baseline_from_holdings(
             [id],
         )?;
         conn.execute(
-            "UPDATE client_scenarios SET updated_at = datetime('now') WHERE id = ?1",
-            [id],
+            "UPDATE client_scenarios SET cash = ?2, updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![id, cash],
         )?;
         id
     } else {
@@ -246,9 +255,9 @@ fn sync_baseline_from_holdings(
             None => "Auto-synced from holdings snapshot".to_string(),
         };
         conn.execute(
-            "INSERT INTO client_scenarios (client_id, name, description, is_baseline, account_type)
-             VALUES (?1, ?2, ?3, 1, ?4)",
-            rusqlite::params![client_id, name, desc, account_type],
+            "INSERT INTO client_scenarios (client_id, name, description, is_baseline, account_type, cash)
+             VALUES (?1, ?2, ?3, 1, ?4, ?5)",
+            rusqlite::params![client_id, name, desc, account_type, cash],
         )?;
         conn.last_insert_rowid()
     };
@@ -614,18 +623,33 @@ pub fn apply_trade_to_scenario(
         "sell" | "short" => "short",
         other => return Err(AppError::Validation(format!("Unknown trade side: {other}"))),
     };
-    // A trade that opens or adds to a position sets its cost; at $0 it would corrupt it.
-    // Closing or trimming never uses the price.
-    let require_price = || -> Result<()> {
-        if price > 0.0 {
-            Ok(())
-        } else {
-            Err(AppError::Validation(format!(
-                "{symbol}: a trade that opens or adds to a position needs a price above $0"
-            )))
-        }
-    };
+    // Every trade moves the scenario's cash by quantity × price, and an opening
+    // trade sets the position's cost, so a $0 trade would corrupt both.
+    if !(price > 0.0) {
+        return Err(AppError::Validation(format!(
+            "{symbol}: a trade needs a price above $0"
+        )));
+    }
+    let position = apply_trade_to_position(conn, scenario_id, symbol, exchange, side, quantity, price)?;
+    // A buy spends cash and a sell raises it. Unrecorded (NULL) cash stays NULL.
+    let cash_change = if side == "long" { -quantity * price } else { quantity * price };
+    conn.execute(
+        "UPDATE client_scenarios SET cash = cash + ?1, updated_at = datetime('now') WHERE id = ?2",
+        rusqlite::params![cash_change, scenario_id],
+    )?;
+    Ok(position)
+}
 
+/// Apply a priced trade to the position it touches. `side` is "long" or "short".
+fn apply_trade_to_position(
+    conn: &Connection,
+    scenario_id: i64,
+    symbol: &str,
+    exchange: &str,
+    side: &str,
+    quantity: f64,
+    price: f64,
+) -> Result<ScenarioPosition> {
     // Check for existing position
     let existing: Option<(i64, f64, f64, String)> = conn
         .query_row(
@@ -640,7 +664,6 @@ pub fn apply_trade_to_scenario(
         let is_same_side = old_side == side;
 
         if is_same_side {
-            require_price()?;
             // Adding to position: weighted average cost basis
             let new_qty = old_qty + quantity;
             let new_avg = if new_qty.abs() > 1e-10 {
@@ -677,7 +700,6 @@ pub fn apply_trade_to_scenario(
                         updated_at: None,
                     });
                 } else {
-                    require_price()?;
                     // Flipped: new position on opposite side
                     conn.execute(
                         "UPDATE client_scenario_positions SET quantity = ?1, avg_price = ?2, side = ?3, updated_at = datetime('now')
@@ -697,7 +719,6 @@ pub fn apply_trade_to_scenario(
         }
         get_scenario_position_by_id(conn, pos_id)
     } else {
-        require_price()?;
         // No existing position — create new
         add_scenario_position(conn, scenario_id, symbol, exchange, quantity, price, side, None)
     }
@@ -1006,12 +1027,75 @@ mod apply_trade_tests {
     }
 
     #[test]
-    fn closing_or_trimming_needs_no_price() {
+    fn a_sell_with_no_price_is_refused_because_it_moves_cash() {
         let conn = setup();
-        apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "sell", 2.0, 0.0).unwrap();
-        assert_eq!(voo(&conn).unwrap(), (3.0, 679.7, "long".to_string()));
-        apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "sell", 3.0, 0.0).unwrap();
+        assert!(apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "sell", 2.0, 0.0).is_err());
+        assert_eq!(voo(&conn).unwrap(), (5.0, 679.7, "long".to_string()));
+    }
+
+    fn cash(conn: &Connection) -> Option<f64> {
+        get_scenario_by_id(conn, 1).unwrap().cash
+    }
+
+    #[test]
+    fn sells_raise_cash_and_buys_spend_it() {
+        let conn = setup();
+        conn.execute("UPDATE client_scenarios SET cash = 100.0 WHERE id = 1", []).unwrap();
+        apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "sell", 5.0, 700.0).unwrap();
         assert_eq!(voo(&conn), None);
+        assert!((cash(&conn).unwrap() - 3600.0).abs() < 1e-9);
+        apply_trade_to_scenario(&conn, 1, "SPY", "GENERIC", "buy", 4.0, 750.0).unwrap();
+        assert!((cash(&conn).unwrap() - 600.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn unrecorded_cash_stays_unrecorded() {
+        let conn = setup();
+        apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "sell", 5.0, 700.0).unwrap();
+        assert_eq!(cash(&conn), None);
+    }
+
+    #[test]
+    fn a_clone_starts_with_its_sources_cash() {
+        let conn = setup();
+        conn.execute("UPDATE client_scenarios SET cash = 183.03 WHERE id = 1", []).unwrap();
+        let clone = clone_scenario(&conn, 1, 1, "Rebalanced", None).unwrap();
+        assert_eq!(clone.cash, Some(183.03));
+        assert_eq!(clone.cloned_from_id, Some(1));
+    }
+
+    #[test]
+    fn only_the_latest_imports_positions_file_counts() {
+        let conn = setup();
+        let latest = |c: &Connection| super::super::clients::latest_import_positions_document(c, 1).unwrap();
+        assert_eq!(latest(&conn), None);
+        let add = |c: &Connection, t: &str, body: &str| {
+            super::super::clients::add_client_document(c, 1, t, "f.csv", body).unwrap();
+        };
+        add(&conn, "transactions", "t1");
+        add(&conn, "positions", "p1");
+        assert_eq!(latest(&conn).as_deref(), Some("p1"));
+        // A newer import with no Positions file: the old one no longer describes the account.
+        add(&conn, "transactions", "t2");
+        assert_eq!(latest(&conn), None);
+    }
+
+    #[test]
+    fn the_holdings_baseline_takes_the_imports_cash() {
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO client_holdings (client_id, symbol, quantity, avg_cost, total_cost, realized_pnl)
+             VALUES (1, 'VOO', 5, 679.7, 3398.5, 0)",
+            [],
+        )
+        .unwrap();
+        let baseline = sync_baseline_scenarios(&conn, 1, Some(183.03)).unwrap().remove(0);
+        assert!(baseline.is_baseline);
+        assert_eq!(baseline.cash, Some(183.03));
+        // A later import without a Positions file leaves the cash unrecorded.
+        let resynced = sync_baseline_scenarios(&conn, 1, None).unwrap().remove(0);
+        assert_eq!(resynced.id, baseline.id);
+        assert_eq!(resynced.cash, None);
     }
 
     #[test]

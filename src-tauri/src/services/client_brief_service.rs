@@ -233,7 +233,7 @@ fn weigh_card(
 }
 
 /// "November 11, 2026" and "November 11, 2026, 12:06 PM ET", in New York time.
-fn generation_times() -> (String, String) {
+pub(crate) fn generation_times() -> (String, String) {
     let now = Utc::now().with_timezone(&New_York);
     (
         now.format("%B %-d, %Y").to_string(),
@@ -244,6 +244,14 @@ fn generation_times() -> (String, String) {
 /// Live quotes for every tradable symbol, keyed by uppercase symbol. A symbol
 /// Yahoo has no price for is simply absent; a failed batch leaves the map empty.
 async fn live_quotes(state: &AppState, symbols: &[String]) -> HashMap<String, f64> {
+    live_quotes_with_names(state, symbols).await.into_iter().map(|(k, (price, _))| (k, price)).collect()
+}
+
+/// `live_quotes`, plus each security's name as Yahoo gives it.
+pub(crate) async fn live_quotes_with_names(
+    state: &AppState,
+    symbols: &[String],
+) -> HashMap<String, (f64, Option<String>)> {
     let tradable: Vec<&str> = symbols
         .iter()
         .filter(|s| !symbol_is_stranded(s))
@@ -257,7 +265,7 @@ async fn live_quotes(state: &AppState, symbols: &[String]) -> HashMap<String, f6
         Ok(quotes) => quotes
             .into_iter()
             .filter(|q| q.price > 0.0)
-            .map(|q| (q.symbol.to_uppercase(), q.price))
+            .map(|q| (q.symbol.to_uppercase(), (q.price, q.name)))
             .collect(),
         Err(e) => {
             tracing::warn!("client brief: live quotes failed: {e}");
@@ -356,7 +364,7 @@ impl ClientBriefService {
         Ok(brief)
     }
 
-    fn api_key(state: &AppState) -> Result<String> {
+    pub(crate) fn api_key(state: &AppState) -> Result<String> {
         state.sqlite.get_provider_key("anthropic", &state.security)?.ok_or_else(|| {
             AppError::Provider(
                 "Anthropic API key not configured. Add it under Settings → Providers.".to_string(),
@@ -365,13 +373,23 @@ impl ClientBriefService {
     }
 
     async fn ask_claude(state: &AppState, api_key: &str, user_prompt: String) -> Result<GoldmanBrief> {
+        Self::ask_claude_json(state, api_key, SYSTEM_PROMPT, user_prompt).await
+    }
+
+    /// Ask Claude for a JSON answer and parse it as `T`.
+    pub(crate) async fn ask_claude_json<T: serde::de::DeserializeOwned>(
+        state: &AppState,
+        api_key: &str,
+        system_prompt: &str,
+        user_prompt: String,
+    ) -> Result<T> {
         let anth = AnthropicClient::new((*state.http_client).clone());
         let messages = vec![Message {
             role: "user".to_string(),
             content: MessageContent::Text(user_prompt),
         }];
         let response = anth
-            .send_message(api_key, messages, Some(SYSTEM_PROMPT), None)
+            .send_message(api_key, messages, Some(system_prompt), None)
             .await
             .map_err(|e| AppError::Provider(format!("Anthropic call failed: {}", e)))?;
         let text = response
@@ -406,13 +424,13 @@ fn strip_code_fences(s: &str) -> &str {
 }
 
 /// The account type's display label and the app's guidelines for it.
-struct AccountContext {
-    label: &'static str,
+pub(crate) struct AccountContext {
+    pub(crate) label: &'static str,
     guidelines: &'static str,
 }
 
 impl AccountContext {
-    fn new(account_type: Option<&str>) -> Self {
+    pub(crate) fn new(account_type: Option<&str>) -> Self {
         let label = account_type.map(account_type_label).unwrap_or("Unspecified account");
         let guidelines = if account_disallows_shorts(account_type) {
             "long only — no shorts, no leveraged or inverse funds, no options, futures, crypto, or MLPs"
@@ -423,7 +441,7 @@ impl AccountContext {
     }
 }
 
-fn push_header(s: &mut String, client: &Client, account: &AccountContext, prices_as_of: &str) {
+pub(crate) fn push_header(s: &mut String, client: &Client, account: &AccountContext, prices_as_of: &str) {
     s.push_str(&format!("# Client\nName: {}\n", client.name));
     if let Some(b) = &client.broker {
         s.push_str(&format!("Broker: {}\n", b));
@@ -441,7 +459,7 @@ fn push_header(s: &mut String, client: &Client, account: &AccountContext, prices
 
 /// The positions table. `extra` adds per-symbol trailing columns (realized P/L,
 /// last activity) for the holdings brief.
-fn push_positions(s: &mut String, rows: &[PricedRow], extra: &HashMap<String, String>) {
+pub(crate) fn push_positions(s: &mut String, rows: &[PricedRow], extra: &HashMap<String, String>) {
     s.push_str(&format!("# Positions ({})\n", rows.len()));
     s.push_str("symbol | qty | avg_cost | cost_basis | price | market_value | gain_pct");
     s.push_str(if extra.is_empty() { "\n" } else { " | realized_pnl | last_activity\n" });
@@ -610,7 +628,7 @@ fn build_enumerated_lists(rows: &[PricedRow]) -> String {
     s
 }
 
-fn symbol_is_stranded(symbol: &str) -> bool {
+pub(crate) fn symbol_is_stranded(symbol: &str) -> bool {
     if symbol == "NO NUMBER" {
         return true;
     }
@@ -661,6 +679,8 @@ mod tests {
             subtitle: "s".into(),
             confidential_label: None,
             facts: None,
+            comparison: None,
+            cover_title: None,
             movements: vec![
                 GoldmanMovement::Restructuring(RestructuringMovement {
                     numeral: "II".into(),

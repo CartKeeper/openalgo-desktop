@@ -6,6 +6,7 @@ import {
   ArrowUp,
   Copy,
   ExternalLink,
+  FileDown,
   Loader2,
   Minus,
   Plus,
@@ -36,6 +37,8 @@ import type { Client } from '@/types/clients'
 import { isShortSellingAllowed } from '@/types/clients'
 import type { ClientScenario, ScenarioPosition } from '@/types/client-scenarios'
 import { HelpButton } from '@/components/HelpButton'
+import { downloadGoldmanBriefPdf } from '@/components/reports/goldman/generator'
+import type { GoldmanBrief } from '@/components/reports/goldman/types'
 import AddTradeDialog from './AddTradeDialog'
 import AnalyzeWithClaudeDialog from './AnalyzeWithClaudeDialog'
 
@@ -97,6 +100,22 @@ export default function ScenarioDetail() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [sourcePositions, setSourcePositions] = useState<ScenarioPosition[]>([])
   const sourceScenarioId = activeScenario?.cloned_from_id ?? null
+  const [isGeneratingComparison, setIsGeneratingComparison] = useState(false)
+
+  // A clone compared with the scenario it was cloned from, both priced live, as a client PDF.
+  const handleComparisonReport = async () => {
+    if (isGeneratingComparison) return
+    setIsGeneratingComparison(true)
+    try {
+      const report = await invoke<GoldmanBrief>('generate_scenario_comparison', { scenarioId: scId })
+      await downloadGoldmanBriefPdf(report)
+      toast.success('Comparison report downloaded.')
+    } catch (err) {
+      toast.error(`Comparison report failed: ${errMsg(err)}`)
+    } finally {
+      setIsGeneratingComparison(false)
+    }
+  }
 
   const loadScenario = useCallback(async () => {
     try {
@@ -341,6 +360,21 @@ export default function ScenarioDetail() {
             <Sparkles className="h-4 w-4 mr-2" />
             Analyze with Claude
           </Button>
+          {sourceScenarioId != null && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleComparisonReport}
+              disabled={isGeneratingComparison}
+            >
+              {isGeneratingComparison ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <FileDown className="h-4 w-4 mr-2" />
+              )}
+              {isGeneratingComparison ? 'Writing Report...' : 'Comparison Report'}
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={openCloneDialog}>
             <Copy className="h-4 w-4 mr-2" />
             Clone
@@ -362,6 +396,16 @@ export default function ScenarioDetail() {
               </p>
               <p className="text-xl font-bold font-mono tabular-nums mt-1">
                 {fmt(summary.total_value)}
+              </p>
+              <p
+                className="text-xs text-muted-foreground font-mono tabular-nums mt-1"
+                title={
+                  activeScenario?.cash == null
+                    ? "This scenario's cash isn't recorded. Baselines take cash from the latest import's Positions file; clones take their source's cash."
+                    : 'Uninvested cash. Applied sells add to it and buys spend it.'
+                }
+              >
+                {activeScenario?.cash == null ? 'Cash not recorded' : `Cash ${fmt(activeScenario.cash)}`}
               </p>
             </CardContent>
           </Card>
@@ -883,7 +927,10 @@ export default function ScenarioDetail() {
         isBaseline={activeScenario?.is_baseline ?? false}
         accountType={accountType}
         longQtyBySymbol={longQtyBySymbol}
-        onTradesApplied={() => loadPositions(scId)}
+        onTradesApplied={() => {
+          loadPositions(scId)
+          loadScenario()
+        }}
       />
 
       {/* Contextual Help */}

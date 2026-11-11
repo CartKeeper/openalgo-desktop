@@ -75,6 +75,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "057_ride_entries", CREATE_RIDE_ENTRIES_TABLE)?;
     run_migration(conn, "058_dismissed_protection", CREATE_DISMISSED_PROTECTION_TABLE)?;
     run_migration(conn, "059_report_scenario_link", ADD_REPORT_SCENARIO_LINK)?;
+    run_migration(conn, "060_scenario_cash", ADD_SCENARIO_CASH)?;
 
     tracing::info!("Database migrations completed");
     Ok(())
@@ -652,6 +653,13 @@ ALTER TABLE settings ADD COLUMN generic_mode INTEGER NOT NULL DEFAULT 0;
 /// recommended trades can be applied to that sandbox later (never as live orders).
 const ADD_REPORT_SCENARIO_LINK: &str = r#"
 ALTER TABLE research_reports ADD COLUMN scenario_id INTEGER;
+"#;
+
+/// A scenario's cash. NULL means not recorded (a scenario made before cash was
+/// tracked, or a baseline whose latest import had no Positions file); SQL
+/// arithmetic keeps NULL as NULL, so an unknown balance never turns into a number.
+const ADD_SCENARIO_CASH: &str = r#"
+ALTER TABLE client_scenarios ADD COLUMN cash REAL;
 "#;
 
 const CREATE_RESEARCH_REPORTS_TABLES: &str = r#"

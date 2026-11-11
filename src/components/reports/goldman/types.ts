@@ -21,6 +21,10 @@ export interface GoldmanBrief {
   confidential_label?: string
   /** Account figures the app computes from live quotes (never Claude). Shown on the cover. */
   facts?: BriefFacts
+  /** A comparison report's cover panel: original vs recommended, computed by the app. */
+  comparison?: BriefComparison
+  /** Replaces the default cover title. */
+  cover_title?: { main: string; accent: string }
   /** Ordered movements rendered after cover. Renderer treats `kind` as discriminator. */
   movements: GoldmanMovement[]
 }
@@ -41,12 +45,64 @@ export interface BriefFacts {
   unpriced: string[]
 }
 
+/** Two portfolios priced at the same live quotes. */
+export interface BriefComparison {
+  account_type: string
+  prices_as_of: string
+  original: ComparisonSide
+  recommended: ComparisonSide
+}
+
+export interface ComparisonSide {
+  /** Scenario name. */
+  name: string
+  positions: number
+  /** Market value of the positions with a live price. */
+  holdings_value: number
+  /** null = cash not recorded. */
+  cash: number | null
+  /** Holdings + cash; null when cash is not recorded. */
+  total_value: number | null
+  unpriced: string[]
+}
+
 export type GoldmanMovement =
   | DiagnosisMovement
   | RestructuringMovement
   | TacticalMovement
   | CodaMovement
   | NarrativeMovement
+  | ChangesMovement
+  | MeasuresMovement
+
+/** Every difference between two portfolios; only `reason` is written by Claude. */
+export interface ChangesMovement extends MovementBase {
+  kind: 'changes'
+  rows: ChangeRow[]
+}
+
+export interface ChangeRow {
+  ticker: string
+  kind: 'sold' | 'trimmed' | 'added' | 'bought'
+  /** "Sold all 3", "Bought 9", … */
+  change: string
+  before: number
+  after: number
+  /** Today's live price; null = no live price. */
+  price: number | null
+  /** Shares changed × today's price. */
+  value_today: number | null
+  reason: string
+}
+
+/** Both portfolios' measures side by side, computed by the app. */
+export interface MeasuresMovement extends MovementBase {
+  kind: 'measures'
+  original_label: string
+  recommended_label: string
+  rows: { label: string; original: string; recommended: string }[]
+  note?: string
+}
 
 export interface MovementBase {
   /** Roman numeral or label, e.g. "I", "II". */

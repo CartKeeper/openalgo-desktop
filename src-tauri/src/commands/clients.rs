@@ -445,6 +445,28 @@ pub async fn generate_scenario_brief(
     Ok(brief)
 }
 
+/// A client-facing report comparing a cloned scenario with the scenario it was
+/// cloned from, both priced live. Saved with the client's documents like a brief.
+#[tauri::command]
+pub async fn generate_scenario_comparison(
+    state: State<'_, AppState>,
+    scenario_id: i64,
+) -> Result<GoldmanBrief, AppError> {
+    let report = crate::services::scenario_comparison::ScenarioComparisonService::generate(&state, scenario_id).await?;
+    let scenario = state.sqlite.get_client_scenario_by_id(scenario_id)?;
+    let json = serde_json::to_string(&report)
+        .map_err(|e| AppError::Provider(format!("Failed to serialize comparison report: {}", e)))?;
+    let filename = format!(
+        "Goldman_Scenario_Comparison_{}_{}.json",
+        scenario_id,
+        chrono::Local::now().format("%Y%m%d-%H%M%S"),
+    );
+    state
+        .sqlite
+        .add_client_document(scenario.client_id, "goldman_scenario_comparison", &filename, &json)?;
+    Ok(report)
+}
+
 // ---------------------------------------------------------------------------
 // Export trades as CSV
 // ---------------------------------------------------------------------------

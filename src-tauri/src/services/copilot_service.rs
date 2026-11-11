@@ -315,7 +315,8 @@ The current date and time is {date}, {time} ET. Right now {session}.\n\
                 "## Client scenario budget\n\
 This conversation is about a client's sandbox scenario, not the user's own account. \
 The user's own broker cash does not apply and must never be mentioned. \
-Fund any scenario buy from the proceeds of the sells you propose in the same scenario."
+Fund scenario buys from the scenario's `cash` (in get_client_scenario) plus the proceeds of the sells you propose in the same scenario. \
+If `cash` is null, the client's cash is not recorded: fund buys from the proceeds of the sells you propose only."
                     .to_string(),
             ),
             CopilotContext::OwnAccount => available_cash.filter(|c| *c > 0.0).map(|cash| format!(
@@ -1259,6 +1260,8 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
                 "account_type": account_type,
                 "short_selling_restricted": short_selling_restricted,
             },
+            // Uninvested cash in the scenario; null = not recorded.
+            "cash": scenario.cash,
             "positions": position_data,
             "position_count": positions.len(),
             "ride_summary": { "dormant": dormant, "unknown": unknown },
@@ -1350,6 +1353,7 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
             "trade_details": applied,
             "updated_positions": pos_data,
             "updated_position_count": updated_positions.len(),
+            "cash_after": state.sqlite.get_client_scenario_by_id(scenario_id)?.cash,
         }))
     }
 
@@ -1826,6 +1830,7 @@ mod prompt_tests {
         assert!(!section.contains("183.03"));
         assert!(section.contains("The user's own broker cash does not apply"));
         assert!(section.contains("proceeds of the sells you propose"));
+        assert!(section.contains("scenario's `cash`"));
     }
 
     #[test]

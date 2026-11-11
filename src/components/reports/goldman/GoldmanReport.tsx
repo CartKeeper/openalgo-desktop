@@ -22,14 +22,18 @@ import {
 } from '@react-pdf/renderer'
 import type {
   AllocationCard,
+  BriefComparison,
   BriefFacts,
   BulletItem,
+  ChangeRow,
+  ChangesMovement,
   ChecklistGroup,
   CodaMovement,
   DiagnosisIssue,
   DiagnosisMovement,
   GoldmanBrief,
   GoldmanMovement,
+  MeasuresMovement,
   NarrativeMovement,
   PortfolioRow,
   RestructuringMovement,
@@ -127,6 +131,14 @@ const s = StyleSheet.create({
     lineHeight: 1.4,
     paddingTop: 10,
   },
+
+  // Cover comparison panel ---------------------------------------------
+  compareHeaderRow: { flexDirection: 'row', paddingBottom: 5, borderBottomWidth: 0.6, borderBottomColor: C.goldSoft },
+  compareRow: { flexDirection: 'row', paddingVertical: 5, borderBottomWidth: 0.4, borderBottomColor: C.goldSoft },
+  compareLabelCell: { width: '34%', paddingRight: 10 },
+  compareValueCell: { width: '33%', paddingRight: 10 },
+  compareName: { fontFamily: FONT.serifItalic, fontSize: 10, color: C.gold, lineHeight: 1.3 },
+  compareValue: { fontFamily: FONT.serifBold, fontSize: 12, color: C.ink },
 
   // Running footer (movement pages) ------------------------------------
   footer: {
@@ -302,9 +314,9 @@ export function GoldmanReport({ brief: raw, ...docProps }: GoldmanReportProps) {
 
         <Text style={s.confidentialPill}>{confidentialLabel}</Text>
 
-        <Text style={s.coverTitle}>Portfolio Analysis &amp;</Text>
+        <Text style={s.coverTitle}>{brief.cover_title?.main ?? 'Portfolio Analysis &'}</Text>
         <Text style={[s.coverTitle, s.coverTitleAccent, { paddingTop: 0 }]}>
-          Strategic Recommendations
+          {brief.cover_title?.accent ?? 'Strategic Recommendations'}
         </Text>
 
         <Text style={s.coverSubtitle}>{brief.subtitle}</Text>
@@ -318,6 +330,7 @@ export function GoldmanReport({ brief: raw, ...docProps }: GoldmanReportProps) {
         </View>
 
         {brief.facts && <FactPanel facts={brief.facts} />}
+        {brief.comparison && <ComparisonPanel comparison={brief.comparison} />}
 
         <Text style={s.coverFooter}>
           Goldman Sax &amp; Violins, LLP · Equities &amp; Etudes Since 1869 · This document is satirical and
@@ -374,6 +387,46 @@ function FactPanel({ facts }: { facts: BriefFacts }) {
   )
 }
 
+/** Both portfolios at the same live prices — every number computed by the app. */
+function ComparisonPanel({ comparison }: { comparison: BriefComparison }) {
+  const { original: o, recommended: r } = comparison
+  const cash = (v: number | null) => (v === null ? 'Not recorded' : usd(v))
+  const total = (v: number | null) => (v === null ? 'Cash not recorded' : usd(v))
+  const rows: [string, string, string][] = [
+    ['ACCOUNT VALUE', total(o.total_value), total(r.total_value)],
+    ['HOLDINGS', usd(o.holdings_value), usd(r.holdings_value)],
+    ['CASH', cash(o.cash), cash(r.cash)],
+    ['POSITIONS', String(o.positions), String(r.positions)],
+  ]
+  const unpriced = [...new Set([...o.unpriced, ...r.unpriced])]
+  return (
+    <View style={s.facts} wrap={false}>
+      <Text style={s.factsHeading}>
+        Both portfolios at {comparison.prices_as_of} · {comparison.account_type}
+      </Text>
+      <View style={s.compareHeaderRow}>
+        <View style={s.compareLabelCell} />
+        <Text style={[s.compareValueCell, s.compareName]}>Original — {o.name}</Text>
+        <Text style={[s.compareValueCell, s.compareName]}>Recommended — {r.name}</Text>
+      </View>
+      {rows.map(([label, a, b]) => (
+        <View key={label} style={s.compareRow}>
+          <Text style={[s.compareLabelCell, s.factLabel, { paddingBottom: 0, paddingTop: 3 }]}>{label}</Text>
+          <Text style={[s.compareValueCell, s.compareValue]}>{a}</Text>
+          <Text style={[s.compareValueCell, s.compareValue]}>{b}</Text>
+        </View>
+      ))}
+      <Text style={s.factNote}>
+        Live quotes, which may be delayed up to 15 minutes, applied to both portfolios. Holdings value covers the
+        positions with a live price
+        {unpriced.length > 0
+          ? `; ${unpriced.length} without one ${unpriced.length === 1 ? 'is' : 'are'} left out: ${unpriced.join(', ')}.`
+          : '.'}
+      </Text>
+    </View>
+  )
+}
+
 function Fact({
   label,
   value,
@@ -423,6 +476,10 @@ function renderMovement(m: GoldmanMovement) {
       return <CodaView m={m} />
     case 'narrative':
       return <NarrativeView m={m} />
+    case 'changes':
+      return <ChangesView m={m} />
+    case 'measures':
+      return <MeasuresView m={m} />
   }
 }
 
@@ -609,6 +666,106 @@ function ChecklistGroupView({ group }: { group: ChecklistGroup }) {
           </Text>
         </View>
       ))}
+    </View>
+  )
+}
+
+// ----- Changes (comparison report) -----
+
+const CHANGE_GROUPS: { kind: ChangeRow['kind']; heading: string }[] = [
+  { kind: 'sold', heading: 'Sold' },
+  { kind: 'trimmed', heading: 'Trimmed' },
+  { kind: 'added', heading: 'Added to' },
+  { kind: 'bought', heading: 'Bought' },
+]
+
+/** "$6,129.40"; sub-dollar prices keep four decimals ("$0.0012"). */
+const price = (p: number | null) => {
+  if (p === null) return 'No live price'
+  const digits = p < 1 ? 4 : 2
+  return p.toLocaleString('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })
+}
+
+function ChangesView({ m }: { m: ChangesMovement }) {
+  return (
+    <View>
+      <MovementHeader m={m} />
+      {CHANGE_GROUPS.map(({ kind, heading }) => {
+        const rows = m.rows.filter((r) => r.kind === kind)
+        return rows.length > 0 ? <ChangeTable key={kind} heading={heading} rows={rows} /> : null
+      })}
+    </View>
+  )
+}
+
+function ChangeTable({ heading, rows }: { heading: string; rows: ChangeRow[] }) {
+  const cols: { label: string; width: number; right?: boolean }[] = [
+    { label: 'TICKER', width: 0.11 },
+    { label: 'CHANGE', width: 0.16 },
+    { label: 'PRICE TODAY', width: 0.14, right: true },
+    { label: 'VALUE TODAY', width: 0.14, right: true },
+    { label: 'WHY', width: 0.45 },
+  ]
+  const cell = (i: number) => ({
+    width: `${cols[i].width * 100}%`,
+    paddingLeft: i === 0 ? 4 : i === 4 ? 12 : 0,
+    paddingRight: cols[i].right ? 12 : 8,
+    textAlign: (cols[i].right ? 'right' : 'left') as 'right' | 'left',
+  })
+  // A short table moves to the next page whole; a long one keeps its header with its first rows.
+  const unbreakable = rows.length <= 6
+  return (
+    <View wrap={!unbreakable}>
+      <Heading>{heading}</Heading>
+      <View style={s.tableHeaderRow} minPresenceAhead={unbreakable ? undefined : 60}>
+        {cols.map((c, i) => (
+          <Text key={c.label} style={[s.tableHeaderCell, cell(i)]}>
+            {c.label}
+          </Text>
+        ))}
+      </View>
+      {rows.map((r) => (
+        <View key={r.ticker} style={s.tableRow} wrap={false}>
+          <Text style={[s.tickerCell, cell(0)]}>{r.ticker}</Text>
+          <Text style={[s.tableCell, cell(1)]}>{r.change}</Text>
+          <Text style={[s.tableCell, cell(2)]}>{price(r.price)}</Text>
+          <Text style={[s.tableCell, cell(3)]}>{r.value_today === null ? '—' : usd(r.value_today)}</Text>
+          <Text style={[s.tableCell, cell(4), { fontSize: 9.5 }]}>{r.reason || '—'}</Text>
+        </View>
+      ))}
+    </View>
+  )
+}
+
+// ----- Measures (comparison report) -----
+
+function MeasuresView({ m }: { m: MeasuresMovement }) {
+  const widths = ['36%', '32%', '32%']
+  return (
+    <View>
+      <MovementHeader m={m} />
+      <View wrap={false}>
+        <View style={s.tableHeaderRow}>
+          <Text style={[s.tableHeaderCell, { width: widths[0], paddingLeft: 4 }]}>MEASURE</Text>
+          <Text style={[s.compareName, { width: widths[1], paddingRight: 10 }]}>Original — {m.original_label}</Text>
+          <Text style={[s.compareName, { width: widths[2], paddingRight: 10 }]}>
+            Recommended — {m.recommended_label}
+          </Text>
+        </View>
+        {m.rows.map((row) => (
+          <View key={row.label} style={s.tableRow}>
+            <Text style={[s.tableCell, { width: widths[0], paddingLeft: 4, paddingRight: 10 }]}>{row.label}</Text>
+            <Text style={[s.tableCell, { width: widths[1], paddingRight: 10 }]}>{row.original}</Text>
+            <Text style={[s.tableCell, s.checkLead, { width: widths[2], paddingRight: 10 }]}>{row.recommended}</Text>
+          </View>
+        ))}
+      </View>
+      {m.note && <Text style={s.factNote}>{m.note}</Text>}
     </View>
   )
 }

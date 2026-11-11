@@ -60,6 +60,50 @@ describe('GoldmanReport', () => {
     expect(pdf.length).toBeGreaterThan(2000)
   }, 30000)
 
+  it('renders a comparison report: cover panel, change tables and measures', async () => {
+    const comparison: GoldmanBrief = {
+      client_name: 'Casey Borst',
+      document_label: 'Opus 47 / Comparison',
+      tempo: 'Andante',
+      generated_date: 'November 11, 2026',
+      subtitle: 'What changed.',
+      cover_title: { main: 'The Recommendations', accent: 'Before & After' },
+      comparison: {
+        account_type: '401(k)',
+        prices_as_of: 'November 11, 2026, 2:41 PM ET',
+        original: { name: 'Current', positions: 2, holdings_value: 18388, cash: null, total_value: null, unpriced: ['YOURF'] },
+        recommended: { name: 'Rebalanced', positions: 1, holdings_value: 6272, cash: null, total_value: null, unpriced: [] },
+      },
+      movements: [
+        {
+          kind: 'changes',
+          numeral: 'I',
+          tempo: 'Allegro',
+          title_main: 'The',
+          title_accent: 'Recommendations',
+          rows: [
+            { ticker: 'TQQQ', kind: 'sold', change: 'Sold all 3', before: 3, after: 0, price: 6129.4, value_today: 18388, reason: 'Leveraged.' },
+            { ticker: 'YOURF', kind: 'sold', change: 'Sold all 5,000', before: 5000, after: 0, price: null, value_today: null, reason: '' },
+            { ticker: 'VOO', kind: 'bought', change: 'Bought 9', before: 0, after: 9, price: 696.94, value_today: 6272, reason: 'Core.' },
+          ],
+        },
+        {
+          kind: 'measures',
+          numeral: 'II',
+          tempo: 'Andante',
+          title_main: 'Before &',
+          title_accent: 'After',
+          original_label: 'Current',
+          recommended_label: 'Rebalanced',
+          rows: [{ label: 'Positions', original: '2', recommended: '1' }],
+          note: 'Percentages are shares of holdings value.',
+        },
+      ],
+    }
+    const pdf = await renderToBuffer(<GoldmanReport brief={comparison} />)
+    expect(pdf.subarray(0, 5).toString()).toBe('%PDF-')
+  }, 30000)
+
   // Visual check of a real brief: GOLDMAN_BRIEF_JSON=<brief.json> GOLDMAN_PDF_OUT=<out.pdf>
   it.runIf(!!process.env.GOLDMAN_BRIEF_JSON && !!process.env.GOLDMAN_PDF_OUT)(
     'renders the brief at GOLDMAN_BRIEF_JSON to GOLDMAN_PDF_OUT',

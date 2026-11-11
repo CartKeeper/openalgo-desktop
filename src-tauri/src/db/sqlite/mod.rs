@@ -1521,9 +1521,15 @@ impl SqliteDb {
     }
 
     /// Sync baseline scenarios from trade history (one per account type)
+    ///
+    /// The baseline's cash comes from the latest import's Positions file ("Cash &
+    /// Cash Investments"); with no such file it is not recorded.
     pub fn sync_baseline_scenarios(&self, client_id: i64) -> Result<Vec<crate::providers::types::ClientScenario>> {
         let conn = self.conn.lock();
-        client_scenarios::sync_baseline_scenarios(&conn, client_id)
+        let cash = clients::latest_import_positions_document(&conn, client_id)?
+            .and_then(|content| crate::importers::schwab::positions::parse(&content).ok())
+            .and_then(|parsed| parsed.cash_market_value);
+        client_scenarios::sync_baseline_scenarios(&conn, client_id, cash)
     }
 
     /// Get all positions for a scenario

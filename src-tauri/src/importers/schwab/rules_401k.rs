@@ -219,6 +219,17 @@ fn check_instrument(
     }
 }
 
+/// What the strict account guidelines flag about one holding, from its ticker
+/// and (when known) its name: "leveraged_etf", "inverse_etf", "mlp", "option",
+/// "future" or "crypto". `None` = nothing flagged.
+pub fn holding_flag(symbol: &str, name: Option<&str>) -> Option<&'static str> {
+    static RULES: std::sync::OnceLock<CompiledRules> = std::sync::OnceLock::new();
+    let rules = RULES.get_or_init(load_rules);
+    // Padded so the " 3X " style markers match at either end of the name.
+    let desc = format!(" {} ", name.unwrap_or("").to_uppercase());
+    describe_violation(rules, &symbol.to_uppercase(), &desc).or_else(|| pattern_violation(&desc))
+}
+
 fn describe_violation(rules: &CompiledRules, sym: &str, desc: &str) -> Option<&'static str> {
     if rules.leveraged.contains(sym) { return Some("leveraged_etf"); }
     if rules.inverse.contains(sym)   { return Some("inverse_etf"); }
@@ -236,4 +247,16 @@ fn pattern_violation(desc: &str) -> Option<&'static str> {
     for m in inverse_markers { if desc.contains(m) { return Some("inverse_etf"); } }
     for m in leveraged_markers { if desc.contains(m) { return Some("leveraged_etf"); } }
     None
+}
+
+#[cfg(test)]
+mod holding_flag_tests {
+    use super::holding_flag;
+
+    #[test]
+    fn flags_listed_and_name_matched_funds_only() {
+        assert_eq!(holding_flag("TQQQ", None), Some("leveraged_etf"));
+        assert_eq!(holding_flag("ZZZZ", Some("Acme UltraPro QQQ 3X")), Some("leveraged_etf"));
+        assert_eq!(holding_flag("VOO", Some("Vanguard S&P 500 ETF")), None);
+    }
 }
