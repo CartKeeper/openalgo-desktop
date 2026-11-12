@@ -77,6 +77,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "059_report_scenario_link", ADD_REPORT_SCENARIO_LINK)?;
     run_migration(conn, "060_scenario_cash", ADD_SCENARIO_CASH)?;
     // [wp-anchor] WP1 migrations
+    run_migration(conn, "061_chart_drawings", ADD_CHART_DRAWINGS)?;
     //
     // [wp-anchor] WP2 migrations
     //
@@ -978,6 +979,10 @@ CREATE TABLE dismissed_protection (
 "#;
 
 // [wp-anchor] WP1 sql
+/// WP1: drawings saved per symbol beside the indicators (`chart_preferences.drawings`)
+const ADD_CHART_DRAWINGS: &str = r#"
+ALTER TABLE chart_preferences ADD COLUMN drawings TEXT;
+"#;
 //
 // [wp-anchor] WP2 sql
 //

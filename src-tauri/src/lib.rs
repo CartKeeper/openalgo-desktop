@@ -401,6 +401,8 @@ pub fn run() {
             commands::backtest::list_backtest_runs,
             commands::backtest::get_backtest_run,
             // [wp-anchor] WP1 chart-tools
+            commands::chart_preferences::chart_get_preference,
+            commands::chart_preferences::chart_save_preference,
             //
             // [wp-anchor] WP2 analytics
             //
