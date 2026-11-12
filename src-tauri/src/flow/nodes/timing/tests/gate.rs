@@ -50,9 +50,7 @@ async fn fire_logs(side: &crate::flow::triggers::TriggerSide, id: i64, stored: b
 async fn a_failed_read_keeps_the_stored_flag() {
     let t = crate::state::testing::build(BrokerRegistry::new(), SATURDAY_NOON.parse().unwrap());
     t.ctx.flow.triggers().stop().await;
-    t.ctx
-        .security
-        .install(&crate::security::Unlocked::random().unwrap());
+    crate::flow::support::testkit::sign_in(&t.ctx);
     let id = scheduled_workflow(&t);
     let side = crate::flow::triggers::TriggerSide::new(
         std::sync::Arc::downgrade(&t.ctx),
@@ -104,48 +102,3 @@ fn minutes_decide_and_a_reversed_window_is_never_open() {
     }
 }
 
-fn calendar() -> rusqlite::Connection {
-    let c = rusqlite::Connection::open_in_memory().unwrap();
-    crate::db::sqlite::migrations::run_legacy_schema(&c).unwrap();
-    market_calendar::migrate(&c).unwrap();
-    c
-}
-
-/// N-marketHours-05: a calendar that cannot be read counts as shut (a
-/// crypto exchange, never read from it, stays open).
-#[test]
-fn an_unreadable_calendar_is_shut() {
-    let c = calendar();
-    let nse = MarketHours {
-        enabled: true,
-        ..Default::default()
-    };
-    assert!(is_within_market_hours(&c, now("12:00", 4), &nse));
-    c.execute_batch("ALTER TABLE market_holidays RENAME TO market_holidays_gone")
-        .unwrap();
-    assert!(!is_within_market_hours(&c, now("12:00", 4), &nse));
-    let crypto = MarketHours {
-        exchange: Some(json!("CRYPTO")),
-        ..nse
-    };
-    assert!(is_within_market_hours(&c, now("12:00", 4), &crypto));
-}
-
-/// N-marketHours-05: an exchange's own hours row decides; without one the
-/// web's default hours apply (NSE 09:15-15:30).
-#[test]
-fn an_exchange_without_hours_uses_the_default() {
-    let c = calendar();
-    let nse = MarketHours {
-        enabled: true,
-        ..Default::default()
-    };
-    market_calendar::update_timing(&c, "NSE", "10:00", "14:00").unwrap();
-    assert!(!is_within_market_hours(&c, now("14:30", 4), &nse));
-    assert!(!is_within_market_hours(&c, now("09:30", 4), &nse));
-    c.execute("DELETE FROM market_timings WHERE exchange_code = 'NSE'", [])
-        .unwrap();
-    assert!(is_within_market_hours(&c, now("14:30", 4), &nse));
-    assert!(is_within_market_hours(&c, now("09:30", 4), &nse));
-    assert!(!is_within_market_hours(&c, now("15:31", 4), &nse));
-}

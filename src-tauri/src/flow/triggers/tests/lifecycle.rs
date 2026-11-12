@@ -27,13 +27,7 @@ fn alert_node() -> Value {
 #[tokio::test]
 async fn a_scheduled_fire_for_a_gone_inactive_or_running_workflow_runs_nothing() {
     let t = app();
-    crate::services::auth_service::AuthService::setup(
-        &t.ctx,
-        "trader",
-        "trader@example.com",
-        "Secret@123",
-    )
-    .unwrap();
+    crate::flow::support::testkit::sign_in(&t.ctx);
     let s = side(&t);
     let daily = || node("start", json!({"scheduleType": "daily", "time": "09:15"}));
     let inactive = save(&t.ctx, daily(), false);
@@ -207,13 +201,11 @@ async fn a_shared_feed_is_given_back_once_by_its_last_holder() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn opening_the_app_restores_its_active_triggers() {
     let dir = tempfile::tempdir().unwrap();
-    let keys: Arc<dyn crate::security::keystore::KeyStore> =
-        Arc::new(crate::security::keystore::MemoryKeyStore::new());
     let open = || {
         AppState::open(
             dir.path(),
             crate::state::OpenOptions {
-                keystore: keys.clone(),
+                app_handle: None,
                 clock: Arc::new(crate::clock::SystemClock),
                 brokers: Arc::new(crate::brokers::BrokerRegistry::new()),
             },
@@ -221,7 +213,7 @@ async fn opening_the_app_restores_its_active_triggers() {
         .unwrap()
     };
     let first = open();
-    first.security.install(&Unlocked::random().unwrap());
+    crate::flow::support::testkit::sign_in(&first);
     // This app's own start-up restore runs on its own task and could read
     // the row after the save; stopped first, the save is restored only by
     // the next open.
@@ -364,13 +356,7 @@ async fn a_spent_one_shot_logs_the_webs_lines() {
 #[tokio::test]
 async fn activation_answers_500_when_it_cannot_persist_or_register() {
     let t = app();
-    crate::services::auth_service::AuthService::setup(
-        &t.ctx,
-        "trader",
-        "trader@example.com",
-        "Secret@123",
-    )
-    .unwrap();
+    crate::flow::support::testkit::sign_in(&t.ctx);
     let daily = node("start", json!({"scheduleType": "daily", "time": "09:15"}));
     let id = save(&t.ctx, daily.clone(), false);
     refuse_updates(&t.ctx, "refuse_active", "is_active");
@@ -400,13 +386,7 @@ async fn activation_answers_500_when_it_cannot_persist_or_register() {
 #[tokio::test]
 async fn the_webhook_payload_never_reaches_the_log() {
     let t = app();
-    crate::services::auth_service::AuthService::setup(
-        &t.ctx,
-        "trader",
-        "trader@example.com",
-        "Secret@123",
-    )
-    .unwrap();
+    crate::flow::support::testkit::sign_in(&t.ctx);
     let (token, secret) = live_hook(
         &t.ctx,
         json!([

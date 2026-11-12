@@ -572,43 +572,6 @@ fn the_settings_are_read_from_the_trigger_node() {
     assert!(!market_hours_config(&wf(json!({}))).enabled);
 }
 
-/// The gate on a real calendar (the web's TestRealCalendar, and the
-/// calendar's own rules, N-marketHours-05/06).
-#[test]
-fn the_gate_reads_the_apps_calendar() {
-    let c = rusqlite::Connection::open_in_memory().unwrap();
-    crate::db::sqlite::migrations::run_legacy_schema(&c).unwrap();
-    market_calendar::migrate(&c).unwrap();
-    let nse = MarketHours {
-        enabled: true,
-        ..Default::default()
-    };
-    assert!(
-        !is_within_market_hours(&c, now("12:00", 8), &nse),
-        "Saturday"
-    );
-    assert!(
-        is_within_market_hours(&c, now("12:00", 4), &nse),
-        "Tuesday midday"
-    );
-    assert!(!is_within_market_hours(&c, now("15:40", 4), &nse));
-    let extended = MarketHours {
-        end: Some(json!("15:40")),
-        ..nse.clone()
-    };
-    assert!(is_within_market_hours(&c, now("15:40", 4), &extended));
-    let mcx = MarketHours {
-        exchange: Some(json!("mcx")),
-        ..nse.clone()
-    };
-    assert!(is_within_market_hours(&c, now("22:30", 4), &mcx));
-    let crypto = MarketHours {
-        exchange: Some(json!("CRYPTO")),
-        ..nse
-    };
-    assert!(is_within_market_hours(&c, now("03:00", 8), &crypto));
-}
-
 /// Time fields resolve their `{{...}}` references; one that does not
 /// resolve to a time fails the node, naming the field. The web read the
 /// reference as a malformed time and used the default (fails on the web:

@@ -62,12 +62,6 @@ pub(super) async fn wait_for(logs: &Logged, line: &str) {
 /// An app with an account and its API key (made before any workflow).
 pub(super) fn keyed() -> crate::state::testing::TestCtx {
     let t = app();
-    crate::services::auth_service::AuthService::setup(
-        &t.ctx,
-        "trader",
-        "trader@example.com",
-        "Secret@123",
-    )
-    .unwrap();
+    crate::flow::support::testkit::sign_in(&t.ctx);
     t
 }

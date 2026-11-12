@@ -595,9 +595,7 @@ async fn analyzer_mode_still_sends_the_request() {
         "2026-08-04T06:30:00Z".parse().unwrap(),
     );
     t.ctx.flow.triggers().stop().await;
-    t.ctx
-        .security
-        .install(&crate::security::Unlocked::random().unwrap());
+    crate::flow::support::testkit::sign_in(&t.ctx);
     t.ctx.sqlite.set_analyze_mode(true).unwrap();
     let http = stub(reply(200, "{\"ok\": true}"));
     let installed: Arc<dyn OutboundHttp> = http.clone();

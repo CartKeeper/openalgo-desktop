@@ -365,6 +365,7 @@ mod tests {
     /// X-059 and C-06: the editor and the run agree on the derivative
     /// exchanges (the default product) and the expiry types.
     #[test]
+    #[ignore = "needs src/lib/flow/constants.ts (carried with the frontend in WP8 Phase B)"]
     fn the_editor_and_the_run_share_their_lists() {
         use crate::flow::node_contracts::{DERIVATIVE_EXCHANGES, VALID_EXPIRY_TYPES};
         let mut derivative = editor_list("DERIVATIVE_EXCHANGES", "");

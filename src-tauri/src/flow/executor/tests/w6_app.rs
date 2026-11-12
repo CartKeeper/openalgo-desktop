@@ -5,7 +5,6 @@
 use super::w6_run::{app, history, key, save, NOW};
 use super::w6_walk::level_of;
 use super::*;
-use crate::security::Unlocked;
 use crate::flow::support::testkit::capture_logs;
 use std::time::Duration;
 
@@ -45,14 +44,12 @@ async fn quitting_waits_for_runs_to_record_and_ends_the_rest() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn opening_the_app_closes_a_run_left_running() {
     let dir = tempfile::tempdir().unwrap();
-    let keys: Arc<dyn crate::security::keystore::KeyStore> =
-        Arc::new(crate::security::keystore::MemoryKeyStore::new());
     let clock = crate::clock::ManualClock::new(NOW.parse().unwrap());
     let open = || {
         AppState::open(
             dir.path(),
             crate::state::OpenOptions {
-                keystore: keys.clone(),
+                app_handle: None,
                 clock: clock.clone(),
                 brokers: Arc::new(crate::brokers::BrokerRegistry::new()),
             },
@@ -60,7 +57,7 @@ async fn opening_the_app_closes_a_run_left_running() {
         .unwrap()
     };
     let first = open();
-    first.security.install(&Unlocked::random().unwrap());
+    crate::flow::support::testkit::sign_in(&first);
     first.flow.triggers().stop().await;
     let id = save(
         &first,

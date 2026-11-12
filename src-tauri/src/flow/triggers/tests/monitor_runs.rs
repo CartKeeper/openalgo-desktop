@@ -12,13 +12,7 @@ use crate::flow::triggers::price_monitor::{Alert, Observed};
 /// new account's keys drop every earlier webhook secret).
 fn keyed_app() -> crate::state::testing::TestCtx {
     let t = app();
-    crate::services::auth_service::AuthService::setup(
-        &t.ctx,
-        "trader",
-        "trader@example.com",
-        "Secret@123",
-    )
-    .unwrap();
+    crate::flow::support::testkit::sign_in(&t.ctx);
     t
 }
 

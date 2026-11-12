@@ -217,7 +217,7 @@ mod tests {
     fn timestamps_render_in_market_time() {
         // 2026-10-30 13:30:00Z is 09:30 in New York (EDT).
         assert_eq!(
-            market_timestamp(&json!(1_793_453_400)),
+            market_timestamp(&json!(1_793_367_000)),
             json!("2026-10-30T09:30:00-04:00")
         );
         assert_eq!(market_timestamp(&json!("x")), json!("x"));

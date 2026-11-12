@@ -60,8 +60,8 @@ mod tests {
     fn the_regular_window_is_0930_to_1600_market_time_on_weekdays() {
         // Friday 2026-10-30 (EDT): 13:30Z to 20:00Z.
         let w = regular_window(NaiveDate::from_ymd_opt(2026, 10, 30).unwrap()).unwrap();
-        assert_eq!(w.start_ms, 1_793_453_400_000);
-        assert_eq!(w.end_ms, 1_793_476_800_000);
+        assert_eq!(w.start_ms, 1_793_367_000_000);
+        assert_eq!(w.end_ms, 1_793_390_400_000);
         assert!(!w.is_special);
         assert!(regular_window(NaiveDate::from_ymd_opt(2026, 10, 31).unwrap()).is_none());
     }

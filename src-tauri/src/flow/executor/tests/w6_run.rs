@@ -7,7 +7,6 @@ use super::w6_walk::level_of;
 use super::*;
 use crate::flow::contract::model::RunStatus;
 use crate::flow::store::workflows::NewWorkflow;
-use crate::security::Unlocked;
 use crate::flow::support::testkit::capture_logs;
 use std::time::Duration;
 
@@ -16,7 +15,7 @@ pub(super) const NOW: &str = "2026-10-30T03:45:00Z";
 pub(super) fn app() -> crate::state::testing::TestCtx {
     let t =
         crate::state::testing::build(crate::brokers::BrokerRegistry::new(), NOW.parse().unwrap());
-    t.ctx.security.install(&Unlocked::random().unwrap());
+    crate::flow::support::testkit::sign_in(&t.ctx);
     t
 }
 
@@ -313,7 +312,6 @@ async fn a_run_turns_the_session_day_at_the_configured_expiry() {
             [],
         )
         .unwrap();
-    t.ctx.reload_config().unwrap();
     let nodes = json!([
         node("start", "start", json!({})),
         node("l", "log", json!({"message": "{{session_date}} {{date}}"})),

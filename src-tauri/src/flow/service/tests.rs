@@ -5,7 +5,6 @@
 use super::*;
 use crate::flow::contract::subscriptions::FeedRelease;
 use crate::flow::contract::triggers::{TriggerError, TriggerHooks};
-use crate::security::Unlocked;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 
@@ -97,14 +96,7 @@ fn app() -> crate::state::testing::TestCtx {
         crate::brokers::BrokerRegistry::new(),
         "2026-10-30T03:45:00Z".parse().unwrap(),
     );
-    t.ctx.security.install(&Unlocked::random().unwrap());
-    crate::services::auth_service::AuthService::setup(
-        &t.ctx,
-        "trader",
-        "trader@example.com",
-        "Secret@123",
-    )
-    .unwrap();
+    crate::flow::support::testkit::sign_in(&t.ctx);
     t
 }
 

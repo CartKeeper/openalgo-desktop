@@ -15,7 +15,6 @@ use crate::flow::contract::node::{FlowNode, NodeCtx, NodeOutcome, WARNING};
 use crate::flow::contract::pyfmt;
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
-use std::sync::Arc;
 
 /// Which book a [`BookNode`] reads.
 #[derive(Clone, Copy)]

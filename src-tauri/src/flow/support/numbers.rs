@@ -234,9 +234,9 @@ mod tests {
         // 2026-10-30 09:30 in New York is 13:30Z (EDT).
         assert_eq!(
             epoch_seconds(&json!("2026-10-30 09:30:00")),
-            Some(1_793_453_400)
+            Some(1_793_367_000)
         );
-        assert_eq!(epoch_seconds(&json!("2026-10-30T13:30:00Z")), Some(1_793_453_400));
-        assert_eq!(epoch_seconds(&json!(1_793_453_400_000i64)), Some(1_793_453_400));
+        assert_eq!(epoch_seconds(&json!("2026-10-30T13:30:00Z")), Some(1_793_367_000));
+        assert_eq!(epoch_seconds(&json!(1_793_367_000_000i64)), Some(1_793_367_000));
     }
 }

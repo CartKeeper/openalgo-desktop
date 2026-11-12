@@ -126,6 +126,74 @@ carried tree, followed by the hand edits listed in the next section.
   Strategy P&L, WhatsApp alerts, absolute-strike legs; Telegram until
   Phase C; option expiry/strike lookups until Phase D.
 
+## Task A2: the `AppState` handle and the headless harness
+
+- `AppState` is now `AppState(Arc<AppStateInner>)` with `Deref`; every
+  field lives on `AppStateInner`. The 250-odd Tauri commands keep
+  `State<'_, AppState>` and compile unchanged (field access derefs).
+- Carried Flow code keeps upstream's `Arc<AppState>` / `Weak<AppState>`
+  signatures. The `Weak`s taken at start-up (`SymbolStoreMaster`,
+  `AppCalendar`, `TriggerSide`) must point at an `Arc` that outlives
+  them: `AppState::root()` makes that root once and finds it again while
+  it lives (`AppStateInner::me`, a weak back-reference). The app manages
+  the root beside the handle (Task A6); a test holds it in `TestCtx::ctx`.
+  Per-call `Arc`s (`Arc::new(state.clone())` in a command) are fine: a
+  run's task holds its own clone for the run's lifetime.
+- `AppState::open(data_dir, OpenOptions)` opens a state on any folder and
+  **starts Flow on it** (restore, interrupted-run close, trigger side), as
+  upstream's `open` did and as the carried reopen tests expect;
+  `AppState::new(&AppHandle)` builds only, and `lib.rs` starts Flow
+  (Task A6). `OpenOptions { clock, brokers, app_handle }` replaces
+  upstream's `{ keystore, clock, brokers }`.
+- `state::testing::build(brokers, now) -> TestCtx { ctx, clock, dir }`
+  keeps upstream's signature so the carried tests compile unchanged
+  (the plan's zero-argument `build()` was not used; `db()` and
+  `object()` exist as the plan lists them). The harness is a fresh
+  database: analyzer mode off until a test turns it on, no user or broker
+  session, random keys, no window. It must be built inside a tokio
+  runtime (`#[tokio::test]`).
+- `WebSocketManager` holds `Option<AppHandle>` and gains `headless()`;
+  its emits go through one helper that drops the event when there is no
+  window. Behaviour with a window is unchanged. (File outside the plan's
+  list: `src-tauri/src/websocket/manager.rs`, the one field that blocked a
+  headless state.)
+- `[dev-dependencies]` gains `tokio = { features = ["full", "test-util"] }`
+  for the carried `#[tokio::test(start_paused = true)]` tests (upstream's
+  dev-dependency).
+
+### Carried tests adapted in A2
+
+| Upstream test helper | Here |
+|---|---|
+| `AuthService::setup(&app, "trader", ...)` | `flow::support::testkit::sign_in(&app)` (a user session) |
+| `AuthService::lock_everything(&app)` | `testkit::sign_out(&app)` (session cleared, runs stopped, triggers kept) |
+| `app.security.install(&Unlocked::random())`, `security.is_unlocked()` | removed / `is_authenticated()` (always unlocked here) |
+| `OpenOptions { keystore, .. }` | `OpenOptions { app_handle: None, .. }` |
+| `app.bus.queue_depths()`, `app.bus.publish(Event::OrderUpdate(u))` | `app.order_updates.receiver_count()`, `app.order_updates.send(u)` |
+| `services::schemas::basket_order().load(row)` | the row's keys checked against this app's `BasketOrderItem` fields |
+| `include_str!("src/lib/flow/constants.ts")` | read at run time; the five editor tests and `the_editor_and_the_run_share_their_lists` are `#[ignore]`d until the frontend arrives (Phase B) |
+
+Tests retired (not applicable here; recorded in `docs/flow/parity.md`):
+`executor/tests/run.rs::a_fresh_start_or_an_account_reset_stops_a_run_in_flight`
+(upstream's account reset and fresh start), the calendar-table gate tests
+`timing/tests.rs::the_gate_reads_the_apps_calendar`,
+`timing/tests/gate.rs::{an_unreadable_calendar_is_shut,
+an_exchange_without_hours_uses_the_default}` and
+`triggers/tests/schedule_logs.rs::the_gate_reads_the_nse_calendar_when_no_exchange_is_named`
+(upstream's holiday and timing tables; Task A3 tests the Eastern gate).
+
+### `indicators_lib` in this app
+
+- `discovery.rs`, `scan.rs` and `outcome.rs` (the Agent's tools) are
+  `#[cfg(test)]` modules: only their tests run here.
+- The Agent's dispatcher (`compute::compute`, `coerce`, `json`, parts of
+  `registry`) is reached only by the library's goldens; the module carries
+  `#![cfg_attr(not(test), allow(dead_code))]` with the reason, rather than
+  deleting a tested half of a carried library. Flow's Indicator node uses
+  `ta`, `registry::get_spec` and `compute::bind`.
+- `Json::from_value` (referenced by nothing, tests included) was removed.
+- Unused re-exports in `indicators_lib/mod.rs` were removed.
+
 ## Environment notes for whoever rebuilds this
 
 - `src-tauri/Cargo.lock` and `dist/` are git-ignored in this repository.

@@ -6,7 +6,6 @@
 use super::*;
 use crate::flow::contract::node::RunTrigger;
 use crate::flow::store::workflows::{self, NewWorkflow};
-use crate::security::Unlocked;
 use serde_json::json;
 
 fn app() -> crate::state::testing::TestCtx {
@@ -14,7 +13,7 @@ fn app() -> crate::state::testing::TestCtx {
         crate::brokers::BrokerRegistry::new(),
         "2026-11-03T04:00:00Z".parse().unwrap(),
     );
-    t.ctx.security.install(&Unlocked::random().unwrap());
+    crate::flow::support::testkit::sign_in(&t.ctx);
     t
 }
 
@@ -161,7 +160,7 @@ async fn a_trigger_while_signed_out_is_skipped_and_recorded() {
         None,
         "no broker is no pause"
     );
-    t.ctx.security.lock_with(|| {});
+    t.ctx.set_user_session(None);
     assert_eq!(s.fire(id, RunTrigger::Schedule, None).await, Fired::Skipped);
     let runs = crate::flow::store::executions::list(&t.ctx.sqlite.conn().unwrap(), id, 5).unwrap();
     assert_eq!(runs.len(), 1);
@@ -295,12 +294,10 @@ async fn stop_ends_every_task_and_reset_forgets_everything() {
 #[tokio::test]
 async fn an_order_update_from_the_bus_reaches_its_watch() {
     let t = app();
-    assert!(t
-        .ctx
-        .bus
-        .queue_depths()
-        .iter()
-        .any(|q| q.name == "FlowOrderUpdateMonitor" && q.lane == crate::events::Lane::Critical));
+    assert!(
+        t.ctx.order_updates.receiver_count() >= 1,
+        "the trigger side listens for order updates"
+    );
     let id = save(
         &t.ctx,
         node("orderUpdateTrigger", json!({"symbol": "SBIN"})),
@@ -315,15 +312,13 @@ async fn an_order_update_from_the_bus_reaches_its_watch() {
         )
         .await
         .unwrap();
-    t.ctx.bus.publish(crate::events::Event::OrderUpdate(
-        crate::events::OrderUpdate {
+    t.ctx.order_updates.send(crate::events::OrderUpdate {
             orderid: "2511030001".into(),
             symbol: "SBIN".into(),
             exchange: "NSE".into(),
             order_status: "complete".into(),
             ..Default::default()
-        },
-    ));
+        }).unwrap();
     let mut runs = Vec::new();
     for _ in 0..200 {
         runs = crate::flow::store::executions::list(&t.ctx.sqlite.conn().unwrap(), id, 5).unwrap();
@@ -489,13 +484,7 @@ async fn a_webhook_needs_a_key_and_a_runnable_workflow() {
     // With an account and its key (made before the workflow: a new
     // account's keys drop every earlier webhook secret).
     let t = app();
-    crate::services::auth_service::AuthService::setup(
-        &t.ctx,
-        "trader",
-        "trader@example.com",
-        "Secret@123",
-    )
-    .unwrap();
+    crate::flow::support::testkit::sign_in(&t.ctx);
     let (token, secret) = live_hook(&t.ctx, incomplete, json!([]));
     let a = trigger(&t.ctx, hook_call(&token, &secret)).await;
     assert_eq!(a.reply.status, 400, "{}", a.reply.body);
@@ -608,13 +597,7 @@ async fn the_apps_shutdown_stops_the_trigger_side() {
 #[tokio::test]
 async fn an_expired_alert_stands_its_workflow_down() {
     let t = app();
-    crate::services::auth_service::AuthService::setup(
-        &t.ctx,
-        "trader",
-        "trader@example.com",
-        "Secret@123",
-    )
-    .unwrap();
+    crate::flow::support::testkit::sign_in(&t.ctx);
     let id = save(&t.ctx, node("priceAlert", json!({"symbol": "SBIN"})), true);
     let s = side(&t);
     s.register(

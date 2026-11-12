@@ -32,24 +32,6 @@ impl Json {
         Json::Obj(pairs.into_iter().map(|(k, v)| (k.into(), v)).collect())
     }
 
-    /// A `serde_json::Value` as this type, keys in the value's own order.
-    pub(crate) fn from_value(value: &serde_json::Value) -> Self {
-        use serde_json::Value;
-        match value {
-            Value::Null => Json::Null,
-            Value::Bool(b) => Json::Bool(*b),
-            Value::Number(n) => match n.as_i64() {
-                Some(i) => Json::Int(i),
-                None => Json::Num(n.as_f64().unwrap_or(f64::NAN)),
-            },
-            Value::String(s) => Json::Str(s.clone()),
-            Value::Array(items) => Json::Arr(items.iter().map(Json::from_value).collect()),
-            Value::Object(map) => {
-                Json::obj(map.iter().map(|(k, v)| (k.clone(), Json::from_value(v))))
-            }
-        }
-    }
-
     /// Set `key`, in place when it is already present (a Python dict
     /// assignment), at the end otherwise.
     pub(crate) fn set(&mut self, key: &str, value: Json) {

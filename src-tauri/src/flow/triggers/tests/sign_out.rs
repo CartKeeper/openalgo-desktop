@@ -36,8 +36,8 @@ async fn signing_out_keeps_every_trigger_registered_and_its_workflow_active() {
     let next = store::next_run(&t.ctx.sqlite.conn().unwrap(), schedule).unwrap();
     assert!(next.is_some());
 
-    crate::services::auth_service::AuthService::lock_everything(&t.ctx).await;
-    assert!(!t.ctx.security.is_unlocked());
+    crate::flow::support::testkit::sign_out(&t.ctx).await;
+    assert!(!t.ctx.is_authenticated());
 
     assert!(s.scheduler.has(schedule), "the schedule stays");
     assert!(s.alerts.get(alert).is_some(), "the alert stays");

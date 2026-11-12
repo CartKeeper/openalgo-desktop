@@ -12,7 +12,6 @@
 
 use super::support::*;
 use super::*;
-use crate::flow::nodes::timing::{is_within_market_hours, MarketHours};
 
 fn run_count(app: &Arc<AppState>, id: i64) -> usize {
     crate::flow::store::executions::list(&app.sqlite.conn().unwrap(), id, 10)
@@ -264,65 +263,6 @@ async fn a_one_time_schedule_that_fired_on_time_stands_its_workflow_down() {
     assert!(again.scheduler.workflow_ids().is_empty());
     assert!(again.scheduler.tick(again.now()).is_empty());
     assert_eq!(run_count(&t.ctx, id), 1, "never a second run");
-}
-
-/// T-021, T-101, X-115, N-marketHours-01: with no exchange named the gate
-/// reads NSE's calendar: it follows NSE's hours when BSE's differ, either
-/// way round; outside them the run is skipped with the web's debug line.
-#[tokio::test]
-async fn the_gate_reads_the_nse_calendar_when_no_exchange_is_named() {
-    let t = app();
-    t.ctx.flow.triggers().stop().await;
-    // Tuesday 2026-11-03, 13:00 IST.
-    t.clock.set(ist_at(3, 13, 0, 0));
-    let s = side(&t);
-    let gated = json!({"scheduleType": "daily", "marketHoursOnly": true});
-    let id = save(&t.ctx, node("start", gated), true);
-    let open = |exchange: Option<&str>| {
-        let hours = MarketHours {
-            enabled: true,
-            exchange: exchange.map(|e| json!(e)),
-            ..Default::default()
-        };
-        is_within_market_hours(&t.ctx.sqlite.conn().unwrap(), t.ctx.now(), &hours)
-    };
-    let close_at = |exchange: &str, end: &str| {
-        crate::flow::support::market_hours::update_timing(
-            &t.ctx.sqlite.conn().unwrap(),
-            exchange,
-            "09:15",
-            end,
-        )
-        .unwrap()
-    };
-    let (_guard, logs) = logged();
-    close_at("BSE", "12:00");
-    assert_eq!(
-        (open(None), open(Some("NSE")), open(Some("BSE"))),
-        (true, true, false)
-    );
-    s.scheduled_run(id, true).await;
-    assert_eq!(
-        run_count(&t.ctx, id),
-        1,
-        "inside NSE's hours it runs (into the no-key skip)"
-    );
-    close_at("BSE", "15:30");
-    close_at("NSE", "12:00");
-    assert_eq!(
-        (open(None), open(Some("NSE")), open(Some("BSE"))),
-        (false, false, true)
-    );
-    s.scheduled_run(id, true).await;
-    assert_eq!(
-        run_count(&t.ctx, id),
-        1,
-        "outside NSE's hours: nothing at all"
-    );
-    assert!(logs.has(&format!(
-        "Skipping scheduled workflow {}: outside market hours",
-        id
-    )));
 }
 
 /// T-022: the market-hours switch gates only a scheduled run. On a

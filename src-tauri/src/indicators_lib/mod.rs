@@ -26,15 +26,27 @@
 //! `ulcerindex` compute. The web refuses them as broken, a verdict measured
 //! on openalgo 2.0.3; the 2.0.5 build the web pins computes both, and their
 //! golden values are recorded from it.
+//!
+//! In this app (no Agent) Flow's Indicator node reaches `ta`, `registry`
+//! and `compute::bind`; the Agent's dispatcher (`compute`, `coerce`, `json`)
+//! is kept whole for its goldens, which pin the library against the web's
+//! numbers, so it is dead in a release build and alive in the test build.
+#![cfg_attr(not(test), allow(dead_code))]
 
 pub mod candles;
 mod coerce;
 mod compute;
 mod descriptions;
-mod discovery;
 mod json;
-pub mod outcome;
 mod registry;
+// The Agent's tools over the library (`list_indicators`, `describe_indicator`,
+// `scan_symbols`). This app has no Agent, so they are built for their
+// tests only, which pin the library's refusals against the web's.
+#[cfg(test)]
+mod discovery;
+#[cfg(test)]
+pub mod outcome;
+#[cfg(test)]
 mod scan;
 // The Flow Indicator node calls the library directly
 // (`crate::flow::indicator_service`, the port of the web's
@@ -47,14 +59,10 @@ pub(crate) mod tests;
 use crate::indicators_lib::candles::CandleFrame;
 use serde_json::{Map, Value};
 
-pub(crate) use coerce::required_bars;
-pub(crate) use compute::{compute, ist_stamp, Comparison, Computed};
-pub(crate) use discovery::{describe_indicator, list_indicators, unknown_indicator};
-pub(crate) use json::Json;
+pub(crate) use compute::{compute, Computed};
 pub(crate) use registry::{
     all as catalogue, get_spec, required_default, Default as ParamDefault, IndicatorSpec, Kind,
 };
-pub(crate) use scan::{plan_scan, scan_symbol, ScanPlan};
 
 /// What a batch computed and what it could not.
 #[derive(Debug, Clone, Default)]

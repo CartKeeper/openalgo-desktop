@@ -718,7 +718,7 @@ async fn price_alerts_and_order_updates_while_signed_out_are_skipped_with_the_re
     let price_monitor::Observed::Fire(fired) = s.alerts.observe(alert, gen, 812.0) else {
         panic!("the alert should fire at 812");
     };
-    t.ctx.security.lock_with(|| {});
+    t.ctx.set_user_session(None);
     let (_guard, logs) = logged();
     s.queue_price_run(*fired, 812.0);
     s.on_order_update(&update("2511030003"));

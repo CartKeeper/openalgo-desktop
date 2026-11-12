@@ -36,10 +36,16 @@ async fn an_sl_rows_trigger_reaches_the_order() {
     assert!(sent[0].get("triggerprice").is_none());
     // The row the desktop's /api/v1/basketorder item schema loads, with no
     // unknown key (it refuses those).
-    let body = json!({"apikey": "k", "strategy": "s", "orders": [sent[0]]});
-    let loaded = crate::services::schemas::basket_order()
-        .load(body.as_object().unwrap_or(&serde_json::Map::new()));
-    assert!(loaded.is_ok(), "{:?}", loaded.err().map(|e| e.to_python()));
+    // The keys this app's `BasketOrderItem` (webhook/types.rs) reads: the
+    // four it requires present, nothing it does not know.
+    let known = ["exchange", "symbol", "action", "quantity", "pricetype", "product", "price", "trigger_price"];
+    let row = sent[0].as_object().expect("a row object");
+    for required in ["exchange", "symbol", "action", "quantity"] {
+        assert!(row.contains_key(required), "{} missing in {:?}", required, row);
+    }
+    for key in row.keys() {
+        assert!(known.contains(&key.as_str()), "unknown key {} in {:?}", key, row);
+    }
 }
 
 /// WEB-DEFECT N-basketOrder-04: a lower-case row symbol is upper-cased as

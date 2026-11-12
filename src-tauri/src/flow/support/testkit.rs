@@ -76,6 +76,14 @@ pub fn sign_in(app: &AppState) {
     }));
 }
 
+/// Sign the app out as upstream's `AuthService::lock_everything` did for
+/// Flow: the runs in flight stop (each writes its record), every trigger
+/// stays registered, and a fire while signed out is skipped.
+pub async fn sign_out(app: &AppState) {
+    app.set_user_session(None);
+    app.flow.stop_all(crate::flow::STOP_GRACE).await;
+}
+
 /// Every line logged on this thread, at every level and from every crate,
 /// while it lives (upstream `services::tunnel::fake::LogCapture`). A
 /// `#[tokio::test]` runs on one thread, so its spawned tasks are caught
