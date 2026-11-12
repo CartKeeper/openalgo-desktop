@@ -17,6 +17,7 @@ pub mod services;
 pub mod importers;
 // [wp-anchor] modules: each WP adds its top-level `mod` line under its own marker.
 // [wp-anchor] WP2 analytics
+pub mod analytics;
 //
 // [wp-anchor] WP8 flow
 //
