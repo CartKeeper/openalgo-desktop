@@ -417,3 +417,21 @@ the node's own, the gate 10 s).
   `Historify.tsx`: `PlaceOrderRequest` lacks the bracket-order fields,
   `HistorifyDownloadJob` is not a `DownloadJob`). Recorded for the
   coordinator; not fixed here (out of scope).
+
+## Gates on the merged branch (2026-11-12)
+
+After `git merge feat/historify-desktop-backend` (integration head
+`57638b65`, WP1, WP6, WP5, WP7, WP2 and WP4 merged; the merge was clean,
+no duplicate command names, migration names or crate keys), with
+`npm ci` from the integration lock:
+
+| Gate | Result | Whose |
+| --- | --- | --- |
+| `cd src-tauri && cargo test --lib` | `test result: ok. 1279 passed; 0 failed; 12 ignored; 0 measured; 0 filtered out; finished in 48.44s` (no compiler warnings) | passes |
+| `npx vitest run` | `Test Files  4 failed \| 29 passed (33)`, `Tests  7 failed \| 223 passed \| 1 skipped (231)` | the integration tree's: `src/config/navigation.test.ts` (3), `src/components/ui/page-loader.test.tsx` (4) assert stale expectations; `MobileBottomNav.test.tsx` and `ui/button.test.tsx` import `jest-axe`, which no `package.json` declares. All four files are byte-identical to the base branch (23480b90) and to the integration branch; WP8 Phase A changes no frontend file. |
+| `npm run build` | exit 2: the seven `tsc` errors above | the base branch's (unchanged on integration) |
+| `npm run lint` | exit 1: `× Some errors were emitted while running checks.` (Biome errors in `components/dashboard/WatchlistCard.tsx`, `reports/ReportBuilderDialog.tsx`, `backtest/TradeTable.tsx`, `HelpButton.tsx`, `api/strategy.ts`, `pages/telegram/TelegramUsers.tsx` and five more; 153 warnings) | the integration tree's: none of the files is touched by WP8 Phase A |
+
+The 12 ignored Rust tests are the Flow tests that read the frontend
+sources (`docs/flow/parity.md`); they un-ignore when WP8 Phase B carries
+those files.
