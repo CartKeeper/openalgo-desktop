@@ -5,12 +5,14 @@
 mod file_storage;
 mod encryption;
 mod hashing;
+pub mod secret;
 
 use crate::error::Result;
 use std::path::PathBuf;
 
 pub use encryption::EncryptionManager;
 pub use hashing::HashingManager;
+pub use secret::Secret;
 
 /// Security manager combining all security features
 pub struct SecurityManager {
@@ -36,6 +38,13 @@ impl SecurityManager {
             encryption,
             hashing,
         })
+    }
+
+    /// A security manager with fresh random keys, for tests that never
+    /// touch the data folder (the carried Flow store tests call it so).
+    #[cfg(test)]
+    pub fn for_tests() -> Self {
+        Self::new_for_testing(PathBuf::new()).expect("random keys")
     }
 
     /// Create a security manager for testing

@@ -75,6 +75,8 @@ pub mod portfolio_analytics_service;
 pub mod staged_analysis;
 //
 // [wp-anchor] WP4 report-metrics
+pub mod report_metrics;
+pub mod portfolio_health;
 //
 // [wp-anchor] WP5 american-options
 pub mod american_pricing;

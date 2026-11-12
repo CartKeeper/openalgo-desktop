@@ -162,7 +162,8 @@ type TokenMap = Arc<RwLock<HashMap<String, (String, String)>>>; // token -> (sym
 
 /// WebSocket manager for handling market data streams
 pub struct WebSocketManager {
-    app_handle: AppHandle,
+    /// The window to emit to; `None` for a headless app state (tests).
+    app_handle: Option<AppHandle>,
     state: RwLock<ConnectionState>,
     subscriptions: RwLock<HashMap<String, SubscriptionMode>>,
     sender: RwLock<Option<mpsc::Sender<WebSocketCommand>>>,
@@ -182,6 +183,15 @@ pub struct WebSocketManager {
 impl WebSocketManager {
     /// Create new WebSocket manager
     pub fn new(app_handle: AppHandle) -> Self {
+        Self::with_handle(Some(app_handle))
+    }
+
+    /// A manager with no window to emit to (a headless app state).
+    pub fn headless() -> Self {
+        Self::with_handle(None)
+    }
+
+    fn with_handle(app_handle: Option<AppHandle>) -> Self {
         Self {
             app_handle,
             state: RwLock::new(ConnectionState::Disconnected),
@@ -248,7 +258,7 @@ impl WebSocketManager {
         *self.sender.write() = Some(tx);
         *self.state.write() = ConnectionState::Connected;
         info!("{} WebSocket connected", creds.broker_id);
-        let _ = self.app_handle.emit("websocket_connected", &creds.broker_id);
+        let _ = emit(&self.app_handle, "websocket_connected", &creds.broker_id);
 
         let manager = Arc::clone(&self);
         tokio::spawn(async move {
@@ -355,7 +365,8 @@ impl WebSocketManager {
                         }
                         attempt += 1;
                         let delay = reconnect_backoff_secs(attempt);
-                        let _ = app_handle.emit(
+                        let _ = emit(
+                            &app_handle,
                             "websocket_reconnecting",
                             serde_json::json!({
                                 "broker": broker,
@@ -403,8 +414,8 @@ impl WebSocketManager {
                     // websocket_reconnected for status; websocket_connected so the
                     // frontend's connection-state listener flips back to connected
                     // without the frontend having to re-issue a connect command.
-                    let _ = app_handle.emit("websocket_reconnected", &broker);
-                    let _ = app_handle.emit("websocket_connected", &broker);
+                    let _ = emit(&app_handle, "websocket_reconnected", &broker);
+                    let _ = emit(&app_handle, "websocket_connected", &broker);
                     info!("{} WebSocket reconnected (attempt {})", broker, attempt);
                 }
             }
@@ -547,13 +558,26 @@ impl WebSocketManager {
 // ============================================================================
 
 /// Run one connection's read/command/heartbeat loop until it ends, returning
+/// Emit `event` to the window when there is one; a headless state (tests)
+/// has none and the event is dropped.
+fn emit<T: serde::Serialize + Clone>(
+    app_handle: &Option<AppHandle>,
+    event: &str,
+    payload: T,
+) -> tauri::Result<()> {
+    match app_handle {
+        Some(h) => h.emit(event, payload),
+        None => Ok(()),
+    }
+}
+
 /// whether the end was an unexpected drop (reconnect) or deliberate (stop).
 async fn run_message_loop(
     write: &mut WsWrite,
     read: &mut WsRead,
     rx: &mut mpsc::Receiver<WebSocketCommand>,
     broker: &str,
-    app_handle: &AppHandle,
+    app_handle: &Option<AppHandle>,
     token_map: &TokenMap,
 ) -> ConnectionEnd {
     let mut heartbeat_interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
@@ -573,7 +597,7 @@ async fn run_message_loop(
                     Some(Ok(Message::Binary(data))) => {
                         let ticks = parse_broker_ticks(broker, &data, token_map);
                         for tick in ticks {
-                            if let Err(e) = app_handle.emit("market_tick", &tick) {
+                            if let Err(e) = emit(app_handle, "market_tick", &tick) {
                                 warn!("Failed to emit tick: {}", e);
                             }
                         }
@@ -582,7 +606,7 @@ async fn run_message_loop(
                         if broker == "alpaca" {
                             let ticks = parse_alpaca_ticks(&text, token_map, &mut alpaca_ticks);
                             for tick in ticks {
-                                if let Err(e) = app_handle.emit("market_tick", &tick) {
+                                if let Err(e) = emit(app_handle, "market_tick", &tick) {
                                     warn!("Failed to emit tick: {}", e);
                                 }
                             }
@@ -603,17 +627,17 @@ async fn run_message_loop(
                     }
                     Some(Ok(Message::Close(_))) => {
                         info!("WebSocket closed by server");
-                        let _ = app_handle.emit("websocket_disconnected", broker);
+                        let _ = emit(app_handle, "websocket_disconnected", broker);
                         return ConnectionEnd::Dropped;
                     }
                     Some(Err(e)) => {
                         error!("WebSocket error: {}", e);
-                        let _ = app_handle.emit("websocket_error", e.to_string());
+                        let _ = emit(app_handle, "websocket_error", e.to_string());
                         return ConnectionEnd::Dropped;
                     }
                     None => {
                         info!("WebSocket stream ended");
-                        let _ = app_handle.emit("websocket_disconnected", broker);
+                        let _ = emit(app_handle, "websocket_disconnected", broker);
                         return ConnectionEnd::Dropped;
                     }
                     _ => {}

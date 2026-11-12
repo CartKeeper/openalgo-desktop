@@ -74,6 +74,96 @@ export type GoldmanMovement =
   | NarrativeMovement
   | ChangesMovement
   | MeasuresMovement
+  | MetricsMovement
+  | HealthMovement
+
+/** Both portfolios' trailing-window figures, computed by the app; only `tempo` and `intro` are Claude's. */
+export interface MetricsMovement extends MovementBase {
+  kind: 'metrics'
+  original_label: string
+  recommended_label: string
+  /** The window the figures cover, e.g. "Trailing 365 days of daily closes, November 12, 2025 to November 11, 2026". */
+  window: string
+  /** Metric | original | recommended, already formatted ("12.3%", "1.23", "n/a"). */
+  rows: { label: string; original: string; recommended: string }[]
+  /** One grid per side with enough history. */
+  monthly: MonthlyTable[]
+  /** One table per side with enough history. */
+  drawdowns: DrawdownTable[]
+  /** One line per side with a Monte Carlo result. */
+  monte_carlo: MonteCarloLine[]
+  /** Each side's window and what was left out, or why there are no figures. */
+  note: string
+}
+
+export interface MonthlyTable {
+  /** The portfolio's name. */
+  label: string
+  years: MonthlyYear[]
+}
+
+/** One calendar year of monthly returns as fractions; `months[0]` is January, null = outside the window. */
+export interface MonthlyYear {
+  year: number
+  months: (number | null)[]
+  ytd: number | null
+}
+
+export interface DrawdownTable {
+  label: string
+  rows: DrawdownRow[]
+}
+
+/** A peak-to-recovery episode. Dates are "YYYY-MM-DD"; `end` is null while unrecovered. */
+export interface DrawdownRow {
+  start: string
+  trough: string
+  end: string | null
+  /** Trough over peak minus one: -0.20 for a 20% fall. */
+  depth_pct: number
+  days: number
+}
+
+/** Bootstrapped one-year outcomes for one portfolio; returns, thresholds and odds are fractions. */
+export interface MonteCarloLine {
+  label: string
+  paths: number
+  horizon_days: number
+  p5: number
+  p50: number
+  p95: number
+  bust_threshold: number
+  bust_probability: number
+  goal_threshold: number
+  goal_probability: number
+}
+
+/** The health checklist for both portfolios, computed by the app; only `tempo` and `intro` are Claude's. */
+export interface HealthMovement extends MovementBase {
+  kind: 'health'
+  original_label: string
+  recommended_label: string
+  rows: HealthCompareRow[]
+  note: string
+}
+
+export type HealthStatus = 'pass' | 'warn' | 'fail' | 'na'
+
+export interface HealthCompareRow {
+  key: string
+  title: string
+  original: HealthCell
+  recommended: HealthCell
+  /** The rule's threshold in words. */
+  threshold: string
+}
+
+export interface HealthCell {
+  status: HealthStatus
+  value_text: string
+  /** What was left out or could not be judged. */
+  detail?: string
+}
 
 /** Every difference between two portfolios; only `reason` is written by Claude. */
 export interface ChangesMovement extends MovementBase {

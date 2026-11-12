@@ -37,7 +37,7 @@ pub use alerts::{AlertConfig, AlertHistoryEntry, AlertGlobalSettings};
 pub use clients::ClientAccount;
 pub use backtest::BacktestRunRecord;
 
-use crate::error::Result;
+use crate::error::{AppError, Result};
 use crate::security::SecurityManager;
 use crate::state::SymbolInfo;
 pub use models::{AutoLogoutConfig, WebhookConfig, ApiKey, ApiKeyInfo, SandboxFunds, SandboxHolding};
@@ -54,18 +54,47 @@ use std::path::Path;
 /// SQLite database wrapper
 pub struct SqliteDb {
     conn: Mutex<Connection>,
+    /// Connections for a module that runs its own statements (Flow's
+    /// store), pooled so one may be held while another is checked out or
+    /// an await runs; the app's own connection above stays as it was.
+    pool: r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
 }
+
+/// A pooled connection ([`SqliteDb::conn`]); derefs to `rusqlite::Connection`.
+pub type PooledConn = r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>;
+
+/// How long a statement waits for another connection's write lock before
+/// it fails busy (the pool and the app's connection share one file).
+const BUSY_TIMEOUT_MS: u32 = 5000;
 
 impl SqliteDb {
     /// Create new SQLite database connection
     pub fn new(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
 
-        // Enable WAL mode for better concurrent access
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+        // Enable WAL mode for better concurrent access; a writer waits for
+        // another instead of failing busy.
+        conn.execute_batch(&format!(
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout={};",
+            BUSY_TIMEOUT_MS
+        ))?;
+
+        // The pool: WAL, the same busy wait, and foreign keys on (Flow's run
+        // history cascades with its workflow).
+        let manager = r2d2_sqlite::SqliteConnectionManager::file(path).with_init(|c| {
+            c.execute_batch(&format!(
+                "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout={}; PRAGMA foreign_keys=ON;",
+                BUSY_TIMEOUT_MS
+            ))
+        });
+        let pool = r2d2::Pool::builder()
+            .max_size(4)
+            .build(manager)
+            .map_err(|e| AppError::Internal(format!("Could not open the database pool: {}", e)))?;
 
         let db = Self {
             conn: Mutex::new(conn),
+            pool,
         };
 
         // Run migrations
@@ -78,6 +107,17 @@ impl SqliteDb {
     fn run_migrations(&self) -> Result<()> {
         let conn = self.conn.lock();
         migrations::run_migrations(&conn)
+    }
+
+    /// A pooled connection, for a module that runs its own statements
+    /// (Flow's store): independent of the app's own connection and of each
+    /// other, so one may be held while another is checked out or an await
+    /// runs (upstream's `conn()` is a pool checkout too). Waits at most the
+    /// pool's 30 s for a free one, then answers an error, never hangs.
+    pub fn conn(&self) -> Result<PooledConn> {
+        self.pool
+            .get()
+            .map_err(|e| AppError::Internal(format!("No database connection was free: {}", e)))
     }
 
     // ========== User Methods ==========

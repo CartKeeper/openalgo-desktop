@@ -149,6 +149,9 @@ impl DuckDb {
         }
 
         tx.commit()?;
+        // A full load is ~15 MB of WAL; fold it into the main file now rather than
+        // leave it to be replayed on the next launch (see migrations::checkpoint).
+        super::migrations::checkpoint(&conn, "symbol metadata load");
         Ok(deduped.len())
     }
 
@@ -297,6 +300,39 @@ mod tests {
 
     fn symbols(rows: &[SymbolMetadataRow]) -> Vec<String> {
         rows.iter().map(|r| r.symbol.clone()).collect()
+    }
+
+    /// Size of the write-ahead log next to the test database (0 when absent).
+    fn wal_len(dir: &TempDir) -> u64 {
+        match std::fs::metadata(dir.path().join("symbols.duckdb.wal")) {
+            Ok(m) => m.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(e) => panic!("wal metadata: {e}"),
+        }
+    }
+
+    // Regression (2026-11-12): DDL and a 15 MB metadata load left in the WAL made
+    // DuckDB abort on the next launch ("Failure while replaying WAL file …
+    // Calling DatabaseManager::GetDefaultDatabase with no default database set"),
+    // which killed the app in its setup hook on every start. Both writers now
+    // checkpoint, so nothing they wrote is ever replayed.
+    #[test]
+    fn migrations_leave_no_wal_to_replay() {
+        let (dir, _db) = temp_db();
+        assert_eq!(wal_len(&dir), 0, "migrations must be checkpointed into the main file");
+    }
+
+    #[test]
+    fn load_leaves_no_wal_to_replay() {
+        let (dir, db) = temp_db();
+        db.replace_symbol_metadata(
+            &[row("A", "NYSE", "Agilent Technologies, Inc.")],
+            "financedatabase",
+            "2026-11-08",
+            &[("symbol_metadata_last_refresh", "2026-11-12T20:20:00Z")],
+        )
+        .unwrap();
+        assert_eq!(wal_len(&dir), 0, "a metadata load must be checkpointed into the main file");
     }
 
     #[test]
