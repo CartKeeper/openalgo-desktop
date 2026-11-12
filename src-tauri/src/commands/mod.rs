@@ -36,6 +36,7 @@ pub mod market_status;
 pub mod broker_watchlist;
 pub mod backtest;
 // [wp-anchor] WP1 chart-tools
+pub mod chart_preferences;
 //
 // [wp-anchor] WP2 analytics
 //

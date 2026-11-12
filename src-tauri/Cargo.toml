@@ -77,7 +77,6 @@ urlencoding = "2.1"
 
 # UUID generation
 uuid = { version = "1.8", features = ["v4"] }
-ta = "0.5"
 statrs = "0.17"
 # [wp-anchor] WP5 deps
 # American option pricing (binomial lattice); the facade's `pricing` feature pulls
@@ -86,6 +85,7 @@ optionstratlib = { version = "0.24.3", default-features = false, features = ["pr
 rust_decimal = "1"
 #
 # [wp-anchor] WP6 deps
+ta-lib = "0.8"
 #
 # [wp-anchor] WP7 deps
 #
