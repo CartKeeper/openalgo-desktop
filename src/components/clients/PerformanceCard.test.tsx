@@ -8,7 +8,8 @@ import { PerformanceCard } from '@/components/clients/PerformanceCard'
 
 const mocks = vi.hoisted(() => ({ clientPerformance: vi.fn() }))
 
-vi.mock('@/api/analytics', () => ({
+vi.mock('@/api/analytics', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/analytics')>()),
   analyticsApi: { clientPerformance: mocks.clientPerformance },
 }))
 
@@ -52,7 +53,8 @@ describe('PerformanceCard', () => {
     render(<PerformanceCard clientId={7} />)
 
     const table = await screen.findByRole('table', { name: 'YTD performance' })
-    expect(mocks.clientPerformance).toHaveBeenCalledWith(7)
+    expect(mocks.clientPerformance).toHaveBeenCalledWith(7, null)
+    expect(screen.getByText('All accounts')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'YTD' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: '1M' })).toHaveAttribute('aria-pressed', 'false')
     expect(within(table).getByText('+15.00%')).toBeInTheDocument()
@@ -89,6 +91,14 @@ describe('PerformanceCard', () => {
     const table = screen.getByRole('table', { name: '1Y performance' })
     expect(within(table).getAllByText('+20.00%')).toHaveLength(2)
     expect(screen.queryByText(/not annualized/)).not.toBeInTheDocument()
+  })
+
+  it('scopes the returns to the selected account and says so', async () => {
+    render(<PerformanceCard clientId={7} accountType="roth_ira" />)
+
+    await screen.findByRole('table', { name: 'YTD performance' })
+    expect(mocks.clientPerformance).toHaveBeenCalledWith(7, 'roth_ira')
+    expect(screen.getByText('Roth IRA')).toBeInTheDocument()
   })
 
   it('shows the empty state when there are no periods', async () => {

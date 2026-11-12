@@ -13,7 +13,11 @@ use crate::providers::fmp::FmpClient;
 use crate::providers::types::DailyClose;
 use async_trait::async_trait;
 use chrono::NaiveDate;
+use futures_util::StreamExt;
 use std::collections::{BTreeMap, BTreeSet};
+
+/// Provider requests in flight at once (closes per symbol, sector lookups).
+pub const FETCH_CONCURRENCY: usize = 4;
 
 /// A source of daily closes, so the series can be fed from FMP or a fixture.
 #[async_trait]
@@ -54,6 +58,27 @@ pub fn parse_daily_closes(raw: Vec<DailyClose>) -> Vec<(NaiveDate, f64)> {
     closes
 }
 
+/// Mask the value of every `apikey=` parameter in `text` (provider errors quote
+/// the request URL, which carries the key).
+pub fn redact_api_key(text: &str) -> String {
+    const NEEDLE: &str = "apikey=";
+    let lower = text.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    while let Some(found) = lower[cursor..].find(NEEDLE) {
+        let value_start = cursor + found + NEEDLE.len();
+        out.push_str(&text[cursor..value_start]);
+        out.push_str("***");
+        let value_end = text[value_start..]
+            .find(|c: char| matches!(c, '&' | ')' | '"' | '\'' | ']') || c.is_whitespace())
+            .map(|offset| value_start + offset)
+            .unwrap_or(text.len());
+        cursor = value_end;
+    }
+    out.push_str(&text[cursor..]);
+    out
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct SeriesResult {
     pub points: Vec<ValuationPoint>,
@@ -76,9 +101,12 @@ pub async fn holdings_value_series(
         .chain(openings.iter().map(|opening| opening.symbol.as_str()))
         .collect();
 
-    // One request per symbol, all in flight together; results keep the symbol order.
-    let fetched =
-        futures_util::future::join_all(symbols.iter().map(|symbol| closes.closes(symbol, from, to))).await;
+    // One request per symbol, at most FETCH_CONCURRENCY in flight; results keep the symbol order.
+    let requests: Vec<_> = symbols.iter().map(|symbol| closes.closes(symbol, from, to)).collect();
+    let fetched: Vec<Result<Vec<(NaiveDate, f64)>>> = futures_util::stream::iter(requests)
+        .buffered(FETCH_CONCURRENCY)
+        .collect()
+        .await;
 
     let mut warnings = Vec::new();
     let mut history: BTreeMap<&str, Vec<(NaiveDate, f64)>> = BTreeMap::new();
@@ -87,13 +115,22 @@ pub async fn holdings_value_series(
             Ok(mut rows) => {
                 rows.retain(|(date, close)| *date >= from && *date <= to && *close > 0.0);
                 if rows.is_empty() {
-                    warnings.push(format!("{symbol}: no price history"));
+                    warnings.push(format!(
+                        "{symbol}: no price history (left out of the valuation and its trades out of the flows)"
+                    ));
                 } else {
                     rows.sort_by_key(|(date, _)| *date);
                     history.insert(symbol, rows);
                 }
             }
-            Err(err) => warnings.push(format!("{symbol}: price history unavailable ({err})")),
+            Err(err) => {
+                // Provider error text can carry the API key: log it redacted, never show it.
+                tracing::warn!(
+                    "analytics: price history for {symbol} failed: {}",
+                    redact_api_key(&err.to_string())
+                );
+                warnings.push(format!("{symbol}: price history unavailable"));
+            }
         }
     }
 
@@ -126,9 +163,10 @@ pub async fn holdings_value_series(
                 TradeSide::Buy => trade.quantity,
                 TradeSide::Sell => -trade.quantity,
             };
-            if let Some(held) = quantity.get_mut(trade.symbol.as_str()) {
-                *held = (*held + signed).max(0.0);
-            }
+            // A symbol without closes is outside the measured portfolio: neither
+            // its shares nor the money that bought or sold them count.
+            let Some(held) = quantity.get_mut(trade.symbol.as_str()) else { continue };
+            *held = (*held + signed).max(0.0);
             // Trades before the window only set the quantity; they are not flows.
             if trade.date >= from {
                 flow += match trade.side {
@@ -198,7 +236,10 @@ mod tests {
     #[async_trait]
     impl DailyCloses for FailingCloses {
         async fn closes(&self, symbol: &str, _from: NaiveDate, _to: NaiveDate) -> Result<Vec<(NaiveDate, f64)>> {
-            Err(crate::error::AppError::Provider(format!("{symbol}: 404")))
+            // Shaped like a reqwest error: the URL carries the FMP key.
+            Err(crate::error::AppError::Provider(format!(
+                "HTTP error: error sending request for url (https://fmp/eod?symbol={symbol}&apikey=SECRET123)"
+            )))
         }
     }
 
@@ -295,7 +336,8 @@ mod tests {
         assert_eq!(points.len(), 2);
         assert!(close_enough(points[0].1, 10.0));
         assert!(close_enough(points[1].1, 11.0));
-        assert_eq!(result.warnings, vec!["ZZZ: no price history".to_string()]);
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.warnings[0].starts_with("ZZZ: no price history"), "{:?}", result.warnings);
     }
 
     #[tokio::test]
@@ -309,6 +351,24 @@ mod tests {
         assert!(result.points.is_empty());
         assert_eq!(result.warnings.len(), 1);
         assert!(result.warnings[0].starts_with("BAD:"), "{:?}", result.warnings);
+        // Provider error text never reaches the user: it can carry the API key.
+        assert!(!result.warnings[0].contains("SECRET123"), "{:?}", result.warnings);
+        assert!(!result.warnings[0].contains("apikey"), "{:?}", result.warnings);
+    }
+
+    #[test]
+    fn redact_api_key_masks_the_key_value() {
+        assert_eq!(
+            redact_api_key("https://x/y?symbol=VOO&apikey=SECRET123&from=a"),
+            "https://x/y?symbol=VOO&apikey=***&from=a"
+        );
+        assert_eq!(
+            redact_api_key("error sending request for url (https://x?apikey=SECRET)"),
+            "error sending request for url (https://x?apikey=***)"
+        );
+        assert_eq!(redact_api_key("apiKey=abc apikey=def"), "apiKey=*** apikey=***");
+        assert_eq!(redact_api_key("apikey=tail"), "apikey=***");
+        assert_eq!(redact_api_key("nothing here"), "nothing here");
     }
 
     #[tokio::test]
@@ -388,5 +448,28 @@ mod tests {
         ];
         let parsed = parse_daily_closes(raw);
         assert_eq!(parsed, vec![(d(2026, 1, 5), 10.0), (d(2026, 1, 6), 11.0)]);
+    }
+
+    #[tokio::test]
+    async fn a_trade_in_a_symbol_without_closes_adds_no_flow_and_no_value() {
+        // ZZZ (a money-market sweep, a delisted name) has no closes: its buy must
+        // not count as money leaving the measured portfolio.
+        let closes = FakeCloses(HashMap::from([(
+            "AAA",
+            vec![(d(2026, 1, 5), 10.0), (d(2026, 1, 6), 11.0)],
+        )]));
+        let openings = vec![opening("AAA", 1.0), opening("ZZZ", 10.0)];
+        let trades = vec![trade("ZZZ", d(2026, 1, 6), 1, TradeSide::Buy, 10.0, 50.0, 0.0)];
+
+        let result = holdings_value_series(&trades, &openings, d(2026, 1, 5), d(2026, 1, 6), &closes)
+            .await
+            .unwrap();
+
+        let points = values(&result);
+        assert!(close_enough(points[0].1, 10.0), "{:?}", points);
+        assert!(close_enough(points[1].1, 11.0), "{:?}", points);
+        assert!(close_enough(points[1].2, 0.0), "no flow for an unpriced symbol: {:?}", points);
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.warnings[0].starts_with("ZZZ: no price history"), "{:?}", result.warnings);
     }
 }

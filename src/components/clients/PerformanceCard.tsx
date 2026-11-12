@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import { analyticsApi, type PerformanceReport, type PeriodKey } from '@/api/analytics'
+import {
+  accountScopeLabel,
+  analyticsApi,
+  type PerformanceReport,
+  type PeriodKey,
+} from '@/api/analytics'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -33,11 +39,17 @@ function PerformanceSkeleton() {
   )
 }
 
+interface PerformanceCardProps {
+  clientId: number
+  /** Account to scope the trades to; `null` = every account (the page's switcher). */
+  accountType?: string | null
+}
+
 /**
  * A client's returns over 1M, 3M, 6M, YTD, 1Y and since inception: one period
  * selected at a time, time-weighted and money-weighted side by side.
  */
-export function PerformanceCard({ clientId }: { clientId: number }) {
+export function PerformanceCard({ clientId, accountType = null }: PerformanceCardProps) {
   const [report, setReport] = useState<PerformanceReport | null>(null)
   const [selectedKey, setSelectedKey] = useState<PeriodKey>('YTD')
   const [error, setError] = useState<string | null>(null)
@@ -45,11 +57,11 @@ export function PerformanceCard({ clientId }: { clientId: number }) {
   const load = useCallback(async () => {
     setError(null)
     try {
-      setReport(await analyticsApi.clientPerformance(clientId))
+      setReport(await analyticsApi.clientPerformance(clientId, accountType))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [clientId])
+  }, [clientId, accountType])
 
   useEffect(() => {
     load()
@@ -71,7 +83,10 @@ export function PerformanceCard({ clientId }: { clientId: number }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Performance</CardTitle>
+        <div className="flex items-center gap-2">
+          <CardTitle className="text-base">Performance</CardTitle>
+          <Badge variant="outline">{accountScopeLabel(accountType)}</Badge>
+        </div>
         <CardDescription>
           Time-weighted return strips out the timing of deposits and withdrawals; money-weighted
           (XIRR) includes it. Valued daily from FMP closes over the imported trade history.

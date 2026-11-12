@@ -8,7 +8,8 @@ import { LotsTable } from '@/components/clients/LotsTable'
 
 const mocks = vi.hoisted(() => ({ clientLots: vi.fn() }))
 
-vi.mock('@/api/analytics', () => ({
+vi.mock('@/api/analytics', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/analytics')>()),
   analyticsApi: { clientLots: mocks.clientLots },
 }))
 
@@ -96,7 +97,8 @@ describe('LotsTable', () => {
 
     const realized = await screen.findByRole('table', { name: /realized/i })
     expect(within(realized).getByText(/148\.50/)).toBeInTheDocument()
-    expect(mocks.clientLots).toHaveBeenCalledWith(7, 'fifo')
+    expect(mocks.clientLots).toHaveBeenCalledWith(7, 'fifo', null)
+    expect(screen.getByText('All accounts')).toBeInTheDocument()
 
     const openLots = screen.getByRole('table', { name: /open lots/i })
     expect(within(openLots).getAllByText('est.')).toHaveLength(1)
@@ -113,7 +115,16 @@ describe('LotsTable', () => {
     await user.click(screen.getByRole('combobox', { name: /lot method/i }))
     await user.click(await screen.findByRole('option', { name: 'LIFO' }))
 
-    await waitFor(() => expect(mocks.clientLots).toHaveBeenLastCalledWith(7, 'lifo'))
+    await waitFor(() => expect(mocks.clientLots).toHaveBeenLastCalledWith(7, 'lifo', null))
+  })
+
+  it('scopes the lots to the selected account and says so', async () => {
+    render(<LotsTable clientId={7} accountType="401k" />)
+
+    await screen.findByRole('table', { name: /open lots/i })
+    expect(mocks.clientLots).toHaveBeenCalledWith(7, 'fifo', '401k')
+    expect(screen.getByText('401(k)')).toBeInTheDocument()
+    expect(screen.queryByText('All accounts')).not.toBeInTheDocument()
   })
 
   it('shows an empty state when there are no lots', async () => {

@@ -4,29 +4,37 @@
 use crate::analytics::allocation::{AllocationTarget, DriftReport, RebalancePlan};
 use crate::analytics::lots::{LotMethod, LotReport};
 use crate::error::AppError;
-use crate::services::portfolio_analytics_service::{PerformanceReport, PortfolioAnalyticsService};
+use crate::services::portfolio_analytics_service::{
+    account_scope, PerformanceReport, PortfolioAnalyticsService,
+};
 use crate::state::AppState;
 use tauri::State;
 
-/// Tax lots of a client's trades: `method` is `fifo`, `lifo`, `hifo` or `average`.
+/// Tax lots of a client's trades: `method` is `fifo`, `lifo`, `hifo` or `average`;
+/// `account_type` scopes to one account (`all`/absent = every account).
 #[tauri::command]
 pub async fn analytics_client_lots(
     state: State<'_, AppState>,
     client_id: i64,
     method: String,
+    account_type: Option<String>,
 ) -> Result<LotReport, AppError> {
     let method = LotMethod::parse(&method)
         .ok_or_else(|| AppError::Validation(format!("Unknown lot method: {method}")))?;
-    PortfolioAnalyticsService::client_lots(state.inner(), client_id, method).await
+    let account = account_scope(account_type);
+    PortfolioAnalyticsService::client_lots(state.inner(), client_id, method, account.as_deref()).await
 }
 
-/// Time- and money-weighted returns over 1M, 3M, 6M, YTD, 1Y and since inception.
+/// Time- and money-weighted returns over 1M, 3M, 6M, YTD, 1Y and since inception;
+/// `account_type` scopes to one account (`all`/absent = every account).
 #[tauri::command]
 pub async fn analytics_client_performance(
     state: State<'_, AppState>,
     client_id: i64,
+    account_type: Option<String>,
 ) -> Result<PerformanceReport, AppError> {
-    PortfolioAnalyticsService::client_performance(state.inner(), client_id).await
+    let account = account_scope(account_type);
+    PortfolioAnalyticsService::client_performance(state.inner(), client_id, account.as_deref()).await
 }
 
 /// The client's saved allocation targets.

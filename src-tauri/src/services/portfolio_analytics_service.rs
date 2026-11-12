@@ -12,7 +12,7 @@ use crate::analytics::allocation::{
 };
 use crate::analytics::lots::{build_lots, LotMethod, LotReport, OpeningPosition, TradeEvent, TradeSide};
 use crate::analytics::returns::{annualize, time_weighted_return, xirr, CashFlow, ValuationPoint};
-use crate::analytics::series::{holdings_value_series, FmpCloses};
+use crate::analytics::series::{holdings_value_series, redact_api_key, FmpCloses, FETCH_CONCURRENCY};
 use crate::error::{AppError, Result};
 use crate::providers::fmp::FmpClient;
 use crate::providers::types::{ClientHolding, ClientTrade, PortfolioPosition, ScenarioPosition};
@@ -20,8 +20,10 @@ use crate::services::portfolio_service::enrich_positions_with_prices;
 use crate::state::AppState;
 use chrono::{DateTime, Datelike, Duration, Months, NaiveDate, Utc};
 use chrono_tz::{America::New_York, Tz};
+use futures_util::StreamExt;
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
+use std::sync::LazyLock;
 
 /// Performance windows, in display order.
 pub const PERIOD_KEYS: [&str; 6] = ["1M", "3M", "6M", "YTD", "1Y", "SI"];
@@ -53,6 +55,62 @@ pub struct PerformanceReport {
 }
 
 pub struct PortfolioAnalyticsService;
+
+/// Sector targets are the only reason to look sectors up (one or two FMP calls per symbol).
+pub fn wants_sector_lookup(targets: &[AllocationTarget]) -> bool {
+    targets.iter().any(|target| target.scope == TargetScope::Sector)
+}
+
+/// Opening lots are estimated only across all accounts: `client_holdings` has one
+/// row per client and symbol, so a single account's share of it is unknown.
+pub fn openings_for_scope(
+    holdings: &[ClientHolding],
+    account: Option<&str>,
+) -> (Vec<OpeningPosition>, Option<String>) {
+    match account {
+        None => (openings_from(holdings), None),
+        Some(account) => (
+            Vec::new(),
+            Some(format!(
+                "Account view ({account}): opening lots are not estimated because holdings are stored per client, not per account"
+            )),
+        ),
+    }
+}
+
+/// The account switcher's value as a scope: `all`, blank or absent means every account.
+pub fn account_scope(raw: Option<String>) -> Option<String> {
+    raw.map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && value != "all")
+}
+
+/// Sectors looked up this session: a profile's sector does not change within one.
+#[derive(Default)]
+pub struct SectorCache(parking_lot::Mutex<HashMap<String, Option<String>>>);
+
+impl SectorCache {
+    pub fn remember(&self, symbol: &str, sector: Option<String>) {
+        self.0.lock().insert(symbol.to_string(), sector);
+    }
+
+    /// Known sectors among `symbols`, and the symbols still to look up.
+    pub fn split(&self, symbols: &BTreeSet<String>) -> (HashMap<String, Option<String>>, Vec<String>) {
+        let cache = self.0.lock();
+        let mut known = HashMap::new();
+        let mut missing = Vec::new();
+        for symbol in symbols {
+            match cache.get(symbol) {
+                Some(sector) => {
+                    known.insert(symbol.clone(), sector.clone());
+                }
+                None => missing.push(symbol.clone()),
+            }
+        }
+        (known, missing)
+    }
+}
+
+static SECTOR_CACHE: LazyLock<SectorCache> = LazyLock::new(SectorCache::default);
 
 /// `client_trades` rows as engine events: only buys and sells count, `seq` is
 /// the row id, symbols are upper-cased, and a row whose date does not start
@@ -115,15 +173,19 @@ pub fn period_bounds(as_of: NaiveDate) -> Vec<(&'static str, Option<NaiveDate>)>
     ]
 }
 
-/// One row per window. Each window is the series from the last point on or
-/// before its start date (so YTD starts at the last close of the prior year)
-/// to the last point; when the history is shorter than the window it starts at
-/// the first point and says so in `note`.
+/// One row per window. Windows end at the series' last close and are measured
+/// back from it (not from today, whose close may not be published yet — a 1Y
+/// window anchored to today would span 364 days and never annualize). Each
+/// window is the series from the last point on or before its start date (so
+/// YTD starts at the last close of the prior year) to the last point; when the
+/// history is shorter than the window it starts at the first point and says so
+/// in `note`.
 pub fn build_periods(points: &[ValuationPoint], as_of: NaiveDate) -> Vec<PerformancePeriod> {
     let mut sorted: Vec<&ValuationPoint> = points.iter().collect();
     sorted.sort_by_key(|point| point.date);
+    let anchor = sorted.last().map(|point| point.date).unwrap_or(as_of);
 
-    period_bounds(as_of)
+    period_bounds(anchor)
         .into_iter()
         .map(|(key, start)| {
             if sorted.len() < 2 {
@@ -234,7 +296,7 @@ impl PortfolioAnalyticsService {
             })
             .collect();
         if let Err(err) = enrich_positions_with_prices(&state.http_client, &mut positions).await {
-            tracing::warn!("analytics: price lookup failed: {err}");
+            tracing::warn!("analytics: price lookup failed: {}", redact_api_key(&err.to_string()));
         }
         positions
             .into_iter()
@@ -247,24 +309,46 @@ impl PortfolioAnalyticsService {
             .collect()
     }
 
-    /// Tax lots of a client's trade history with `method`, priced now.
-    pub async fn client_lots(state: &AppState, client_id: i64, method: LotMethod) -> Result<LotReport> {
-        let trades = trade_events_from(&state.sqlite.get_client_trades(client_id)?);
-        let openings = openings_from(&state.sqlite.get_client_holdings(client_id)?);
+    /// The client's buy/sell rows, for one account or (`None`) all of them.
+    fn trades(state: &AppState, client_id: i64, account: Option<&str>) -> Result<Vec<ClientTrade>> {
+        match account {
+            Some(account) => state.sqlite.get_client_trades_by_account(client_id, account),
+            None => state.sqlite.get_client_trades(client_id),
+        }
+    }
+
+    /// Tax lots of a client's trade history with `method`, priced now. With an
+    /// `account`, only that account's trades are matched (see `openings_for_scope`).
+    pub async fn client_lots(
+        state: &AppState,
+        client_id: i64,
+        method: LotMethod,
+        account: Option<&str>,
+    ) -> Result<LotReport> {
+        let trades = trade_events_from(&Self::trades(state, client_id, account)?);
+        let (openings, scope_note) =
+            openings_for_scope(&state.sqlite.get_client_holdings(client_id)?, account);
         let symbols: BTreeSet<String> = trades
             .iter()
             .map(|trade| trade.symbol.clone())
             .chain(openings.iter().map(|opening| opening.symbol.clone()))
             .collect();
         let prices = Self::current_prices(state, symbols).await;
-        Ok(build_lots(&trades, &openings, method, Self::now_et().date_naive(), &prices))
+        let mut report = build_lots(&trades, &openings, method, Self::now_et().date_naive(), &prices);
+        report.warnings.extend(scope_note);
+        Ok(report)
     }
 
     /// Returns over 1M, 3M, 6M, YTD, 1Y and since inception from one FMP
     /// close series (inception = the day before the first trade).
-    pub async fn client_performance(state: &AppState, client_id: i64) -> Result<PerformanceReport> {
-        let trades = trade_events_from(&state.sqlite.get_client_trades(client_id)?);
-        let openings = openings_from(&state.sqlite.get_client_holdings(client_id)?);
+    pub async fn client_performance(
+        state: &AppState,
+        client_id: i64,
+        account: Option<&str>,
+    ) -> Result<PerformanceReport> {
+        let trades = trade_events_from(&Self::trades(state, client_id, account)?);
+        let (openings, scope_note) =
+            openings_for_scope(&state.sqlite.get_client_holdings(client_id)?, account);
         let now = Self::now_et();
         let as_of = now.date_naive();
         if trades.is_empty() && openings.is_empty() {
@@ -289,11 +373,13 @@ impl PortfolioAnalyticsService {
             .unwrap_or_else(|| as_of - Duration::days(365));
         let series = holdings_value_series(&trades, &openings, from, as_of, &FmpCloses { client: &fmp }).await?;
         let last_close = series.points.last().map(|point| point.date).unwrap_or(as_of);
+        let mut warnings = series.warnings;
+        warnings.extend(scope_note);
         Ok(PerformanceReport {
             as_of,
             prices_as_of: prices_as_of_label(last_close, now),
             periods: build_periods(&series.points, as_of),
-            warnings: series.warnings,
+            warnings,
         })
     }
 
@@ -335,18 +421,25 @@ impl PortfolioAnalyticsService {
 
         let symbols: BTreeSet<String> = longs.iter().map(|p| p.symbol.trim().to_uppercase()).collect();
         let prices = Self::current_prices(state, symbols.iter().cloned()).await;
-        let sectors = match Self::fmp_client(state)? {
-            Some(fmp) => Self::sectors(&fmp, &symbols).await,
-            None => {
-                if targets.iter().any(|target| target.scope == TargetScope::Sector) {
+        // Sector lookups cost one or two FMP calls per symbol: only with a sector
+        // target, and only for symbols this session has not seen.
+        let (sectors, failed) = if wants_sector_lookup(&targets) {
+            match Self::fmp_client(state)? {
+                Some(fmp) => Self::sectors(&fmp, &symbols).await,
+                None => {
                     notes.push(
                         "FMP API key not configured: sectors are unknown, so sector targets cannot be measured."
                             .to_string(),
                     );
+                    (SECTOR_CACHE.split(&symbols).0, Vec::new())
                 }
-                HashMap::new()
             }
+        } else {
+            (SECTOR_CACHE.split(&symbols).0, Vec::new())
         };
+        for symbol in failed {
+            notes.push(format!("{symbol}: sector lookup failed, so sector targets may be understated"));
+        }
 
         let holdings = longs
             .iter()
@@ -372,31 +465,69 @@ impl PortfolioAnalyticsService {
         Ok((holdings, cash, targets, notes))
     }
 
-    /// Sector per symbol, looked up concurrently and once per call.
-    async fn sectors(fmp: &FmpClient, symbols: &BTreeSet<String>) -> HashMap<String, Option<String>> {
-        let lookups = symbols
-            .iter()
-            .map(|symbol| async move { (symbol.clone(), Self::sector_of(fmp, symbol).await) });
-        futures_util::future::join_all(lookups).await.into_iter().collect()
+    /// Sector per symbol: the session cache first, then FMP for the rest with at
+    /// most `FETCH_CONCURRENCY` lookups in flight. Returns the sectors known and
+    /// the symbols whose lookup failed (not cached, so a later load retries them).
+    async fn sectors(
+        fmp: &FmpClient,
+        symbols: &BTreeSet<String>,
+    ) -> (HashMap<String, Option<String>>, Vec<String>) {
+        let (mut known, missing) = SECTOR_CACHE.split(symbols);
+        let requests: Vec<_> = missing
+            .into_iter()
+            .map(|symbol| async move {
+                let sector = Self::sector_of(fmp, &symbol).await;
+                (symbol, sector)
+            })
+            .collect();
+        let lookups: Vec<(String, std::result::Result<Option<String>, ()>)> =
+            futures_util::stream::iter(requests)
+                .buffered(FETCH_CONCURRENCY)
+                .collect()
+                .await;
+        let mut failed = Vec::new();
+        for (symbol, sector) in lookups {
+            match sector {
+                Ok(sector) => {
+                    SECTOR_CACHE.remember(&symbol, sector.clone());
+                    known.insert(symbol, sector);
+                }
+                Err(()) => failed.push(symbol),
+            }
+        }
+        (known, failed)
     }
 
-    /// The FMP profile's sector; an ETF (no sector, but listed by etf-info) is "ETF".
-    async fn sector_of(fmp: &FmpClient, symbol: &str) -> Option<String> {
-        match fmp.get_company_profile(symbol).await {
+    /// The FMP profile's sector; an ETF (no sector, but listed by etf-info) is
+    /// "ETF"; `Ok(None)` when FMP knows the symbol but gives it no sector; `Err`
+    /// when a call failed and the answer is unknown.
+    async fn sector_of(fmp: &FmpClient, symbol: &str) -> std::result::Result<Option<String>, ()> {
+        let profile_failed = match fmp.get_company_profile(symbol).await {
             Ok(Some(profile)) => {
                 if let Some(sector) = profile.sector.filter(|sector| !sector.trim().is_empty()) {
-                    return Some(sector);
+                    return Ok(Some(sector));
                 }
+                false
             }
-            Ok(None) => {}
-            Err(err) => tracing::warn!("analytics: profile lookup failed for {symbol}: {err}"),
-        }
-        match fmp.get_etf_info(symbol).await {
-            Ok(info) if !info.is_empty() => Some("ETF".to_string()),
-            Ok(_) => None,
+            Ok(None) => false,
             Err(err) => {
-                tracing::warn!("analytics: etf lookup failed for {symbol}: {err}");
-                None
+                tracing::warn!(
+                    "analytics: profile lookup failed for {symbol}: {}",
+                    redact_api_key(&err.to_string())
+                );
+                true
+            }
+        };
+        match fmp.get_etf_info(symbol).await {
+            Ok(info) if !info.is_empty() => Ok(Some("ETF".to_string())),
+            Ok(_) if !profile_failed => Ok(None),
+            Ok(_) => Err(()),
+            Err(err) => {
+                tracing::warn!(
+                    "analytics: etf lookup failed for {symbol}: {}",
+                    redact_api_key(&err.to_string())
+                );
+                Err(())
             }
         }
     }
@@ -624,5 +755,75 @@ mod tests {
         assert_eq!(prices_as_of_label(d(2026, 11, 11), now), "Nov 11, 2026 close · 3:45 PM ET");
         let morning = New_York.with_ymd_and_hms(2026, 11, 12, 9, 5, 0).unwrap();
         assert_eq!(prices_as_of_label(d(2026, 11, 12), morning), "Nov 12, 2026 close · 9:05 AM ET");
+    }
+
+    #[test]
+    fn windows_are_anchored_to_the_last_close_not_today() {
+        // Today's close is not published yet: the series ends yesterday. The 1Y
+        // window must still span a full year, so "Annualized" is not blank.
+        let as_of = d(2026, 11, 12);
+        let points: Vec<ValuationPoint> = series().into_iter().filter(|p| p.date < as_of).collect();
+        let periods = build_periods(&points, as_of);
+        let by_key: std::collections::HashMap<&str, &PerformancePeriod> =
+            periods.iter().map(|p| (p.key, p)).collect();
+
+        assert_eq!(by_key["1Y"].start, d(2025, 11, 11));
+        assert_eq!(by_key["1Y"].end, d(2026, 11, 11));
+        assert!(by_key["1Y"].twr_annualized.is_some(), "{:?}", by_key["1Y"]);
+        assert_eq!(by_key["1M"].start, d(2026, 10, 11));
+        assert_eq!(by_key["YTD"].start, d(2026, 1, 1));
+    }
+
+    #[test]
+    fn sector_lookup_is_wanted_only_with_a_sector_target() {
+        let symbol = AllocationTarget {
+            id: None,
+            client_id: 1,
+            scope: TargetScope::Symbol,
+            key: "VOO".to_string(),
+            target_pct: 40.0,
+            band_pct: 2.0,
+        };
+        let sector = AllocationTarget { scope: TargetScope::Sector, key: "Technology".to_string(), ..symbol.clone() };
+        assert!(!wants_sector_lookup(&[]));
+        assert!(!wants_sector_lookup(&[symbol.clone()]));
+        assert!(wants_sector_lookup(&[symbol, sector]));
+    }
+
+    #[test]
+    fn openings_are_estimated_only_across_all_accounts() {
+        let holdings = vec![client_holding("VOO", 5.0, 600.0)];
+
+        let (all_accounts, note) = openings_for_scope(&holdings, None);
+        assert_eq!(all_accounts.len(), 1);
+        assert_eq!(note, None);
+
+        let (one_account, note) = openings_for_scope(&holdings, Some("401k"));
+        assert!(one_account.is_empty());
+        let note = note.expect("the account view says why nothing is estimated");
+        assert!(note.contains("401k") && note.contains("not estimated"), "{note}");
+    }
+
+    #[test]
+    fn account_scope_treats_all_and_blank_as_every_account() {
+        assert_eq!(account_scope(None), None);
+        assert_eq!(account_scope(Some("all".to_string())), None);
+        assert_eq!(account_scope(Some("  ".to_string())), None);
+        assert_eq!(account_scope(Some("401k".to_string())), Some("401k".to_string()));
+    }
+
+    #[test]
+    fn sector_cache_remembers_results_and_reports_what_is_missing() {
+        let cache = SectorCache::default();
+        cache.remember("VOO", Some("ETF".to_string()));
+        cache.remember("XOM", None);
+        let symbols: BTreeSet<String> = ["VOO", "XOM", "AAPL"].into_iter().map(String::from).collect();
+
+        let (known, missing) = cache.split(&symbols);
+
+        assert_eq!(known.get("VOO"), Some(&Some("ETF".to_string())));
+        assert_eq!(known.get("XOM"), Some(&None));
+        assert_eq!(known.len(), 2);
+        assert_eq!(missing, vec!["AAPL".to_string()]);
     }
 }

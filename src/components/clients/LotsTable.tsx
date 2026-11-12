@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import { analyticsApi, type LotMethod, type LotReport, type Term } from '@/api/analytics'
+import {
+  accountScopeLabel,
+  analyticsApi,
+  type LotMethod,
+  type LotReport,
+  type Term,
+} from '@/api/analytics'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -63,11 +69,17 @@ function LotsSkeleton() {
   )
 }
 
+interface LotsTableProps {
+  clientId: number
+  /** Account to scope the trades to; `null` = every account (the page's switcher). */
+  accountType?: string | null
+}
+
 /**
  * Tax lots of a client's trade history: open lots and realized sales under the
  * chosen matching method, with short/long-term classification.
  */
-export function LotsTable({ clientId }: { clientId: number }) {
+export function LotsTable({ clientId, accountType = null }: LotsTableProps) {
   const [method, setMethod] = useState<LotMethod>('fifo')
   const [report, setReport] = useState<LotReport | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -77,13 +89,13 @@ export function LotsTable({ clientId }: { clientId: number }) {
     setIsLoading(true)
     setError(null)
     try {
-      setReport(await analyticsApi.clientLots(clientId, method))
+      setReport(await analyticsApi.clientLots(clientId, method, accountType))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setIsLoading(false)
     }
-  }, [clientId, method])
+  }, [clientId, method, accountType])
 
   useEffect(() => {
     load()
@@ -95,7 +107,10 @@ export function LotsTable({ clientId }: { clientId: number }) {
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-4">
         <div className="space-y-1.5">
-          <CardTitle className="text-base">Tax Lots</CardTitle>
+          <div className="flex items-center gap-2">
+            <CardTitle className="text-base">Tax Lots</CardTitle>
+            <Badge variant="outline">{accountScopeLabel(accountType)}</Badge>
+          </div>
           <CardDescription>
             Sells matched to purchase lots from the trade history. Long term = held more than 365
             days. Lots marked "est." predate the imported history and use the holding's average

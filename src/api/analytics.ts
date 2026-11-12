@@ -7,6 +7,7 @@
  * dates are `YYYY-MM-DD` strings, money is in dollars, percentages in percent.
  */
 import { invoke } from '@tauri-apps/api/core'
+import { ACCOUNT_TYPES } from '@/types/clients'
 
 // ---- Lots ------------------------------------------------------------------
 
@@ -167,13 +168,27 @@ async function call<T>(command: string, args: Record<string, unknown>): Promise<
   }
 }
 
+/**
+ * The label of an account scope: `null` is every account; otherwise the
+ * account type's label (`401(k)`), with the manual-trades bucket spelled out.
+ */
+export function accountScopeLabel(accountType: string | null): string {
+  if (accountType == null || accountType === 'all') return 'All accounts'
+  if (accountType === 'manual') return 'Manual trades'
+  return ACCOUNT_TYPES.find((t) => t.value === accountType)?.label ?? accountType
+}
+
 export const analyticsApi = {
-  /** Tax lots of a client's trades with the given matching method. */
-  clientLots: (clientId: number, method: LotMethod) =>
-    call<LotReport>('analytics_client_lots', { clientId, method }),
+  /**
+   * Tax lots of a client's trades with the given matching method. With an
+   * `accountType` only that account's trades are matched (and no opening lots
+   * are estimated, since holdings are stored per client).
+   */
+  clientLots: (clientId: number, method: LotMethod, accountType: string | null = null) =>
+    call<LotReport>('analytics_client_lots', { clientId, method, accountType }),
   /** Time- and money-weighted returns over 1M, 3M, 6M, YTD, 1Y and since inception. */
-  clientPerformance: (clientId: number) =>
-    call<PerformanceReport>('analytics_client_performance', { clientId }),
+  clientPerformance: (clientId: number, accountType: string | null = null) =>
+    call<PerformanceReport>('analytics_client_performance', { clientId, accountType }),
   /** The client's saved allocation targets. */
   listTargets: (clientId: number) =>
     call<AllocationTarget[]>('analytics_list_targets', { clientId }),

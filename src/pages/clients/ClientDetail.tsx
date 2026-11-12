@@ -954,12 +954,18 @@ export default function ClientDetail() {
 
         {/* Performance Tab — time- and money-weighted returns (WP2) */}
         <TabsContent value="performance">
-          <PerformanceCard clientId={clientId} />
+          <PerformanceCard
+            clientId={clientId}
+            accountType={selectedAccount === 'all' ? null : selectedAccount}
+          />
         </TabsContent>
 
         {/* Lots Tab — tax lots under FIFO/LIFO/HIFO/average (WP2) */}
         <TabsContent value="lots">
-          <LotsTable clientId={clientId} />
+          <LotsTable
+            clientId={clientId}
+            accountType={selectedAccount === 'all' ? null : selectedAccount}
+          />
         </TabsContent>
       </Tabs>
 
@@ -1224,12 +1230,12 @@ export default function ClientDetail() {
           {
             title: 'Performance',
             description:
-              "Returns over 1M, 3M, 6M, YTD, 1Y and since inception. Time-weighted return (TWR) strips out the timing of deposits and withdrawals, so it measures the holdings themselves; money-weighted return (XIRR) includes the timing and size of every buy and sell, so it measures the client's experience. Windows under a year are not annualized. Values use FMP daily closes; \"Prices as of\" names the last close used, in Eastern time.",
+              "Returns over 1M, 3M, 6M, YTD, 1Y and since inception, for the account picked in the switcher (All accounts by default). Time-weighted return (TWR) strips out the timing of deposits and withdrawals, so it measures the holdings themselves; money-weighted return (XIRR) includes the timing and size of every buy and sell, so it measures the client's experience. Windows under a year are not annualized. Values use FMP daily closes; \"Prices as of\" names the last close used, in Eastern time.",
           },
           {
             title: 'Lots',
             description:
-              "Sells matched to purchase lots under FIFO, LIFO, HIFO or average cost; switching the method changes the realized and unrealized figures. Long term means held more than 365 days. Lots marked \"est.\" predate the imported trade history and are priced at the holding's average cost. Warnings name sells the history cannot explain and symbols without a current price.",
+              "Sells matched to purchase lots under FIFO, LIFO, HIFO or average cost; switching the method changes the realized and unrealized figures. Long term means held more than 365 days. The account switcher scopes the lots: All accounts matches across every account and estimates opening lots (marked \"est.\") where the imported history starts after the buy, priced at the holding's average cost; a single account matches only its own trades and estimates nothing, since holdings are stored per client. Warnings name sells the history cannot explain and symbols without a current price.",
           },
         ]}
       />
