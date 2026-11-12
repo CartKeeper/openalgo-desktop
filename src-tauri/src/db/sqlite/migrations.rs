@@ -80,6 +80,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "061_chart_drawings", ADD_CHART_DRAWINGS)?;
     //
     // [wp-anchor] WP2 migrations
+    run_migration(conn, "062_client_allocation_targets", CREATE_CLIENT_ALLOCATION_TARGETS)?;
     //
     // [wp-anchor] WP8 migrations
     //
@@ -985,6 +986,21 @@ ALTER TABLE chart_preferences ADD COLUMN drawings TEXT;
 "#;
 //
 // [wp-anchor] WP2 sql
+/// WP2: per-client allocation targets (a symbol or a sector, with a tolerance band)
+const CREATE_CLIENT_ALLOCATION_TARGETS: &str = r#"
+CREATE TABLE IF NOT EXISTS client_allocation_targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    scope TEXT NOT NULL CHECK (scope IN ('symbol','sector')),
+    key TEXT NOT NULL,
+    target_pct REAL NOT NULL,
+    band_pct REAL NOT NULL DEFAULT 2.0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (client_id, scope, key)
+);
+CREATE INDEX IF NOT EXISTS idx_allocation_targets_client ON client_allocation_targets(client_id);
+"#;
 //
 // [wp-anchor] WP8 sql
 //
