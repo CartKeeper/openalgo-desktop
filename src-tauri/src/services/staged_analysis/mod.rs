@@ -6,4 +6,5 @@
 //! staged result is a normal `CopilotResponse` whose markdown ends with an
 //! ACTIONS_JSON block the app has already validated.
 
+pub mod dossier;
 pub mod schemas;
