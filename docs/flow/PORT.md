@@ -349,6 +349,29 @@ history cascades with its workflow). The schedule gate's broker call
 an external boundary all carry a timeout (`dispatch::run` 120 s, the feed
 the node's own, the gate 10 s).
 
+## Task A7: the support implementations
+
+- `flow::support::public_url::public_base_url(app)`: the webhook
+  settings' `ngrok_url` (trimmed of a trailing slash) when one is set, else
+  `http://{webhook_host}:{webhook_port}` from the same settings (the
+  defaults are `127.0.0.1:5000`); the local default when the settings
+  cannot be read, logged. Upstream read its built-in tunnel's address.
+- `flow::support::quote_feed::AppFeed` (`MarketFeed` for the subscribe and
+  price nodes): this app has no stream Flow can subscribe to, so a frame
+  is a one-shot quote through `QuotesService::get_quote` (modes `LTP` and
+  `Quote`) or `get_market_depth` plus the quote's price (mode `Depth`),
+  shaped as the web's websocket frame the nodes read
+  (`{symbol, exchange, mode: 1|2|3, data: {...}}`; `data.prev_close` is the
+  quote's `close`, a book carries `bids`/`asks` as `{price, quantity}` and
+  the two totals). The node's own timeout bounds the call; `accept`
+  decides whether the one frame counts; `unsubscribe` has nothing to give
+  back; with no broker logged in every call answers "No broker is logged
+  in, so there is no live market data feed." at once, and "OpenAlgo is
+  shutting down." once the app is gone. The live path needs a broker and
+  is not provable on the headless harness (`docs/flow/parity.md`).
+- `values`, `numbers`, `order_vocab` and `testkit` were filled in Task A1
+  (copies of upstream's helpers); their tests are the copied ones.
+
 ### `indicators_lib` in this app
 
 - `discovery.rs`, `scan.rs` and `outcome.rs` (the Agent's tools) are
