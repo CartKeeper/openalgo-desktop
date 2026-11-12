@@ -435,3 +435,73 @@ no duplicate command names, migration names or crate keys), with
 The 12 ignored Rust tests are the Flow tests that read the frontend
 sources (`docs/flow/parity.md`); they un-ignore when WP8 Phase B carries
 those files.
+
+## Phase B — the Flow frontend (`wp8b-flow-ui`)
+
+### Carried (Task B1)
+
+- From the same commit (`52580437b0991774576272d007c442cd6eb820fd`), with
+  `git checkout 52580437 -- <paths>` on 2026-11-12: `src/api/flow.ts`,
+  `src/api/flowDesktop.ts`, `src/pages/flow/**`, `src/components/flow/**`,
+  `src/components/desktop/{FlowConfirmDialogs, FlowEditorAccountControls,
+  FlowLeaveGuard, FlowPanelNotes, FlowWebhookReachability}.tsx` (+ tests),
+  `src/lib/flow/**`, `src/lib/desktopFlow.ts` (+ test),
+  `src/stores/flowWorkflowStore.ts` (+ 3 tests), `src/types/flow.ts`,
+  `src/types/flow.surface.json` (+ test): 168 files, 77 of them tests.
+  `src/api/flow.test.ts` is carried in Task B2 with the invoke bridge it
+  tests.
+- Packages: `@xyflow/react ^12.10.0` (upstream's range; the lock resolves
+  12.12.1, the plan's pin). `@uiw/react-codemirror`, `@uiw/codemirror-themes`
+  and `@codemirror/lang-json` were already dependencies at upstream's ranges,
+  and the carried tree imports none of them. Beyond the plan's four:
+  `react-router ^7.12.0` declared (37 carried files import `react-router`,
+  upstream's habit; `react-router-dom@7.12.0` already brought it into the
+  lock, so no package was added), and the dev dependencies `jest-axe
+  ^10.0.0` + `@types/jest-axe ^3.5.9` (7 carried tests use
+  `src/test/a11y-utils.ts`, which this repository ships but whose package
+  was never declared; the two base vitest failures on `jest-axe` go green
+  with it).
+
+### Not carried
+
+| Upstream path | Why |
+| --- | --- |
+| `src/lib/flow/indicatorOffsetWording.test.ts` | Two of its four cases read `docs/prompt/flow-import-format.md` and `docs/userguide/21-flow-visual-builder/README.md`, which this repository does not have (Phase D writes `docs/flow/user-guide.md`); the panel wording it also pins is pinned by `ConfigPanel.desktop.test.tsx`. |
+| `src/utils/toast.ts`, `src/components/layout/AccountControls.tsx`, `src/api/tunnel.ts`, `src/hooks/useProfileMenuItems.ts`, `src/stores/updateStore.ts`, `src/components/auth/LogoutConfirmDialog.tsx`, `src/test/axiosAnswer.ts`, `vitest.config.ts`, `src/test/setup.ts` | App modules the carried tree imports or assumes; the adapters below stand in, or this app's own files do. |
+
+### Adapters (new files of this app)
+
+| File | Stands in for |
+| --- | --- |
+| `src/utils/toast.ts` (+ test) | Upstream's `showToast`: the same call shape `(message, category?, options?)`, every toast shown through sonner. This app has no per-category toast settings, so the category is accepted and unused. |
+| `src/components/layout/AccountControls.tsx` (+ test) | Upstream's header account controls, imported by the carried `FlowEditorAccountControls`: the Navbar's own pieces (broker badge, mode badge, the Live/Analyze switch with its sandbox warning, the theme switch, the profile menu with this app's `profileMenuItems`, Docs, Logout), preceded by `AccountSwitcher`; `onNavigate` lets the editor's leave guard ask first. Copied from `Navbar.tsx`, which this WP may not edit, so a change to the Navbar's account controls is made here too. No Check for Updates (no in-app updater here) and no logout confirmation dialog (the Navbar has none). It logs out once, through the store's `logout()`; the Navbar sends the request twice (`authApi.logout()` and then the store's `logout()`, which sends it again) — reported, not changed. |
+| `src/components/flow/testSetup.ts` | The part of upstream's `src/test/setup.ts` this repository's lacks: `ResizeObserver`/`IntersectionObserver` as real classes, Radix pointer-capture and `scrollIntoView` stubs. Imported by every carried `*.test.tsx`; nothing in the app imports it. |
+
+### Hand edits to carried files (Task B1)
+
+| File | Edit |
+| --- | --- |
+| every carried `*.test.tsx` (56 files) | Three lines prepended: `// @vitest-environment jsdom`, `import '@/test/setup'`, `import '@/components/flow/testSetup'`. This repository has no vitest config (upstream's `vitest.config.ts` sets jsdom and the setup file for every test); each jsdom test here declares its own. |
+| `src/api/flowDesktop.ts` | `tunnelApi` and `onTunnelAddress` removed: `getWebhookInfoForTrader` is `getWebhookInfo` (the server already answers on `public_base_url`, Task A7). |
+| `src/lib/desktopFlow.test.ts` | The case reading `src-tauri/src/services/schemas.rs` (`SUPPORTED_INTERVALS`) removed with its `node:fs` imports: this app has no such constant (the History node passes the interval through to `/api/v1/history`). |
+| `src/pages/flow/FlowKeyboardShortcuts.pinned.test.tsx`, `src/components/flow/panels/ConfigPanel.options.test.tsx` | `:scope > div` selectors replaced by child traversal: this repository's jsdom 24 mishandles `:scope` (upstream runs jsdom 27). |
+| `src/pages/flow/FlowIndex.test.tsx` | The test "shows the tunnel address while the built-in tunnel is online" removed with the `@/api/tunnel` mock (no tunnel API here). |
+| `FlowIndex.w6.test.tsx`, `FlowIndex.pinned.test.tsx`, `ConfigPanel.{desktop, cancelOrders, triggers, titles, everyNode}.test.tsx` | The dead `@/api/tunnel` mocks removed. |
+| `src/pages/flow/FlowEditor.test.tsx` | "offers Check for Updates in the profile menu" became "shows the Dashboard link and the profile menu with Logout" (the Profile entry asserted instead); the leave-guard test goes through the Profile entry (`/profile`) instead of upstream's mocked Positions entry; the `@/hooks/useProfileMenuItems` mock removed. |
+| `src/pages/flow/FlowEditor.w6.test.tsx` | The logout test asserts a direct logout (no "Confirm Logout" dialog here); the `useProfileMenuItems` mock removed. |
+| `src/index.css` (this app's file) | The `@theme inline` mappings `--color-buy`, `--color-sell`, `--color-node-*` added, and upstream's "FLOW EDITOR STYLES" block (through `.bg-surface-2`) appended; the `--buy`/`--sell` HSL triplets already existed in this app's base layer. |
+
+### vitest here, against upstream's
+
+- Under vitest, a `react-router-dom` re-export and a direct `react-router`
+  import load as two module instances, so a hook from one cannot see a
+  `Router` from the other (the first run failed every FlowEditor test on
+  `useNavigate() may be used only in the context of a <Router>` from the
+  adapter). Components the carried tree renders import from `react-router`,
+  as the carried tests' `MemoryRouter` does. In the Vite bundle both names
+  resolve to one module.
+- CSS imports are stubbed (vitest's default `css: false`; upstream sets
+  `css: true`); the one test that reads `src/index.css` reads the file.
+- jsdom 24 here, 27 upstream: the two `:scope` edits above. `HTMLCanvasElement
+  .getContext` "not implemented" lines on stderr are jsdom's, from passing
+  tests.
