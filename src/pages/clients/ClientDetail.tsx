@@ -48,6 +48,7 @@ import { useAccountStore } from '@/stores/accountStore'
 import { AccountSwitcher } from '@/components/AccountSwitcher'
 import { LotsTable } from '@/components/clients/LotsTable'
 import { PerformanceCard } from '@/components/clients/PerformanceCard'
+import { HelpButton } from '@/components/HelpButton'
 import ImportCsvDialog, { ComplianceTable } from './ImportCsvDialog'
 
 function errMsg(err: unknown): string {
@@ -1186,6 +1187,52 @@ export default function ClientDetail() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Contextual Help */}
+      <HelpButton
+        pageTitle="Client Detail"
+        items={[
+          {
+            title: 'Positions',
+            description:
+              "Net positions computed from the client's trade history: quantity, average price, fees and realized P&L per symbol and account.",
+          },
+          {
+            title: 'Holdings',
+            description:
+              'Holdings reconstructed from the latest Schwab import at weighted-average cost. They are replaced wholesale on each import.',
+          },
+          {
+            title: 'Open Orders',
+            description: 'Working orders from the most recent Schwab Order Status import.',
+          },
+          {
+            title: 'Trades',
+            description:
+              'Every imported or manually added trade. Add Trade records a single buy or sell by hand; Export downloads the list as CSV.',
+          },
+          {
+            title: 'Imports',
+            description:
+              "Each uploaded Schwab file. Undo removes that file's trades; the account type of a batch can be corrected here.",
+          },
+          {
+            title: 'Compliance',
+            description:
+              'Strict 401(k) rules checked on every import. Resolve a flag once the underlying data is corrected or the issue is acknowledged.',
+          },
+          {
+            title: 'Performance',
+            description:
+              "Returns over 1M, 3M, 6M, YTD, 1Y and since inception. Time-weighted return (TWR) strips out the timing of deposits and withdrawals, so it measures the holdings themselves; money-weighted return (XIRR) includes the timing and size of every buy and sell, so it measures the client's experience. Windows under a year are not annualized. Values use FMP daily closes; \"Prices as of\" names the last close used, in Eastern time.",
+          },
+          {
+            title: 'Lots',
+            description:
+              "Sells matched to purchase lots under FIFO, LIFO, HIFO or average cost; switching the method changes the realized and unrealized figures. Long term means held more than 365 days. Lots marked \"est.\" predate the imported trade history and are priced at the holding's average cost. Warnings name sells the history cannot explain and symbols without a current price.",
+          },
+        ]}
+      />
     </div>
   )
 }
