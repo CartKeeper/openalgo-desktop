@@ -588,6 +588,7 @@ async fn a_stopped_run_visits_nothing_more() {
 
 // --- a run, end to end ------------------------------------------------------
 
+mod no_broker;
 mod run;
 mod w6_app;
 mod w6_run;

@@ -312,6 +312,8 @@ async fn a_boolean_input_count_counts_as_pythons_int() {
 /// `02` and `005`).
 #[test]
 fn week_and_day_of_year_are_not_padded() {
+    // The web's test reads market time as IST.
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
     for (utc, want) in [
         ("2026-01-05T03:45:00Z", "2/5"),
         ("2026-01-01T03:45:00Z", "1/1"),

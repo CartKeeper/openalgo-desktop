@@ -144,6 +144,7 @@ fn editor_mcx_symbols() -> Vec<String> {
 /// X-140, X-141: the editor's MCX underlyings are the resolver's, and
 /// each routes to MCX.
 #[test]
+#[ignore = "needs src/lib/flow/constants.ts (carried with the frontend in WP8 Phase B)"]
 fn the_dropdown_and_the_resolver_list_the_same_commodities() {
     let mut listed = editor_mcx_symbols();
     assert!(

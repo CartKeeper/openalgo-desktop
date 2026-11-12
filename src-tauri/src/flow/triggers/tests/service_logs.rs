@@ -172,18 +172,13 @@ async fn a_put_re_registers_a_changed_trigger_and_answers_500_when_unwritten() {
 /// and a run with no API key, with the web's sentences; a PUT that meets
 /// either stands the workflow down and says so.
 #[tokio::test]
-async fn re_registration_refuses_no_trigger_and_no_key() {
+async fn re_registration_refuses_a_workflow_with_no_trigger() {
     use crate::flow::service::triggers::reregister;
     for (t, nodes, refusal) in [
         (
             keyed(),
             node("log", json!({"message": "x"})),
             TriggerError::Invalid("Workflow has no trigger node".into()),
-        ),
-        (
-            app(),
-            daily("10:30"),
-            TriggerError::Failed("API key not configured".into()),
         ),
     ] {
         let s = hooked(&t).await;
@@ -222,10 +217,11 @@ async fn re_registration_refuses_no_trigger_and_no_key() {
 }
 
 /// R-25, V-133, T-081: the guards in the web's order, each pinned against
-/// the next with two failing at once: already active before the key, the
-/// key before the strict validator. A graph with no trigger is refused by
-/// the validator, so the `No trigger node found in workflow` 400 after it
-/// is unreachable, on the web as here.
+/// the next with two failing at once: already active before the strict
+/// validator (the web's key guard between them has no case here: a run
+/// always has the app's own credential). A graph with no trigger is
+/// refused by the validator, so the `No trigger node found in workflow`
+/// 400 after it is unreachable, on the web as here.
 #[tokio::test]
 async fn activation_checks_its_guards_in_the_webs_order() {
     let t = app();
@@ -240,10 +236,12 @@ async fn activation_checks_its_guards_in_the_webs_order() {
         "already active, with no key and a graph the validator refuses"
     );
     let stopped = save(&t.ctx, incomplete(), false);
+    let (status, body) = reply(activation::activate(&t.ctx, stopped).await);
     assert_eq!(
-        reply(activation::activate(&t.ctx, stopped).await),
-        (400, json!({"error": "API key not configured"})),
-        "the key, before the validator"
+        (status, &body["error"]),
+        (400, &json!("Workflow cannot be activated")),
+        "the strict validator: {}",
+        body
     );
     let t = keyed();
     hooked(&t).await;
@@ -591,8 +589,9 @@ async fn the_order_update_monitor_logs_a_watch_its_fire_and_its_result() {
         id
     )));
     assert_eq!(logs.starting_with("Order-update trigger fired").len(), 1);
-    // No API key in this app: the run is skipped and the result says so.
-    wait_for(&logs, &format!("Workflow {} execution result: skipped", id)).await;
+    // The run goes ahead (a run always has the app's own credential) and
+    // the result says so.
+    wait_for(&logs, &format!("Workflow {} execution result: success", id)).await;
 }
 
 /// T-055, T-039: a queued order-update run whose watch was replaced, whose

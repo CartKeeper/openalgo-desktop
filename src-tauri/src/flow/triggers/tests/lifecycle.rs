@@ -94,43 +94,6 @@ async fn delete_tears_down_the_triggers_of_an_inactive_workflow_too() {
     assert_eq!(hooks.status()["alerts_count"], 0);
     assert_eq!(hooks.status()["order_updates"]["watches_count"], 0);
 }
-
-/// R-25, T-081, V-133: activation without an API key answers the web's 400
-/// and leaves the workflow inactive with nothing registered.
-#[tokio::test]
-async fn activation_without_an_api_key_is_refused() {
-    let t = app();
-    let id = save(&t.ctx, alert_node(), false);
-    let r = crate::flow::service::activation::activate(&t.ctx, id).await;
-    assert_eq!(
-        (r.status, r.body),
-        (400, json!({"error": "API key not configured"}))
-    );
-    assert!(!active(&t.ctx, id));
-    assert_eq!(t.ctx.flow.triggers().status()["alerts_count"], 0);
-}
-
-/// T-034: with no API key the poll checks nothing and warns per alert, as
-/// the web does.
-#[tokio::test]
-async fn the_poll_without_a_key_warns_for_each_alert() {
-    let t = app();
-    let s = side(&t);
-    let id = save(&t.ctx, alert_node(), true);
-    s.register(
-        id,
-        "priceAlert",
-        &data(json!({"symbol": "SBIN", "exchange": "NSE", "condition": "above", "price": 800})),
-    )
-    .await
-    .unwrap();
-    let (_guard, logs) = logged();
-    assert!(!s.check_prices(false).await);
-    assert!(logs.has(&format!("No API key for alert workflow {}", id)));
-    assert!(!s.alerts.get(id).unwrap().triggered);
-    assert_eq!(run_count(&t.ctx, id), 0);
-}
-
 /// S-20: minting a missing webhook credential is logged as the web logs it;
 /// a workflow that has both logs nothing.
 #[tokio::test]
@@ -260,6 +223,8 @@ fn refuse_updates(app: &Arc<AppState>, name: &str, column: &str) {
 /// minutes.
 #[tokio::test]
 async fn the_interval_log_names_the_unit_given() {
+    // The web's test reads market time as IST.
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
     let now = "2026-11-03T04:37:31Z".parse().unwrap();
     let (_guard, logs) = logged();
     for (unit, line) in [
@@ -483,27 +448,6 @@ async fn retiring_a_replaced_one_shot_says_so() {
     )));
     assert_eq!(s.alerts.get(id).unwrap().gen, newer);
 }
-
-/// R-53: a webhook for a workflow while no API key exists logs the web's
-/// error line naming the workflow.
-#[tokio::test]
-async fn a_webhook_without_a_key_logs_the_webs_line() {
-    let t = app();
-    let (token, secret) = live_hook(
-        &t.ctx,
-        json!([{"id": "w", "type": "webhookTrigger", "position": {"x": 0, "y": 0}, "data": {}}]),
-        json!([]),
-    );
-    let id = workflows::get_by_token(&t.ctx.sqlite.conn().unwrap(), &t.ctx.security, &token)
-        .unwrap()
-        .unwrap()
-        .id;
-    let (_guard, logs) = logged();
-    let a = crate::flow::service::webhooks::trigger(&t.ctx, hook_call(&token, &secret)).await;
-    assert_eq!(a.reply.status, 500, "{}", a.reply.body);
-    assert!(logs.has(&format!("Webhook: No API key for workflow {}", id)));
-}
-
 /// T-053: a watch does not filter by mode, as the web's: an order update
 /// from analyzer mode (the sandbox's `mode: analyze`) fires it and runs
 /// the workflow like a live one.

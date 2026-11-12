@@ -9,12 +9,11 @@
 //! | `branches` | rule branches the main families miss, named over recorded cases |
 //! | `rules` | rules the web's tests leave unpinned, and the desktop's fixes |
 //! | `py_values` | Python's `repr`, `float()`, `int()` and `==` over JSON values |
-//! | `editor_parity` | the web's tests over the editor's sources and the import-format doc (ignored until carried) |
+//! | `editor_parity` | the web's tests over the editor's sources (ignored until the frontend is carried, WP8 Phase B) |
 //! | `us_exchanges` | this app's US venues validate; an unknown exchange is refused with the accepted list |
 
 mod branches;
 mod editor_parity;
-mod editor_parity_docs;
 mod goldens;
 mod ordering;
 mod py_values;

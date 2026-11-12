@@ -655,6 +655,8 @@ mod tests {
     /// there are some.
     #[test]
     fn a_context_carries_its_workflow_id() {
+        // The web's test reads market time as IST.
+        crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
         assert_eq!(ctx().workflow_id, None);
         let clock = crate::clock::ManualClock::new("2026-10-30T03:45:00Z".parse().unwrap());
         let c = NodeCtx::new(NodeCtxParts {

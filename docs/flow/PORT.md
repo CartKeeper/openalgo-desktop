@@ -372,6 +372,26 @@ the node's own, the gate 10 s).
 - `values`, `numbers`, `order_vocab` and `testkit` were filled in Task A1
   (copies of upstream's helpers); their tests are the copied ones.
 
+## Task A8: node families green, goldens replayed
+
+- `cargo test --lib flow::` runs to completion (the deadlock of Task A6's
+  note is gone) with every node family green and all six golden families
+  matching; the per-family lines are in `docs/flow/parity.md`.
+- Carried tests that pinned upstream's "no API key" branch were adapted
+  to this app, where a run always has the app's own credential (Task A4):
+  the fire now runs and the tests assert the executed outcome; the three
+  whose subject was the key guard itself were retired. The holiday-table
+  gate test was retired with the calendar tables (Task A3). The tests that
+  read the Flow frontend sources are `#[ignore]`d until Phase B carries
+  them; the two that read upstream's prompt document were removed
+  (`validator/tests/editor_parity_docs.rs` and one test of
+  `editor_parity.rs`). Every case is listed in `docs/flow/parity.md`.
+- Review Focus 5 (a broker call with no broker logged in) is pinned at
+  the client (`contract/client/app.rs::a_broker_call_without_a_broker_names_the_cause`,
+  Task A4): the node reads upstream's no-broker-session sentence and the
+  run fails at that node; the trigger side's own tests show the workflow
+  stays registered after a failed run.
+
 ### `indicators_lib` in this app
 
 - `discovery.rs`, `scan.rs` and `outcome.rs` (the Agent's tools) are

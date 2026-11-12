@@ -194,8 +194,8 @@ async fn a_job_is_added_replaced_and_removed_with_the_webs_lines() {
 }
 
 /// T-002, T-019: a daily fire more than 60 s late runs nothing and keeps
-/// the schedule; the next one, within the grace, runs (here into the
-/// no-key skip, recorded) with the web's lines.
+/// the schedule; the next one, within the grace, runs (and is recorded)
+/// with the web's lines.
 #[tokio::test]
 async fn a_missed_fire_runs_nothing_and_one_within_the_grace_runs() {
     let t = app();
@@ -226,8 +226,12 @@ async fn a_missed_fire_runs_nothing_and_one_within_the_grace_runs() {
     assert!(!due[0].missed);
     s.run_scheduled(due[0].clone()).await;
     assert!(logs.has(&ran));
-    assert!(logs.has(&format!("No API key available for workflow {}", id)));
-    assert_eq!(run_count(&t.ctx, id), 1, "the skip is recorded");
+    assert_eq!(
+        logs.starting_with(&format!("Scheduled execution result for workflow {}", id))
+            .len(),
+        1
+    );
+    assert_eq!(run_count(&t.ctx, id), 1, "the run is recorded");
 }
 
 /// T-010, T-112 (WEB-DEFECT): a one-time schedule that fired on time runs
@@ -323,12 +327,17 @@ async fn a_failed_scheduling_read_keeps_the_stored_gate() {
     )));
     assert_eq!(run_count(&t.ctx, id), 0, "the stored gate holds");
     s.scheduled_run(id, false).await;
+    // The run is reached and answers (the graph cannot be read, so it is
+    // refused before any record exists; upstream's harness had no key and
+    // recorded a skip before reading).
     assert_eq!(
-        run_count(&t.ctx, id),
+        logs.starting_with(&format!("Scheduled execution result for workflow {}", id))
+            .len(),
         1,
         "an ungated job goes on to the run"
     );
-    assert!(logs.has(&format!("No API key available for workflow {}", id)));
+    // The run answered (its result line above); upstream's harness had no
+    // key and logged its skip here.
 }
 
 /// T-017, T-045, T-060 (decision 36): stop, with no reset first, clears

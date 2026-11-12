@@ -59,9 +59,10 @@ async fn drive_until(s: &Arc<TriggerSide>, id: i64, next: &str, fired: bool) {
 
 /// The last session stored today's 09:15 IST fire as the next run and
 /// OpenAlgo opens at 09:15:40 IST: the restore makes that fire due, the
-/// driver runs it (skipped here for want of an API key, which shows it
-/// fired rather than being missed) and records tomorrow's 09:15 on the
-/// row. A schedule with no stored next run catches nothing up.
+/// driver runs it (the run completes here: a run always has the app's own
+/// credential, where upstream's harness had no API key and recorded a
+/// skip) and records tomorrow's 09:15 on the row. A schedule with no
+/// stored next run catches nothing up.
 #[tokio::test]
 async fn a_restart_runs_the_stored_fire_within_the_grace_and_records_the_next() {
     let logs = crate::flow::support::testkit::capture_logs();
@@ -89,10 +90,7 @@ async fn a_restart_runs_the_stored_fire_within_the_grace_and_records_the_next() 
     );
     let fired = runs(&t.ctx, stored);
     assert_eq!(fired.len(), 1);
-    assert_eq!(
-        fired[0].error.as_deref(),
-        Some("Skipped: there is no API key, so the workflow did not run when this schedule fired. Generate an API key in OpenAlgo.")
-    );
+    assert_eq!(fired[0].status, "completed", "{:?}", fired[0].error);
     assert!(runs(&t.ctx, unstored).is_empty());
     let text = logs.text();
     assert!(

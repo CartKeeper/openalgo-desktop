@@ -84,15 +84,20 @@ async fn the_monitor_stops_when_its_last_alert_is_removed() {
     let s = own_side(&t).await;
     let (_guard, logs) = logged();
     s.start_drivers();
-    let watch = |id: i64| data(json!({"symbol": "SBIN", "price": 800 + id}));
+    // One symbol per alert, so each poll's quote line names the alert it
+    // checked (no broker is logged in, so every quote fails and is logged).
+    let watch = |id: i64| data(json!({"symbol": format!("S{id}"), "price": 800 + id}));
     s.register(41, "priceAlert", &watch(41)).await.unwrap();
-    // The first poll checked 41 alone (this app has no API key, so it
-    // warns per alert) and sleeps; 42 is added and 41 removed meanwhile.
-    wait_for(&logs, "No API key for alert workflow 41").await;
+    // The first poll checked 41 alone and sleeps; 42 is added and 41
+    // removed meanwhile.
+    wait_past_a_poll(&logs, "polled 41", |l| {
+        !l.starting_with("Failed to get quote for S41").is_empty()
+    })
+    .await;
     s.register(42, "priceAlert", &watch(42)).await.unwrap();
     s.unregister(41).await.unwrap();
     wait_past_a_poll(&logs, "polled 42", |l| {
-        l.has("No API key for alert workflow 42")
+        !l.starting_with("Failed to get quote for S42").is_empty()
     })
     .await;
     assert!(!logs.has("Price monitoring stopped"), "one alert is left");

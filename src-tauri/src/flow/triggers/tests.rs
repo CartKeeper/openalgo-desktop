@@ -290,12 +290,14 @@ async fn stop_ends_every_task_and_reset_forgets_everything() {
     assert_eq!(t.ctx.flow.triggers().status()["alerts_count"], 0);
 }
 
-/// T-050, T-102, X-341, D-25: the order-update monitor rides the bus's
-/// critical lane; an update reaches the watch, and with no broker logged
-/// in its run is skipped (recorded) and the one-time watch re-armed.
+/// T-050, T-102, X-341, D-25: the order-update monitor reads the app's
+/// order updates; an update reaches the watch, and while OpenAlgo is
+/// signed out its run is skipped (recorded) and the one-time watch
+/// re-armed (upstream's app had no account here; its skip was the key's).
 #[tokio::test]
 async fn an_order_update_from_the_bus_reaches_its_watch() {
     let t = app();
+    t.ctx.set_user_session(None);
     assert!(
         t.ctx.order_updates.receiver_count() >= 1,
         "the trigger side listens for order updates"
@@ -462,31 +464,19 @@ fn hook_call(token: &str, secret: &str) -> crate::flow::service::webhooks::Webho
     }
 }
 
-/// R-53, T-071: no API key answers the web's 500; R-54, V-136: a workflow
-/// the strict validator refuses answers 400 with its first message, before
-/// anything runs.
+/// R-54, V-136: a workflow the strict validator refuses answers 400 with
+/// its first message, before anything runs. (Upstream's R-53, T-071 — no
+/// API key answers 500 — has no case here: a run always has the app's own
+/// credential.)
 #[tokio::test]
-async fn a_webhook_needs_a_key_and_a_runnable_workflow() {
+async fn a_webhook_needs_a_runnable_workflow() {
     use crate::flow::service::webhooks::trigger;
-    let t = app();
     // A Log node the trigger never reaches: the strict validator refuses it.
     let incomplete = json!([
         {"id": "w", "type": "webhookTrigger", "position": {"x": 0, "y": 0}, "data": {}},
         {"id": "l", "type": "log", "position": {"x": 0, "y": 100}, "data": {"message": "x"}}
     ]);
-    let (token, secret) = live_hook(&t.ctx, incomplete.clone(), json!([]));
-    let a = trigger(&t.ctx, hook_call(&token, &secret)).await;
-    assert_eq!(
-        (a.reply.status, a.reply.body.clone()),
-        (
-            500,
-            json!({"error": "No API key configured for workflow execution. Please re-activate the workflow."})
-        )
-    );
-    // With an account and its key (made before the workflow: a new
-    // account's keys drop every earlier webhook secret).
     let t = app();
-    crate::flow::support::testkit::sign_in(&t.ctx);
     let (token, secret) = live_hook(&t.ctx, incomplete, json!([]));
     let a = trigger(&t.ctx, hook_call(&token, &secret)).await;
     assert_eq!(a.reply.status, 400, "{}", a.reply.body);
@@ -537,39 +527,6 @@ async fn the_market_hours_gate_skips_a_scheduled_run_silently() {
         "the graph's own setting wins over the stored one"
     );
 }
-
-/// T-021, T-101 (decision 25): the scheduler's gate is the nodes' one, on
-/// `effective_session_window`: on Republic Day 2026 (a trading holiday
-/// that does not list NCO) NCO and CRYPTO are open, NSE is shut, as on
-/// the web. A second copy over `timings_for_date` shut all three.
-#[tokio::test]
-async fn a_holiday_that_does_not_list_the_exchange_leaves_it_open() {
-    let t = app();
-    // Monday 2026-01-26, 12:00 IST.
-    t.clock.set("2026-01-26T06:30:00Z".parse().unwrap());
-    let gated = |exchange: &str| {
-        save(
-            &t.ctx,
-            node(
-                "start",
-                json!({"scheduleType": "daily", "marketHoursOnly": true,
-                    "marketHoursExchange": exchange}),
-            ),
-            true,
-        )
-    };
-    let (nco, crypto, nse) = (gated("NCO"), gated("crypto"), gated("NSE"));
-    let s = side(&t);
-    for id in [nco, crypto, nse] {
-        s.scheduled_run(id, true).await;
-    }
-    let runs =
-        |id| crate::flow::store::executions::list(&t.ctx.sqlite.conn().unwrap(), id, 5).unwrap();
-    assert_eq!(runs(nco).len(), 1, "NCO is not listed on the holiday");
-    assert_eq!(runs(crypto).len(), 1, "CRYPTO never closes");
-    assert!(runs(nse).is_empty(), "NSE is shut on the holiday");
-}
-
 /// X-344, T-090: the app's own shutdown stops the trigger side (its alerts
 /// and watches go, the monitor reports stopped).
 #[tokio::test]
