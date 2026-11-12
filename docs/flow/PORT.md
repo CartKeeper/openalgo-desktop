@@ -27,7 +27,7 @@ the carried tree.
 ## Not carried (and why)
 
 | Upstream path | Why |
-|---|---|
+| --- | --- |
 | `src-tauri/src/flow/doc_tests.rs` | Tests upstream's `docs/prompt/flow-import-format.md` and user-guide chapter 21 against the code. Neither document exists here (Phase D writes `docs/flow/user-guide.md`). |
 | `flow/contract/client/app/{tests,refusal_tests}.rs` | Built on upstream's Agent test kit, mock broker and tunnel log capture. Task A4 writes this app's client tests on the headless harness. |
 | `flow/nodes/internal/tests.rs`, `flow/nodes/order_api_tests.rs`, `flow/nodes/data_tests/app.rs` | Mock-broker (`brokers::mock`) and `mcp::dispatch` tests. |
@@ -42,7 +42,7 @@ and what it was rewritten to. The rewrite was a mechanical `sed` over the
 carried tree, followed by the hand edits listed in the next section.
 
 | Upstream | Here | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `crate::agent::indicators::*` | `crate::indicators_lib::*` | Directory rename. `discovery.rs` and `scan.rs` (the Agent's tools) are carried so the library's tests stay whole. |
 | `crate::agent::contract::tool::ToolOutcome`, `agent::tools::market::normalise::refuse` | `indicators_lib::outcome::{ToolOutcome, refuse}` | A two-variant stand-in with `invalid_argument`, `text`, `is_ok`. |
 | `crate::agent::tools::market::candles::{CandleFrame, ist_timestamp, ...}` | `indicators_lib::candles` | `Columns`, `candle_columns`, `candle_frame`, `CandleFrame` copied; `ist_timestamp`/`iso_ist` became `market_timestamp`/`iso_market` over the market zone. The Agent's chart/summary helpers were not carried. |
@@ -82,7 +82,7 @@ carried tree, followed by the hand edits listed in the next section.
 ## Hand edits to carried files (Phase A)
 
 | File | Edit |
-|---|---|
+| --- | --- |
 | `flow/mod.rs` | `pub mod support;` added; `mod doc_tests;` removed. |
 | `flow/nodes/mod.rs`, `flow/nodes/alerts.rs`, `flow/nodes/data_tests/mod.rs` | The `mod` lines of the test files not carried removed. |
 | `flow/contract/client/app.rs` | Rewritten for this app (see the seam table); `shaped`, `transport_failure`, `NO_ANSWER`, `NOT_SENT`, `CALL_TIMEOUT` kept as upstream wrote them. `with_broker_cause` matches this app's refusal texts. |
@@ -105,7 +105,7 @@ carried tree, followed by the hand edits listed in the next section.
 ## Files of this app touched outside the carried tree
 
 | File | Change |
-|---|---|
+| --- | --- |
 | `src-tauri/src/lib.rs` | WP8 module anchor: `pub mod clock; pub mod events; pub mod flow; pub mod indicators_lib;` |
 | `src-tauri/Cargo.toml` | WP8 deps anchor: `tower` (util), `tokio-util` (rt), `regex`, `zeroize`, `subtle`, `oa_core` (git, upstream's pin). |
 | `src-tauri/src/security/mod.rs` | `pub mod secret; pub use secret::Secret;` and `SecurityManager::for_tests()`. |
@@ -164,7 +164,7 @@ carried tree, followed by the hand edits listed in the next section.
 ### Carried tests adapted in A2
 
 | Upstream test helper | Here |
-|---|---|
+| --- | --- |
 | `AuthService::setup(&app, "trader", ...)` | `flow::support::testkit::sign_in(&app)` (a user session) |
 | `AuthService::lock_everything(&app)` | `testkit::sign_out(&app)` (session cleared, runs stopped, triggers kept) |
 | `app.security.install(&Unlocked::random())`, `security.is_unlocked()` | removed / `is_authenticated()` (always unlocked here) |
@@ -299,6 +299,55 @@ an_exchange_without_hours_uses_the_default}` and
   `got 'NYSE'`) are this app's accepted path by design: the replay reports
   them `not applicable here` with the reason, per family (see
   `docs/flow/parity.md`).
+
+## Task A6: store, migration, start and stop
+
+- Migration `100_flow_core` (the program's reserved name) runs
+  `flow::store::migrate` through `run_migration_fn`, a Rust-bodied
+  variant of this app's `run_migration` under the WP8 anchors in
+  `db/sqlite/migrations.rs`: run once, recorded in the `migrations` table
+  like the SQL ones. The tables are upstream's `flow_workflows` and
+  `flow_workflow_executions`, column for column (the webhook secret is
+  encrypted with this app's `SecurityManager`, no AAD).
+- `lib.rs` (the construction site): after `app.manage(app_state)` the root
+  `Arc` is managed too (`app.manage(root)`, so Flow's start-time weak
+  references stay alive), and `flow::start(&root)` runs inside Tauri's
+  async runtime (the trigger side spawns its drivers): it closes the runs
+  the last session left `running` (recorded `failed` with upstream's
+  interrupted sentence, never resumed), installs the node services, the
+  scheduler and monitors, and restores the active workflows.
+- On `RunEvent::ExitRequested` the app calls `AppState::shutdown_with(10
+  s)`: the trigger side stops, then every run in flight gets ten seconds
+  to write its record before it is ended (upstream's `STOP_GRACE` of two
+  seconds remains the tests' `shutdown()`).
+- Tests: `flow/store/app_tests.rs` (the app's own runner creates the
+  tables and records the migration; a run left running is closed at the
+  next open and its workflow is free — Review Focus 3).
+
+### `SqliteDb::conn()` is a pool checkout (a hang found and fixed)
+
+Upstream's `ctx.sqlite.conn()` checks a connection out of an r2d2 pool,
+so carried code holds one while it checks out another, or across an
+await, without a thought (`refuse_updates` while a test holds its `conn`;
+the executor's `blocking` reads while the test that started the run holds
+one). Task A1 first implemented `conn()` as the guard of this app's single
+`Mutex<Connection>`, and two carried tests deadlocked on it forever
+(`nodes::http::tests::analyzer_mode_still_sends_the_request`, which
+holds `conn` across `executor::execute(..).await`, and
+`triggers::tests::lifecycle::activation_answers_500_when_it_cannot_persist_or_register`,
+which calls `conn()` twice on one thread); the whole `flow::` run sat at
+0% CPU with 808 of 810 tests finished. `SqliteDb` now owns an r2d2 pool of
+four connections beside the app's own connection (`r2d2_sqlite` was
+already a dependency): `conn()` returns a `PooledConn`, waits at most the
+pool's 30 s for a free one and then answers an error, never hangs. Both
+sources share the file in WAL mode with `busy_timeout` 5 s (the app's
+connection gains that pragma: it waits for a Flow writer instead of
+failing busy); the pooled connections have foreign keys on (Flow's run
+history cascades with its workflow). The schedule gate's broker call
+(`MarketStatusService::get_clock`) is time-boxed to 10 s
+(`MARKET_CLOCK_TIMEOUT`) before the logged fallback: Flow's own awaits on
+an external boundary all carry a timeout (`dispatch::run` 120 s, the feed
+the node's own, the gate 10 s).
 
 ### `indicators_lib` in this app
 

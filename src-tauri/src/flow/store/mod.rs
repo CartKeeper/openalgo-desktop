@@ -135,6 +135,8 @@ pub(crate) mod testing {
 }
 
 #[cfg(test)]
+mod app_tests;
+#[cfg(test)]
 mod reads_tests;
 
 #[cfg(test)]

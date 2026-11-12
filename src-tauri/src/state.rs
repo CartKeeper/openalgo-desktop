@@ -315,8 +315,14 @@ impl AppState {
     /// gets `flow::STOP_GRACE` to write its record). A run between two
     /// order legs ends here and is recorded, never resumed blindly.
     pub async fn shutdown(&self) {
+        self.shutdown_with(crate::flow::STOP_GRACE).await;
+    }
+
+    /// [`AppState::shutdown`] with `grace` for the runs in flight (the app
+    /// gives them ten seconds on quit).
+    pub async fn shutdown_with(&self, grace: std::time::Duration) {
         self.flow.triggers().stop().await;
-        self.flow.stop_all(crate::flow::STOP_GRACE).await;
+        self.flow.stop_all(grace).await;
     }
 
     /// When the trading session turns (hour, minute in market time): the

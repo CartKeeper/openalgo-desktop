@@ -81,6 +81,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     // [wp-anchor] WP2 migrations
     //
     // [wp-anchor] WP8 migrations
+    run_migration_fn(conn, "100_flow_core", crate::flow::store::migrate)?;
     //
 
     tracing::info!("Database migrations completed");
@@ -982,4 +983,24 @@ CREATE TABLE dismissed_protection (
 // [wp-anchor] WP2 sql
 //
 // [wp-anchor] WP8 sql
+/// A migration written in Rust (Flow's store builds its own tables,
+/// `flow::store::migrate`): run once and recorded under `name` like the SQL
+/// ones above.
+fn run_migration_fn(
+    conn: &Connection,
+    name: &str,
+    migrate: fn(&Connection) -> Result<()>,
+) -> Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM migrations WHERE name = ?)",
+        [name],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        tracing::info!("Running migration: {}", name);
+        migrate(conn)?;
+        conn.execute("INSERT INTO migrations (name) VALUES (?)", [name])?;
+    }
+    Ok(())
+}
 //

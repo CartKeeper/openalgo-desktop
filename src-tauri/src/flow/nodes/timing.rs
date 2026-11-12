@@ -470,6 +470,10 @@ pub fn within_window(
     start <= minutes && minutes <= end
 }
 
+/// How long the gate waits for the broker's market clock before it falls
+/// back to the regular session.
+pub const MARKET_CLOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The schedule trigger's market-hours gate (`is_within_market_hours`):
 /// the broker's market clock when it can be read
 /// (`MarketStatusService::get_clock`; closed inside the regular hours is a
@@ -481,7 +485,14 @@ pub async fn is_within_market_hours(app: &AppState, now: DateTime<Utc>, hours: &
     let date = now.with_timezone(&market_tz()).date_naive();
     let regular = market_hours::regular_window(date);
     let overrides = (hours.start.as_ref(), hours.end.as_ref());
-    match MarketStatusService::get_clock(app, None).await {
+    let live = tokio::time::timeout(
+        MARKET_CLOCK_TIMEOUT,
+        MarketStatusService::get_clock(app, None),
+    )
+    .await
+    .map_err(|_| crate::error::AppError::Broker("the market clock did not answer in time".into()))
+    .and_then(|r| r);
+    match live {
         Ok(clock) => {
             if overrides == (None, None) {
                 return clock.is_open;
