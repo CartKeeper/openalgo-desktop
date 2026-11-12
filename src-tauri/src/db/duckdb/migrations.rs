@@ -33,6 +33,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "004_download_jobs", CREATE_DOWNLOAD_JOBS)?;
     run_migration(conn, "005_symbol_metadata", CREATE_SYMBOL_METADATA)?;
     run_migration(conn, "006_download_jobs_v2", ALTER_DOWNLOAD_JOBS_V2)?;
+    run_migration(conn, "007_symbol_metadata_v2", ALTER_SYMBOL_METADATA_V2)?;
 
     tracing::info!("DuckDB migrations completed");
     Ok(())
@@ -156,5 +157,31 @@ CREATE TABLE IF NOT EXISTS symbol_metadata (
     market_cap DOUBLE,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (symbol, exchange)
+);
+"#;
+
+/// FinanceDatabase columns on `symbol_metadata`, plus the key/value table that
+/// records each refresh (last refresh time, OTC flag, source commit and date).
+///
+/// Same WAL rule as ALTER_DOWNLOAD_JOBS_V2: the adds are nullable and carry NO
+/// DEFAULT clause. Readers COALESCE `delisted` to FALSE; the loader always
+/// writes it explicitly.
+const ALTER_SYMBOL_METADATA_V2: &str = r#"
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS country VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS industry_group VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS size_bucket VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS isin VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS cusip VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS figi VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS website VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS summary VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS asset_type VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS delisted BOOLEAN;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS source VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS source_as_of VARCHAR;
+
+CREATE TABLE IF NOT EXISTS symbol_metadata_meta (
+    meta_key VARCHAR PRIMARY KEY,
+    meta_value VARCHAR
 );
 "#;

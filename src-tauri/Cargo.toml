@@ -88,6 +88,7 @@ rust_decimal = "1"
 ta-lib = "0.8"
 #
 # [wp-anchor] WP7 deps
+csv = "1"
 #
 # [wp-anchor] WP8 deps
 #

@@ -48,6 +48,7 @@ pub mod analytics;
 // [wp-anchor] WP6 talib-indicators
 //
 // [wp-anchor] WP7 symbol-metadata
+pub mod symbol_metadata;
 //
 // [wp-anchor] WP8 flow
 //
