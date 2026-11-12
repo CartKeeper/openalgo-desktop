@@ -505,3 +505,58 @@ those files.
 - jsdom 24 here, 27 upstream: the two `:scope` edits above. `HTMLCanvasElement
   .getContext` "not implemented" lines on stderr are jsdom's, from passing
   tests.
+
+### Task B2: `/flow/api` as Tauri commands
+
+- `src-tauri/src/commands/flow.rs` (new): upstream's 22 routes
+  (`server/routes/flow/{mod,triggers,lookups}.rs`, not carried) as `flow_*`
+  commands, registered under the WP8 handler anchor in `lib.rs`
+  (`pub mod flow;` under the commands anchor). Each command reads its
+  arguments as the route read the request and calls the one service
+  function the route called; the service's `Reply` is answered as
+  `FlowReply { status, body }`. A JSON body from the editor goes through
+  `Body::parse` again (serialised, then read), so `null`, `{}`, `[]`, `""`
+  and `0` are the web's "no data" here too. Commands take the root `Arc`
+  (`AppState::root()`), the state the service functions and Flow's
+  long-lived tasks share. The plain functions the commands wrap are what
+  the tests call (`commands/flow.rs` tests on the headless harness).
+- Against the plan's signatures: `flow_option_strikes(params:
+  HashMap<String, String>)` is the web's query map (`StrikeQuery::
+  from_params` reads `underlying`, `optionType`, `expiry`, `expiryType`,
+  `exchange`; the plan's `(underlying, exchange, expiry)` dropped two the
+  carried leg builder sends); `flow_list_executions(id, limit: Option<u32>)`
+  hands the limit on as the query string the web read;
+  `flow_execute_workflow(id, body)` accepts and ignores the body, as the
+  route did; `flow_symbol_lotsizes(body)` always has JSON (the route's
+  "not JSON" case cannot arrive from `invoke`).
+- `src/api/flow.ts`: the web's types, function names, signatures and query
+  keys kept; every body is now `flowReply(invoke('flow_…', args))`.
+  `flowReply<T>` resolves the body below 400 and throws `FlowApiError`
+  above, with `message` read as upstream's web client read a refusal
+  (`message`, then `error`, then `detail`, then a plain-text body) and
+  `response.data` = the body, so the pages' `error.message` toasts and
+  `failedRunLog(error)` (`lib/desktopFlow.ts`) work unchanged. A command
+  that rejects (an `AppError`) is a 500 with its message. No wrapper for
+  `flow_monitor_status`: no carried page calls the route.
+- `src/api/flow.test.ts`: upstream's test rewritten over a mocked `invoke`
+  (command and arguments per call, what each function hands back, the
+  refusal rules). Its 401 (redirect to `/login`) and 403 (CSRF sentence)
+  cases are not carried: no HTTP session or CSRF in the bridge.
+- `src/components/desktop/FlowWebhookReachability.tsx`: already warned on a
+  `127.*`, `localhost`, `0.0.0.0` or `[::1]` host; its remedy now names this
+  app's setting (Admin → Server Settings → "Ngrok/Public URL") instead of
+  upstream's built-in tunnel and Host Server URL. Its test and
+  `FlowIndex.test.tsx` assert the new words.
+- The 11 Rust tests Phase A `#[ignore]`d for want of the frontend sources
+  (`flow/mod.rs` 1, `validator/tests/editor_parity.rs` 3,
+  `nodes/options/tests.rs` 1, `nodes/legs/tests.rs` 1,
+  `indicator_service/tests/catalogue.rs` 5) run again on the carried
+  `src/lib/flow/constants.ts`, `src/lib/flow/customLegs.ts` and
+  `src/components/flow/nodes/`, and pass; the `NEEDS_EDITOR` scaffolding
+  went with the attributes. Phase A's gate counted 12 ignored: the twelfth
+  is `nodes/http/client/tests.rs`'s proxy test, which
+  `system_proxy_settings_are_ignored` runs in a child process with proxy
+  variables set, and stays ignored by design. `docs/flow/parity.md`'s list
+  "Ignored until the frontend arrives (Phase B)" is therefore resolved; that
+  file is outside Phase B's list and was not edited (Phase D owns its final
+  table).

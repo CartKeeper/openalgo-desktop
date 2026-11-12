@@ -51,4 +51,5 @@ pub mod analytics;
 pub mod symbol_metadata;
 //
 // [wp-anchor] WP8 flow
+pub mod flow;
 //

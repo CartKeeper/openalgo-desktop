@@ -40,8 +40,8 @@ describe('FlowWebhookReachability', () => {
       <FlowWebhookReachability webhookUrl={`http://127.0.0.1:5000/flow/webhook/${TOKEN}`} />
     )
     expect(screen.getByRole('alert')).toHaveTextContent('Webhook URL not accessible!')
-    expect(screen.getByRole('alert')).toHaveTextContent('built-in ngrok tunnel')
-    expect(screen.getByRole('alert')).toHaveTextContent('Host Server URL')
+    expect(screen.getByRole('alert')).toHaveTextContent('Ngrok/Public URL')
+    expect(screen.getByRole('alert')).toHaveTextContent('Server Settings')
     await checkA11y(container)
   })
 

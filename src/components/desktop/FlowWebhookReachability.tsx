@@ -24,10 +24,13 @@ export function isLocalWebhookUrl(url: string): boolean {
  * Desktop departure from the web's Flow pages. The web shows a workflow's
  * webhook URL on whatever HOST_SERVER the server was set up with, usually a
  * public address. On the desktop the URL is this computer's address
- * (http://127.0.0.1:5000) until the trader turns on the built-in ngrok tunnel
- * or enters a Host Server URL, and a URL on that address silently never
- * receives an alert. The note says so, in the words the desktop's
- * TradingView, GoCharting and Chartink pages already use.
+ * (http://127.0.0.1:5000) until the trader enters a public address as the
+ * Ngrok/Public URL on the Admin → Server Settings page (the webhook settings'
+ * `ngrok_url`, which the webhook info is answered on), and a URL on that
+ * address silently never receives an alert. The note says so, in the words
+ * this app's TradingView, GoCharting and Chartink pages already use. (WP8
+ * Phase B: upstream's note named its built-in ngrok tunnel and Host Server
+ * URL, which this app does not have; docs/flow/PORT.md.)
  */
 export function FlowWebhookReachability({
   webhookUrl,
@@ -43,10 +46,10 @@ export function FlowWebhookReachability({
       <AlertDescription className={compact ? 'text-[10px] leading-snug' : undefined}>
         <span>
           <strong>Webhook URL not accessible!</strong> TradingView, Chartink and other services
-          cannot send alerts to this computer's own address. Turn on the{' '}
-          <strong>built-in ngrok tunnel</strong> on the Broker tab of your Profile, or use{' '}
+          cannot send alerts to this computer's own address. Use <strong>ngrok</strong>,{' '}
           <strong>Cloudflare Tunnel</strong>, <strong>VS Code Dev Tunnel</strong> or a{' '}
-          <strong>custom domain</strong> and enter that address as the Host Server URL there.
+          <strong>custom domain</strong> to expose OpenAlgo to the internet, and enter that
+          address as the <strong>Ngrok/Public URL</strong> on the Admin → Server Settings page.
         </span>
       </AlertDescription>
     </Alert>

@@ -260,7 +260,7 @@ describe('webhook settings (desktop)', () => {
     expect(
       await within(dialog).findByDisplayValue('http://127.0.0.1:5000/flow/webhook/wf-token')
     ).toBeInTheDocument()
-    expect(within(dialog).getByRole('alert')).toHaveTextContent('built-in ngrok tunnel')
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Ngrok/Public URL')
     expect(api.getWebhookInfo.mock.calls[0][0]).toBe(7)
   })
 

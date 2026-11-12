@@ -1,8 +1,15 @@
 // api/flow.ts
 // Flow Workflow API module
+//
+// Carried from OpenAlgo web through upstream OpenAlgo Desktop (52580437) and
+// adapted in WP8 Phase B: the web's `/flow/api/*` requests are this app's
+// `flow_*` Tauri commands, which answer the status and JSON body the web's
+// routes answered (`FlowReply`). The types, the function names and
+// signatures, and the query keys are the web's, so the pages carried with
+// them run unchanged. docs/flow/PORT.md records the change.
 
+import { invoke } from '@tauri-apps/api/core'
 import type { Edge, Node } from '@xyflow/react'
-import { webClient } from './client'
 
 // =============================================================================
 // Types
@@ -70,25 +77,96 @@ export interface WorkflowExportData {
 }
 
 // =============================================================================
-// API Functions
+// The command bridge
 // =============================================================================
 
-const FLOW_API_BASE = '/flow/api'
+/** What every `flow_*` command answers: the web's HTTP status and JSON body. */
+export interface FlowReply {
+  status: number
+  body: unknown
+}
+
+/**
+ * A refused request (status 400 and up), shaped as the pages read upstream's
+ * axios error: `message` is the server's sentence, and `response.data` is the
+ * body, where `failedRunLog` (lib/desktopFlow.ts) finds a failed run's log.
+ */
+export class FlowApiError extends Error {
+  readonly status: number
+  readonly body: unknown
+  readonly response: { status: number; data: unknown }
+
+  constructor(status: number, body: unknown) {
+    super(messageOf(status, body))
+    this.name = 'FlowApiError'
+    this.status = status
+    this.body = body
+    this.response = { status, data: body }
+  }
+}
+
+/**
+ * The sentence a refusal carries, as upstream's web client read it (V-150):
+ * `message`, then `error`, then `detail`, then a plain-text body.
+ */
+function messageOf(status: number, body: unknown): string {
+  if (typeof body === 'string' && body.trim()) return body
+  if (body && typeof body === 'object') {
+    const fields = body as Record<string, unknown>
+    for (const key of ['message', 'error', 'detail']) {
+      const value = fields[key]
+      if (typeof value === 'string' && value.trim()) return value
+    }
+  }
+  return `Request failed with status ${status}`
+}
+
+/** What a rejected invoke said: an AppError `{ code, message }`, an Error, or text. */
+function rejectionText(reason: unknown): string {
+  if (reason instanceof Error) return reason.message
+  if (typeof reason === 'string') return reason
+  if (reason && typeof reason === 'object') {
+    const message = (reason as { message?: unknown }).message
+    if (typeof message === 'string') return message
+  }
+  return String(reason)
+}
+
+/**
+ * The body of a command's reply when its status is below 400, a
+ * `FlowApiError` otherwise. A command that rejects outright (an AppError from
+ * the Rust side) is a 500 with its message.
+ */
+export async function flowReply<T>(call: Promise<FlowReply>): Promise<T> {
+  let reply: FlowReply
+  try {
+    reply = await call
+  } catch (reason) {
+    throw new FlowApiError(500, { message: rejectionText(reason) })
+  }
+  if (reply.status >= 400) throw new FlowApiError(reply.status, reply.body)
+  return reply.body as T
+}
+
+const flow = (command: string, args?: Record<string, unknown>) =>
+  invoke<FlowReply>(command, args)
+
+// =============================================================================
+// API Functions
+// =============================================================================
 
 /**
  * List all workflows
  */
 export async function listWorkflows(): Promise<WorkflowListItem[]> {
-  const response = await webClient.get(`${FLOW_API_BASE}/workflows`)
-  return response.data
+  return flowReply(flow('flow_list_workflows'))
 }
 
 /**
  * Get a single workflow by ID
  */
 export async function getWorkflow(id: number): Promise<Workflow> {
-  const response = await webClient.get(`${FLOW_API_BASE}/workflows/${id}`)
-  return response.data
+  return flowReply(flow('flow_get_workflow', { id }))
 }
 
 /**
@@ -100,8 +178,7 @@ export async function createWorkflow(data: {
   nodes?: Node[]
   edges?: Edge[]
 }): Promise<Workflow> {
-  const response = await webClient.post(`${FLOW_API_BASE}/workflows`, data)
-  return response.data
+  return flowReply(flow('flow_create_workflow', { body: data }))
 }
 
 /**
@@ -120,16 +197,14 @@ export async function updateWorkflow(
   // workflow that is currently active: the scheduler and monitors registered the
   // old configuration at activation time and will keep using it until the
   // workflow is deactivated and reactivated.
-  const response = await webClient.put(`${FLOW_API_BASE}/workflows/${id}`, data)
-  return response.data
+  return flowReply(flow('flow_update_workflow', { id, body: data }))
 }
 
 /**
  * Delete a workflow
  */
 export async function deleteWorkflow(id: number): Promise<{ status: string; message: string }> {
-  const response = await webClient.delete(`${FLOW_API_BASE}/workflows/${id}`)
-  return response.data
+  return flowReply(flow('flow_delete_workflow', { id }))
 }
 
 /**
@@ -141,16 +216,14 @@ export async function activateWorkflow(id: number): Promise<{
   job_id?: string
   next_run?: string
 }> {
-  const response = await webClient.post(`${FLOW_API_BASE}/workflows/${id}/activate`)
-  return response.data
+  return flowReply(flow('flow_activate', { id }))
 }
 
 /**
  * Deactivate a workflow
  */
 export async function deactivateWorkflow(id: number): Promise<{ status: string; message: string }> {
-  const response = await webClient.post(`${FLOW_API_BASE}/workflows/${id}/deactivate`)
-  return response.data
+  return flowReply(flow('flow_deactivate', { id }))
 }
 
 /**
@@ -162,24 +235,21 @@ export async function executeWorkflow(id: number): Promise<{
   execution_id?: number
   logs?: ExecutionLog[]
 }> {
-  const response = await webClient.post(`${FLOW_API_BASE}/workflows/${id}/execute`)
-  return response.data
+  return flowReply(flow('flow_execute_workflow', { id }))
 }
 
 /**
  * Get workflow execution history
  */
 export async function getWorkflowExecutions(id: number, limit = 20): Promise<WorkflowExecution[]> {
-  const response = await webClient.get(`${FLOW_API_BASE}/workflows/${id}/executions?limit=${limit}`)
-  return response.data
+  return flowReply(flow('flow_list_executions', { id, limit }))
 }
 
 /**
  * Get webhook configuration for a workflow
  */
 export async function getWebhookInfo(id: number): Promise<WebhookInfo> {
-  const response = await webClient.get(`${FLOW_API_BASE}/workflows/${id}/webhook`)
-  return response.data
+  return flowReply(flow('flow_webhook_info', { id }))
 }
 
 /**
@@ -188,16 +258,14 @@ export async function getWebhookInfo(id: number): Promise<WebhookInfo> {
 export async function enableWebhook(
   id: number
 ): Promise<WebhookInfo & { status: string; message: string }> {
-  const response = await webClient.post(`${FLOW_API_BASE}/workflows/${id}/webhook/enable`)
-  return response.data
+  return flowReply(flow('flow_webhook_enable', { id }))
 }
 
 /**
  * Disable webhook for a workflow
  */
 export async function disableWebhook(id: number): Promise<{ status: string; message: string }> {
-  const response = await webClient.post(`${FLOW_API_BASE}/workflows/${id}/webhook/disable`)
-  return response.data
+  return flowReply(flow('flow_webhook_disable', { id }))
 }
 
 /**
@@ -211,8 +279,7 @@ export async function regenerateWebhook(id: number): Promise<{
   webhook_url: string
   webhook_url_with_symbol: string
 }> {
-  const response = await webClient.post(`${FLOW_API_BASE}/workflows/${id}/webhook/regenerate`)
-  return response.data
+  return flowReply(flow('flow_webhook_regenerate', { id }))
 }
 
 /**
@@ -223,10 +290,7 @@ export async function regenerateWebhookSecret(id: number): Promise<{
   message: string
   webhook_secret: string
 }> {
-  const response = await webClient.post(
-    `${FLOW_API_BASE}/workflows/${id}/webhook/regenerate-secret`
-  )
-  return response.data
+  return flowReply(flow('flow_webhook_regenerate_secret', { id }))
 }
 
 /**
@@ -242,18 +306,14 @@ export async function updateWebhookAuthType(
   webhook_url: string
   webhook_url_with_secret: string | null
 }> {
-  const response = await webClient.post(`${FLOW_API_BASE}/workflows/${id}/webhook/auth-type`, {
-    auth_type: authType,
-  })
-  return response.data
+  return flowReply(flow('flow_webhook_set_auth_type', { id, body: { auth_type: authType } }))
 }
 
 /**
  * Export workflow for sharing
  */
 export async function exportWorkflow(id: number): Promise<WorkflowExportData> {
-  const response = await webClient.get(`${FLOW_API_BASE}/workflows/${id}/export`)
-  return response.data
+  return flowReply(flow('flow_export_workflow', { id }))
 }
 
 /**
@@ -263,9 +323,11 @@ export async function exportWorkflow(id: number): Promise<WorkflowExportData> {
 export async function importWorkflow(
   data: WorkflowExportData
 ): Promise<{ id: number; name: string }> {
-  const response = await webClient.post(`${FLOW_API_BASE}/workflows/import`, data)
+  const response = await flowReply<{ status: string; workflow_id: number }>(
+    flow('flow_import_workflow', { body: data })
+  )
   return {
-    id: response.data.workflow_id,
+    id: response.workflow_id,
     name: data.name || 'Imported Workflow',
   }
 }
@@ -291,8 +353,7 @@ export async function replaceWorkflow(
   id: number,
   data: WorkflowExportData
 ): Promise<ReplaceWorkflowResult> {
-  const response = await webClient.post(`${FLOW_API_BASE}/workflows/${id}/replace`, data)
-  return response.data
+  return flowReply(flow('flow_replace_workflow', { id, body: data }))
 }
 
 // =============================================================================
@@ -311,8 +372,8 @@ export interface IndexSymbolInfo {
  * Returns dynamic lot sizes instead of hardcoded values
  */
 export async function getIndexSymbolsLotSizes(): Promise<IndexSymbolInfo[]> {
-  const response = await webClient.get(`${FLOW_API_BASE}/index-symbols`)
-  return response.data.data || []
+  const response = await flowReply<{ data?: IndexSymbolInfo[] }>(flow('flow_index_symbols'))
+  return response.data || []
 }
 
 export interface SymbolRef {
@@ -340,11 +401,10 @@ interface SymbolLotSizesResponse {
  */
 export async function getSymbolLotSizes(symbols: SymbolRef[]): Promise<LotSizeMap> {
   if (!symbols.length) return {}
-  const response = await webClient.post<SymbolLotSizesResponse>(
-    `${FLOW_API_BASE}/symbol-lotsizes`,
-    { symbols }
+  const response = await flowReply<SymbolLotSizesResponse>(
+    flow('flow_symbol_lotsizes', { body: { symbols } })
   )
-  const raw = response.data?.lotSizes
+  const raw = response?.lotSizes
   if (!raw || typeof raw !== 'object') return {}
   // Guard the values rather than trusting the payload: a non-positive or
   // non-integer lot size would silently multiply a basket by a wrong factor.
@@ -399,8 +459,16 @@ export async function getOptionStrikes(params: {
   expiryType?: string
   optionType?: 'CE' | 'PE'
 }): Promise<OptionStrikesResponse> {
-  const response = await webClient.get(`${FLOW_API_BASE}/option-strikes`, { params })
-  return response.data.data
+  // The web sent these as query parameters, the unset ones left out; the
+  // command reads the same keys (flow::lookups::StrikeQuery::from_params).
+  const query: Record<string, string> = {}
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null) query[key] = String(value)
+  }
+  const response = await flowReply<{ data: OptionStrikesResponse }>(
+    flow('flow_option_strikes', { params: query })
+  )
+  return response.data
 }
 
 // =============================================================================

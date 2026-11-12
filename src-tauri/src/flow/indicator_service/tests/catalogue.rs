@@ -16,15 +16,12 @@ use crate::flow::indicator_service::{
 };
 
 /// The editor's constants file (`src/lib/flow/constants.ts`), carried with
-/// the frontend in WP8 Phase B; the tests that read it are ignored until it
-/// is there.
+/// the frontend in WP8 Phase B.
 fn editor_source() -> String {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/flow/constants.ts");
     std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{path}: {e} (the file arrives with WP8 Phase B)"))
+        .unwrap_or_else(|e| panic!("{path}: {e}"))
 }
-
-const NEEDS_EDITOR: &str = "needs src/lib/flow/constants.ts (carried with the frontend in WP8 Phase B)";
 
 #[test]
 fn the_supported_names_are_the_webs() {
@@ -161,15 +158,12 @@ fn editor_params(editor: &str) -> Vec<(String, Vec<Field>)> {
 
 /// The editor offers exactly the names the node runs (IND-092).
 #[test]
-#[ignore = "needs src/lib/flow/constants.ts (carried with the frontend in WP8 Phase B)"]
 fn the_editor_lists_the_supported_names() {
-    let _ = NEEDS_EDITOR;
     assert_eq!(catalog_values(&editor_source()), list_supported_indicators());
 }
 
 /// A Windows checkout (CRLF line endings) reads the same as LF.
 #[test]
-#[ignore = "needs src/lib/flow/constants.ts (carried with the frontend in WP8 Phase B)"]
 fn the_editor_file_reads_the_same_with_crlf_line_endings() {
     let source = editor_source();
     let crlf = source.replace("\r\n", "\n").replace('\n', "\r\n");
@@ -185,7 +179,6 @@ fn the_editor_file_reads_the_same_with_crlf_line_endings() {
 /// Every parameter field the editor renders is the library's parameter,
 /// with its type and default (required ones at `REQUIRED_PARAM_DEFAULTS`).
 #[test]
-#[ignore = "needs src/lib/flow/constants.ts (carried with the frontend in WP8 Phase B)"]
 fn the_editors_parameter_fields_are_the_librarys() {
     let editor = editor_params(&editor_source());
     let mut failures = Failures::default();
@@ -225,7 +218,6 @@ fn the_editors_parameter_fields_are_the_librarys() {
 /// and category included, and every entry's category is one of the
 /// categories (F-250).
 #[test]
-#[ignore = "needs src/lib/flow/constants.ts (carried with the frontend in WP8 Phase B)"]
 fn the_editors_catalogue_is_the_webs() {
     let web = json(EDITOR_LISTS);
     let editor = editor_source().replace("\r\n", "\n");
@@ -257,7 +249,6 @@ fn the_editors_catalogue_is_the_webs() {
 /// those (F-251; names, types and defaults are pinned against the library
 /// by `the_editors_parameter_fields_are_the_librarys`).
 #[test]
-#[ignore = "needs src/lib/flow/constants.ts (carried with the frontend in WP8 Phase B)"]
 fn the_editors_parameter_labels_and_choices_are_the_webs() {
     let web = json(EDITOR_LISTS);
     let editor = editor_source().replace("\r\n", "\n");
