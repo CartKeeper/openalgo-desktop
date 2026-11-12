@@ -4,6 +4,7 @@ import {
   ClipboardCheck,
   Copy,
   FileText,
+  HelpCircle,
   ListChecks,
   Loader2,
   Send,
@@ -21,6 +22,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { renderMarkdown, formatToolName } from '@/lib/markdown'
 import { parseActionsFromMarkdown } from '@/lib/parseActions'
@@ -60,6 +62,45 @@ interface MessageEntry {
   content: string
   toolCalls?: Array<{ name: string; summary: string }>
 }
+
+/** What the dialog's help icon explains: the chat, the full analysis, its stages and its checks. */
+const HELP_ITEMS: Array<{ title: string; description: string }> = [
+  {
+    title: 'Send',
+    description:
+      'The tool-driven chat: Claude fetches the scenario and its prices, then answers your question. Chat and the full analysis share one conversation, so you can ask about a report after it arrives.',
+  },
+  {
+    title: 'Run full analysis',
+    description:
+      'A staged analysis of this scenario. The app first builds a dossier (positions, live prices, fundamentals, headlines, sector and macro data); Claude then works through four analysts, a bull case, a bear case, a research manager, a risk panel and a portfolio manager. It takes several minutes and about nine Claude calls.',
+  },
+  {
+    title: 'The stages',
+    description:
+      'Dossier, Analysts, Bull case, Bear case, Research manager, Risk panel, Portfolio manager, Checks, Report. The list above the input shows each stage as it runs; a stage that fails is marked, and the error names it. Nothing is lost from earlier stages.',
+  },
+  {
+    title: 'Focus',
+    description:
+      'Type a focus in the box before clicking Run full analysis (for example "tax efficiency" or "reduce single-stock risk"); the portfolio manager is told. Leave the box empty for a general analysis.',
+  },
+  {
+    title: 'Trades are checked by the app',
+    description:
+      "Before any trade is offered, the app rounds it to whole shares, drops sells of anything the scenario does not hold (and trims sells to what is held), caps buys to the scenario's cash plus the proceeds of the proposed sells, and drops buys the account's guidelines flag, such as leveraged or inverse funds in a 401(k) or IRA. Dropped trades are listed in the report with the reason.",
+  },
+  {
+    title: 'Nothing is applied automatically',
+    description:
+      "The report's trades wait under Review Recommendations. On a baseline scenario, Review applies them to a new clone and leaves the baseline untouched.",
+  },
+  {
+    title: 'Prices and times',
+    description:
+      'The report quotes live prices taken when the dossier was built, with the time shown in Eastern time. Data a provider could not supply is named in the report rather than guessed.',
+  },
+]
 
 const SUGGESTED_PROMPTS = [
   'Analyze this portfolio and suggest improvements',
@@ -393,6 +434,26 @@ export default function AnalyzeWithClaudeDialog({
           <DialogTitle className="flex items-center gap-2">
             <Sparkles className="h-5 w-5 text-primary" />
             Analyze with Claude
+            <Popover>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Help"
+                  className="ml-1 flex h-8 w-8 items-center justify-center rounded-[8px] text-muted-foreground transition-colors duration-150 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 active:scale-[0.97]"
+                >
+                  <HelpCircle className="h-5 w-5" strokeWidth={1.5} />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-80 max-h-[60vh] overflow-y-auto space-y-3 p-4">
+                <p className="text-sm font-semibold">Analyze with Claude</p>
+                {HELP_ITEMS.map((item) => (
+                  <div key={item.title} className="space-y-1">
+                    <p className="text-xs font-semibold">{item.title}</p>
+                    <p className="text-xs font-normal leading-relaxed text-muted-foreground">{item.description}</p>
+                  </div>
+                ))}
+              </PopoverContent>
+            </Popover>
           </DialogTitle>
           <p className="text-xs text-muted-foreground">
             Scenario: {scenarioName}
