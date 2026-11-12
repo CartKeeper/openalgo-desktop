@@ -19,6 +19,8 @@ pub fn data(v: Value) -> Map<String, Value> {
 
 /// The instant of an IST wall time `YYYY-MM-DDTHH:MM:SS`.
 pub fn ist(wall: &str) -> chrono::DateTime<Utc> {
+    // The tests ported from the web read market time as IST.
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
     let naive = NaiveDateTime::parse_from_str(wall, "%Y-%m-%dT%H:%M:%S").unwrap();
     Kolkata
         .from_local_datetime(&naive)
@@ -29,6 +31,7 @@ pub fn ist(wall: &str) -> chrono::DateTime<Utc> {
 
 /// A context over `client` at the IST wall time `wall`, with `env`.
 pub fn ctx_at(client: Arc<FakeFlowClient>, wall: &str, env: NodeEnv) -> NodeCtx {
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
     NodeCtx::new(NodeCtxParts {
         client,
         clock: ManualClock::new(ist(wall)),

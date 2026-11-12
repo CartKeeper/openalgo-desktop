@@ -59,6 +59,29 @@ fn migrate_nodes(data: &mut Map<String, Value>) -> Vec<String> {
     notes
 }
 
+/// What an import's reply says when the workflow carries wall-clock times:
+/// OpenAlgo web read them as IST, this app reads them as Eastern time.
+pub const EASTERN_TIME_NOTE: &str =
+    "Schedule and time-window times are read as Eastern time in this app";
+
+/// Whether any node of `nodes` reads a wall-clock time: a start node with
+/// a schedule that is not manual, or a Time Window, Time Condition or Wait
+/// Until node (their defaults are times too).
+pub fn reads_wall_clock_times(nodes: &Value) -> bool {
+    nodes.as_array().into_iter().flatten().any(|n| {
+        let kind = n["type"].as_str().unwrap_or("");
+        match kind {
+            "timeWindow" | "timeCondition" | "waitUntil" => true,
+            "start" => n["data"]
+                .get("scheduleType")
+                .filter(|v| crate::flow::contract::pyfmt::truthy(v))
+                .map(crate::flow::contract::pyfmt::str)
+                .is_some_and(|t| t != "manual"),
+            _ => false,
+        }
+    })
+}
+
 /// `POST /flow/api/workflows/import`: validated as a finished workflow
 /// before anything is stored.
 pub async fn import(app: &Arc<AppState>, body: Body) -> Reply {
@@ -87,11 +110,15 @@ pub async fn import(app: &Arc<AppState>, body: Body) -> Reply {
     let description = super::text_field(data.get("description"));
     let nodes = super::graph_field(&data, "nodes");
     let edges = super::graph_field(&data, "edges");
+    let eastern = reads_wall_clock_times(&nodes);
     match create_workflow(app, name, description, nodes, edges).await {
         Ok(w) => {
             let mut out = json!({"status": "success", "workflow_id": w.id});
             if !notes.is_empty() {
                 out["migrations"] = json!(notes);
+            }
+            if eastern {
+                out["notes"] = json!([EASTERN_TIME_NOTE]);
             }
             Reply::new(201, out)
         }

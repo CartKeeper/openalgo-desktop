@@ -255,8 +255,14 @@ impl AppState {
         F: FnOnce(&AppState) -> Result<T> + Send + 'static,
     {
         let ctx = self.clone();
-        tokio::task::spawn_blocking(move || f(&ctx))
-            .await
+        #[cfg(test)]
+        let tz = crate::flow::contract::time::market_tz();
+        tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            crate::flow::contract::time::set_market_tz_for_tests(tz);
+            f(&ctx)
+        })
+        .await
             .map_err(|e| AppError::Internal(format!("Blocking task failed: {}", e)))?
     }
 

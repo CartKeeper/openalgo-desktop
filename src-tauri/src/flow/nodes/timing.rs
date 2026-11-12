@@ -11,15 +11,16 @@
 
 use super::math::bigint::BigInt;
 use crate::flow::support::market_hours::{self, SessionWindow};
+use crate::services::MarketStatusService;
+use crate::state::AppState;
 use crate::flow::contract::node::{FlowNode, NodeCtx, NodeOutcome, WARNING};
 use crate::flow::contract::pyfmt;
 use crate::flow::contract::time::{
-    ist_now, parse_time_string, DELAY_MAX_SECONDS, WAIT_UNTIL_MAX_SECONDS,
+    market_label, market_now, market_tz, parse_time_string, DELAY_MAX_SECONDS,
+    WAIT_UNTIL_MAX_SECONDS,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveTime, TimeZone, Timelike, Utc};
-use chrono_tz::Asia::Kolkata;
-use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 use std::time::Duration;
 
@@ -224,14 +225,14 @@ impl FlowNode for Delay {
     }
 }
 
-/// Seconds since midnight, IST, whole seconds.
+/// Seconds since midnight, market time, whole seconds.
 fn seconds_of_day(t: NaiveTime) -> i64 {
     (t.hour() * 3600 + t.minute() * 60 + t.second()) as i64
 }
 
 /// The current market time of day, to the microsecond as Python keeps it.
 fn now_time(ctx: &NodeCtx) -> NaiveTime {
-    let t = ist_now(ctx.clock.as_ref()).time();
+    let t = market_now(ctx.clock.as_ref()).time();
     t.with_nanosecond(t.nanosecond() / 1000 * 1000).unwrap_or(t)
 }
 
@@ -388,8 +389,6 @@ impl FlowNode for TimeCondition {
     }
 }
 
-/// The calendar the gate reads when the trigger node names none.
-pub const DEFAULT_MARKET_HOURS_EXCHANGE: &str = "NSE";
 
 /// A workflow's market-hours settings (`get_market_hours_config`), read
 /// from its first `start` node on every run.
@@ -440,9 +439,9 @@ pub fn parse_hhmm(v: &Value) -> Option<i64> {
     Some(h * 60 + m)
 }
 
-/// Minutes past IST midnight of an epoch-ms instant.
-fn ist_minutes(ms: i64) -> Option<i64> {
-    let t = Kolkata.timestamp_millis_opt(ms).single()?;
+/// Minutes past market midnight of an epoch-ms instant.
+fn market_minutes(ms: i64) -> Option<i64> {
+    let t = market_tz().timestamp_millis_opt(ms).single()?;
     Some((t.hour() * 60 + t.minute()) as i64)
 }
 
@@ -461,28 +460,49 @@ pub fn within_window(
     };
     let start = start
         .and_then(parse_hhmm)
-        .or_else(|| ist_minutes(w.start_ms));
-    let end = end.and_then(parse_hhmm).or_else(|| ist_minutes(w.end_ms));
+        .or_else(|| market_minutes(w.start_ms));
+    let end = end.and_then(parse_hhmm).or_else(|| market_minutes(w.end_ms));
     let (Some(start), Some(end)) = (start, end) else {
         return false;
     };
-    let now = now.with_timezone(&Kolkata);
+    let now = now.with_timezone(&market_tz());
     let minutes = (now.hour() * 60 + now.minute()) as i64;
     start <= minutes && minutes <= end
 }
 
-/// The schedule trigger's market-hours gate on the app's trading calendar
-/// (`is_within_market_hours`).
-pub fn is_within_market_hours(conn: &Connection, now: DateTime<Utc>, hours: &MarketHours) -> bool {
-    let exchange = hours
-        .exchange
-        .as_ref()
-        .map(pyfmt::str)
-        .unwrap_or_else(|| DEFAULT_MARKET_HOURS_EXCHANGE.to_string())
-        .to_uppercase();
-    let date = now.with_timezone(&Kolkata).date_naive();
-    let window = market_hours::effective_session_window(conn, date, &exchange);
-    within_window(window, now, hours.start.as_ref(), hours.end.as_ref())
+/// The schedule trigger's market-hours gate (`is_within_market_hours`):
+/// the broker's market clock when it can be read
+/// (`MarketStatusService::get_clock`; closed inside the regular hours is a
+/// holiday or an early close), else the regular 09:30–16:00 market-time
+/// session, logged. The trigger node's own start and end replace a side
+/// either way; `marketHoursExchange` is read but every US venue shares the
+/// one session.
+pub async fn is_within_market_hours(app: &AppState, now: DateTime<Utc>, hours: &MarketHours) -> bool {
+    let date = now.with_timezone(&market_tz()).date_naive();
+    let regular = market_hours::regular_window(date);
+    let overrides = (hours.start.as_ref(), hours.end.as_ref());
+    match MarketStatusService::get_clock(app, None).await {
+        Ok(clock) => {
+            if overrides == (None, None) {
+                return clock.is_open;
+            }
+            // A day the broker has shut inside the regular hours (a holiday,
+            // an early close) stays shut; otherwise the override replaces
+            // its side of the regular session.
+            if !clock.is_open && within_window(regular, now, None, None) {
+                return false;
+            }
+            within_window(regular, now, overrides.0, overrides.1)
+        }
+        Err(e) => {
+            tracing::warn!(
+                "The market clock could not be read ({}); the schedule gate uses the regular 09:30-16:00 {} session",
+                e,
+                market_label()
+            );
+            within_window(regular, now, overrides.0, overrides.1)
+        }
+    }
 }
 
 #[cfg(test)]

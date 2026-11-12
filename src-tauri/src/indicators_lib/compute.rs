@@ -57,7 +57,7 @@ impl Cell {
 }
 
 /// An IST index entry as pandas renders it (`2026-02-11T09:15:00+05:30`).
-pub(crate) fn ist_stamp(epoch_seconds: i64) -> String {
+pub(crate) fn market_stamp(epoch_seconds: i64) -> String {
     match market_timestamp(&Value::from(epoch_seconds)) {
         Value::String(text) => text,
         other => other.to_string(),
@@ -523,7 +523,7 @@ fn shape(
         defaults_applied: (!applied.is_empty()).then_some(applied),
         outputs,
         values_returned: tail.min(frame.len()),
-        timestamps: frame.time[start..].iter().map(|t| ist_stamp(*t)).collect(),
+        timestamps: frame.time[start..].iter().map(|t| market_stamp(*t)).collect(),
         values,
         summary,
         note: target.note,

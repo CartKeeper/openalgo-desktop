@@ -12,7 +12,7 @@
 //! failure of the computation fails only this node with `Indicator error:
 //! {e}`, where the web let anything but a `ValueError` stop the whole run.
 
-use super::history::{fetch_cached, history_error, records_of, today_ist};
+use super::history::{fetch_cached, history_error, records_of, today_market};
 use super::pyjson;
 use crate::flow::contract::node::{FlowNode, NodeAbort, NodeCtx, NodeOutcome, WARNING};
 use crate::flow::contract::pyfmt;
@@ -174,7 +174,7 @@ async fn from_history(
     if symbol.is_empty() {
         return NodeOutcome::error("Symbol is required");
     }
-    let window = history_window(bars.lookback, None, &interval, today_ist(ctx));
+    let window = history_window(bars.lookback, None, &interval, today_market(ctx));
     ctx.info(format!(
         "Computing {} for {} ({}, {} bars)",
         name, symbol, interval, bars.lookback

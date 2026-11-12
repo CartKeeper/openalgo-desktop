@@ -15,7 +15,7 @@
 
 use super::TriggerSide;
 use crate::flow::contract::node::{RunTrigger, INFO};
-use crate::flow::contract::vars::iso_ist;
+use crate::flow::contract::vars::iso_market;
 use crate::flow::executor::{self, RunRequest};
 use crate::state::AppState;
 use serde_json::{json, Value};
@@ -74,7 +74,7 @@ pub fn paused(app: &AppState, trigger: RunTrigger) -> Option<String> {
 /// Write the skip into the workflow's run history.
 pub async fn record_skip(app: &Arc<AppState>, workflow_id: i64, reason: String) {
     let now = app.now();
-    let log = json!({"time": iso_ist(now), "message": reason, "level": INFO});
+    let log = json!({"time": iso_market(now), "message": reason, "level": INFO});
     let written = app
         .blocking(move |c| super::store::record_skip(&*c.sqlite.conn()?, workflow_id, log, now))
         .await;
@@ -140,7 +140,7 @@ impl TriggerSide {
     /// The trigger time a monitor's payload carries (`datetime.now()
     /// .isoformat()`, in IST).
     pub fn triggered_at(&self) -> String {
-        iso_ist(self.now())
+        iso_market(self.now())
     }
 
     /// Whether the workflow is still active; a read that fails counts as

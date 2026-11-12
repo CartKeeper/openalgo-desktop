@@ -1,6 +1,6 @@
 //! Flow's scheduler (the web's `FlowScheduler`, `flow_scheduler_service.py`
 //! 1-336, on APScheduler), modelled on the Historify scheduler: the schedule
-//! types, their next fire times in IST, one job per workflow, and a `tick`
+//! types, their next fire times in market time, one job per workflow, and a `tick`
 //! the driver (and the tests, with their own clock) calls.
 //!
 //! APScheduler's settings, kept: `coalesce` (missed fires collapse into
@@ -11,7 +11,7 @@
 //!
 //! Departures from the web, each decided:
 //!
-//! - Every wall-clock field is IST, whatever the computer's zone (T-014,
+//! - Every wall-clock field is market time, whatever the computer's zone (T-014,
 //!   X-347): the web's scheduler had no time zone, so a UTC server ran a
 //!   09:15 schedule at 14:45 IST.
 //! - `once` with a date and no time takes the node's Time field (default
@@ -28,7 +28,7 @@ use chrono::{
     DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc,
     Weekday,
 };
-use chrono_tz::Asia::Kolkata;
+use crate::flow::contract::time::{market_label, market_tz};
 use parking_lot::Mutex;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -66,18 +66,25 @@ pub enum Schedule {
     Weekly { at: NaiveTime, days: Vec<Weekday> },
 }
 
-/// IST wall time to an instant (the later one when a local time repeats;
-/// IST has no daylight saving, so this never happens).
-fn from_ist(t: NaiveDateTime) -> DateTime<Utc> {
-    Kolkata
-        .from_local_datetime(&t)
-        .latest()
-        .map(|t| t.with_timezone(&Utc))
-        .unwrap_or_else(|| t.and_utc())
+/// Market wall time to an instant: the later one when a local time
+/// repeats (the fall-back night), and the same minute past the hour once
+/// the clock has jumped when the time never shows (the spring-forward
+/// night).
+fn from_market(t: NaiveDateTime) -> DateTime<Utc> {
+    let tz = market_tz();
+    match tz.from_local_datetime(&t) {
+        chrono::LocalResult::Single(at) => at.with_timezone(&Utc),
+        chrono::LocalResult::Ambiguous(_, later) => later.with_timezone(&Utc),
+        chrono::LocalResult::None => tz
+            .from_local_datetime(&(t + Duration::hours(1)))
+            .earliest()
+            .map(|at| at.with_timezone(&Utc))
+            .unwrap_or_else(|| t.and_utc()),
+    }
 }
 
-fn ist(t: DateTime<Utc>) -> NaiveDateTime {
-    t.with_timezone(&Kolkata).naive_local()
+fn market(t: DateTime<Utc>) -> NaiveDateTime {
+    t.with_timezone(&market_tz()).naive_local()
 }
 
 /// Python's `int(part)`, with its error text.
@@ -199,7 +206,7 @@ fn aligned_start(value: i64, unit: &str, now: DateTime<Utc>) -> DateTime<Utc> {
     } else {
         Duration::minutes(value)
     };
-    let local = ist(now);
+    let local = market(now);
     let hour = local
         .date()
         .and_hms_opt(local.hour(), 0, 0)
@@ -210,7 +217,7 @@ fn aligned_start(value: i64, unit: &str, now: DateTime<Utc>) -> DateTime<Utc> {
         let minute = i64::from(local.minute());
         hour + Duration::minutes(minute - minute % value)
     };
-    let mut start = from_ist(anchor) + Duration::seconds(INTERVAL_ALIGN_OFFSET_SECONDS);
+    let mut start = from_market(anchor) + Duration::seconds(INTERVAL_ALIGN_OFFSET_SECONDS);
     while start <= now {
         start += step;
     }
@@ -224,7 +231,7 @@ fn aligned_start(value: i64, unit: &str, now: DateTime<Utc>) -> DateTime<Utc> {
 fn once_at(execute_at: &str, time: &str) -> Result<DateTime<Utc>, String> {
     let text = execute_at.trim();
     if let Ok(d) = NaiveDate::parse_from_str(text, "%Y-%m-%d") {
-        return Ok(from_ist(d.and_time(parse_time(time)?)));
+        return Ok(from_market(d.and_time(parse_time(time)?)));
     }
     let invalid = || {
         format!(
@@ -244,7 +251,7 @@ fn once_at(execute_at: &str, time: &str) -> Result<DateTime<Utc>, String> {
     ]
     .iter()
     .find_map(|f| NaiveDateTime::parse_from_str(&text, f).ok())
-    .map(from_ist)
+    .map(from_market)
     .or_else(|| {
         [
             "%Y-%m-%dT%H:%M:%S%.f%:z",
@@ -317,7 +324,7 @@ impl Schedule {
             "Creating interval trigger: every {} {}, first run {}",
             value,
             given,
-            ist(start).format("%H:%M:%S")
+            market(start).format("%H:%M:%S")
         );
         let every = match unit {
             "seconds" => Duration::seconds(value),
@@ -347,11 +354,12 @@ impl Schedule {
         })?;
         if refuse_past && when + Duration::seconds(MISFIRE_GRACE_SECS) < now {
             return Err(format!(
-                "The one-time schedule is set for {} IST, which has already passed. Set a later date and time, then activate it again.",
-                ist(when).format("%Y-%m-%d %H:%M")
+                "The one-time schedule is set for {} {}, which has already passed. Set a later date and time, then activate it again.",
+                market(when).format("%Y-%m-%d %H:%M"),
+                market_label()
             ));
         }
-        tracing::info!("Creating one-time trigger: {}", ist(when));
+        tracing::info!("Creating one-time trigger: {}", market(when));
         Ok(Schedule::Once { at: when })
     }
 
@@ -435,7 +443,7 @@ impl Schedule {
     fn on(&self, d: NaiveDate) -> Option<DateTime<Utc>> {
         let at = self.daily_at()?;
         let fires = self.days().is_none_or(|days| days.contains(&d.weekday()));
-        fires.then(|| from_ist(d.and_time(at)))
+        fires.then(|| from_market(d.and_time(at)))
     }
 
     /// The first fire at or after `t`; `None` when there is none (a past
@@ -452,7 +460,7 @@ impl Schedule {
             }
             Schedule::Once { at } => (*at >= t).then_some(*at),
             _ => {
-                let today = ist(t).date();
+                let today = market(t).date();
                 (0..8)
                     .filter_map(|i| self.on(today + Duration::days(i)))
                     .find(|f| *f >= t)
@@ -474,7 +482,7 @@ impl Schedule {
             }
             Schedule::Once { at } => (*at <= t).then_some(*at),
             _ => {
-                let today = ist(t).date();
+                let today = market(t).date();
                 (0..8)
                     .filter_map(|i| self.on(today - Duration::days(i)))
                     .find(|f| *f <= t)
@@ -564,9 +572,10 @@ impl Scheduler {
             (_, Schedule::Once { at }) => Some(*at),
             (Some(m), _) => {
                 tracing::warn!(
-                    "Flow schedule {} missed its run at {} IST while OpenAlgo was closed; it is skipped",
+                    "Flow schedule {} missed its run at {} {} while OpenAlgo was closed; it is skipped",
                     job_id(workflow_id),
-                    ist(m)
+                    market(m),
+                    market_label()
                 );
                 schedule.next_at_or_after(now)
             }
@@ -656,5 +665,7 @@ impl Scheduler {
     }
 }
 
+#[cfg(test)]
+mod market_time_tests;
 #[cfg(test)]
 mod tests;

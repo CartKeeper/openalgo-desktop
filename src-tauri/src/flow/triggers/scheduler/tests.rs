@@ -8,7 +8,9 @@ use serde_json::json;
 
 /// An IST wall time as an instant.
 fn ist_at(d: u32, h: u32, m: u32, s: u32) -> DateTime<Utc> {
-    from_ist(
+    // The web's tests read market time as IST.
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
+    from_market(
         NaiveDate::from_ymd_opt(2026, 11, d)
             .unwrap()
             .and_hms_opt(h, m, s)

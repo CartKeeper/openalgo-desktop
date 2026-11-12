@@ -29,7 +29,7 @@ use super::symbols::{
 use super::NodeFamily;
 use crate::flow::contract::node::{FlowNode, NodeCtx, NodeOutcome};
 use crate::flow::contract::pyfmt;
-use crate::flow::contract::time::ist_now;
+use crate::flow::contract::time::market_now;
 use crate::flow::node_contracts::default_product_for_exchange;
 use crate::state::AppState;
 use async_trait::async_trait;
@@ -268,7 +268,7 @@ fn service_year_refusal(result: Value) -> Value {
 }
 
 /// Timings: the exchanges' trading windows on a date (blank is today in
-/// IST, on any machine).
+/// market time, on any machine).
 struct Timings;
 
 #[async_trait]
@@ -280,7 +280,7 @@ impl FlowNode for Timings {
     async fn run(&self, ctx: &NodeCtx, data: &Map<String, Value>) -> NodeOutcome {
         let mut date = ctx.get_str(data, "date", "");
         if date.is_empty() {
-            date = ist_now(ctx.clock.as_ref()).format("%Y-%m-%d").to_string();
+            date = market_now(ctx.clock.as_ref()).format("%Y-%m-%d").to_string();
         }
         ctx.info(format!("Fetching market timings for date: {}", date));
         let result = ctx.client.timings(&date).await;

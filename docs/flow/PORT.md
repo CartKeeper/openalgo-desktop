@@ -182,6 +182,61 @@ an_exchange_without_hours_uses_the_default}` and
 `triggers/tests/schedule_logs.rs::the_gate_reads_the_nse_calendar_when_no_exchange_is_named`
 (upstream's holiday and timing tables; Task A3 tests the Eastern gate).
 
+## Task A3: market time is America/New_York
+
+- `flow::contract::time::market_tz()` is the one zone every Flow
+  wall-clock time is read and written in (`DEFAULT_MARKET_TZ`,
+  `America/New_York`); `market_now(clock)` replaces upstream's `ist_now`,
+  `market_label()` gives the short name a sentence shows (`ET`, or `IST`
+  under the test override). The plan's `OnceLock` became a `#[cfg(test)]`
+  thread-local override (`set_market_tz_for_tests`), so the goldens and the
+  tests ported from the web (recorded in IST) and this app's Eastern tests
+  share one test process; `AppState::blocking` carries the override to the
+  blocking pool.
+- Renames (upstream → here): `ist_now` → `market_now`, `iso_ist` →
+  `iso_market` (`contract/vars.rs`), `today_ist` → `today_market`
+  (`nodes/history.rs`, `support/options.rs`), `ist_minutes` →
+  `market_minutes` (`nodes/timing.rs`), `from_ist`/`ist` →
+  `from_market`/`market` (`triggers/scheduler.rs`), `in_ist` → `in_market`
+  (`indicator_service/records.rs`), `ist_stamp` → `market_stamp`
+  (`indicators_lib/compute.rs`). `clock::ist_offset` had two readers, both
+  now on `market_tz()`, so no `market_offset` exists; `IST_OFFSET_SECS`,
+  `ist_offset` and `ist_slots_between` (no caller here) were not carried.
+- Daylight saving in the scheduler (`from_market`): a wall time that
+  repeats on the fall-back night fires once, on the later instant
+  (upstream's `.latest()` rule); a wall time the spring-forward night
+  skips fires the same minute past the hour once the clock has jumped
+  (02:30 → 03:30 EDT). Tests: `triggers/scheduler/market_time_tests.rs`.
+- The schedule trigger's market-hours gate
+  (`nodes::timing::is_within_market_hours`) is async over the app: the
+  broker's `MarketStatusService::get_clock` when it can be read (closed
+  inside the regular hours is a holiday or an early close), else the
+  regular 09:30–16:00 market-time window (`support::market_hours::
+  regular_window`) with a warning in the log; the node's own start and end
+  replace a side either way. `marketHoursExchange` is read but every US
+  venue shares the one session (upstream read per-exchange calendar
+  tables; `effective_session_window` and `DEFAULT_MARKET_HOURS_EXCHANGE`
+  were removed with them). Tests: `nodes/timing/tests/eastern.rs`
+  (spring-forward window, the logged fallback); the live-clock branch has
+  no broker in the harness and is recorded in `docs/flow/parity.md`.
+- A web workflow's import answers `notes: ["Schedule and time-window times
+  are read as Eastern time in this app"]` when any node reads a wall-clock
+  time (`transfer::reads_wall_clock_times`: a non-manual schedule, a Time
+  Window, Time Condition or Wait Until node). Test:
+  `service/tests/market_time.rs`.
+- Sentences that named IST now name the market zone
+  (`market_label()`): the past one-time schedule refusal and the
+  missed-fire line of the restore.
+- Carried IST tests set the zone in their own setup (the plan's rule):
+  `nodes/testkit::{ist, ctx_at}`, `nodes/order_testing::Run::at`,
+  `nodes/data_tests/support::ist`, `triggers/scheduler/tests::ist_at`,
+  `triggers/tests::app`, `triggers/tests/schedule_logs::ist_at`,
+  `service/tests::app`, `executor/tests/{run,w6_run}::app`, the
+  `vars.rs` built-ins test, the indicator fixture loaders
+  (`indicator_service/tests/support::json`, `indicators_lib/tests/
+  support::json`: the web's package recorded them on an IST host) and the
+  goldens replay (`goldens/replay::replay`).
+
 ### `indicators_lib` in this app
 
 - `discovery.rs`, `scan.rs` and `outcome.rs` (the Agent's tools) are

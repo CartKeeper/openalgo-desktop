@@ -23,7 +23,7 @@
 
 use super::pyfmt;
 use chrono::{DateTime, Datelike, Timelike, Utc};
-use chrono_tz::Asia::Kolkata;
+use crate::flow::contract::time::market_tz;
 use parking_lot::Mutex;
 use regex::Regex;
 use serde_json::{Map, Value};
@@ -54,7 +54,7 @@ pub struct VarStore {
     inner: Mutex<Inner>,
     /// The clock the built-ins read (the run's injected clock).
     now: Option<std::sync::Arc<dyn crate::clock::Clock>>,
-    /// The session boundary, IST hour and minute (`None`: 03:00).
+    /// The session boundary, market-time hour and minute (`None`: 03:00).
     boundary: Option<(u32, u32)>,
 }
 
@@ -66,7 +66,7 @@ struct Inner {
 
 impl VarStore {
     /// An empty store whose built-ins read `clock`, with the trading day
-    /// turning at `boundary` (IST hour, minute).
+    /// turning at `boundary` (market-time hour, minute).
     pub fn new(clock: std::sync::Arc<dyn crate::clock::Clock>, boundary: (u32, u32)) -> Self {
         Self {
             inner: Mutex::default(),
@@ -125,7 +125,7 @@ impl VarStore {
     /// The built-in variable `name`, as the web's `_get_builtin_variable`.
     pub fn builtin(&self, name: &str) -> Option<String> {
         let utc = self.now();
-        let now = utc.with_timezone(&Kolkata);
+        let now = utc.with_timezone(&market_tz());
         let text = match name {
             "timestamp" => now.format("%Y-%m-%d %H:%M:%S").to_string(),
             "date" => now.format("%Y-%m-%d").to_string(),
@@ -137,7 +137,7 @@ impl VarStore {
             "minute" => now.format("%M").to_string(),
             "second" => now.format("%S").to_string(),
             "weekday" => now.format("%A").to_string(),
-            "iso_timestamp" => iso_ist(utc),
+            "iso_timestamp" => iso_market(utc),
             "weekday_num" => now.weekday().number_from_monday().to_string(),
             "quarter" => ((now.month() - 1) / 3 + 1).to_string(),
             "week_of_year" => now.iso_week().week().to_string(),
@@ -248,13 +248,13 @@ impl VarStore {
     }
 }
 
-/// The session boundary when none is configured: 03:00 IST.
+/// The session boundary when none is configured: 03:00 market time.
 pub const DEFAULT_BOUNDARY: (u32, u32) = (3, 0);
 
-/// `datetime.now().isoformat()` as the web writes it, in IST: microseconds
-/// only when non-zero, no offset.
-pub fn iso_ist(now: DateTime<Utc>) -> String {
-    let t = now.with_timezone(&Kolkata).naive_local();
+/// `datetime.now().isoformat()` as the web writes it, in market time:
+/// microseconds only when non-zero, no offset.
+pub fn iso_market(now: DateTime<Utc>) -> String {
+    let t = now.with_timezone(&market_tz()).naive_local();
     if t.nanosecond() / 1000 == 0 {
         t.format("%Y-%m-%dT%H:%M:%S").to_string()
     } else {
@@ -340,10 +340,12 @@ mod tests {
         VarStore::new(crate::clock::ManualClock::new(t), DEFAULT_BOUNDARY)
     }
 
-    /// Market time on any machine: 21:00 UTC is 02:30 IST on the next day,
-    /// which still belongs to the previous trading session.
+    /// Market time on any machine (the web's test, in IST): 21:00 UTC is
+    /// 02:30 IST on the next day, which still belongs to the previous
+    /// trading session.
     #[test]
-    fn builtins_are_ist_and_the_session_turns_at_the_boundary() {
+    fn builtins_are_market_time_and_the_session_turns_at_the_boundary() {
+        crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
         let s = at("2026-10-29T21:00:00Z");
         assert_eq!(s.builtin("date").as_deref(), Some("2026-10-30"));
         assert_eq!(s.builtin("time").as_deref(), Some("02:30:00"));
@@ -369,7 +371,7 @@ mod tests {
             Some("2026-10-29")
         );
         assert_eq!(
-            iso_ist("2026-10-29T21:00:00.000250Z".parse().unwrap()),
+            iso_market("2026-10-29T21:00:00.000250Z".parse().unwrap()),
             "2026-10-30T02:30:00.000250"
         );
     }

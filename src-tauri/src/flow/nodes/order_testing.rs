@@ -86,6 +86,8 @@ pub struct Run {
 impl Run {
     /// A run at `ist` (`2026-10-29T10:15:00`) with `master`.
     pub fn at(ist: &str, master: Option<Vec<SymToken>>) -> Run {
+        // The tests ported from the web read market time as IST.
+        crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
         let naive = NaiveDateTime::parse_from_str(ist, "%Y-%m-%dT%H:%M:%S").unwrap_or_default();
         let now = Kolkata
             .from_local_datetime(&naive)

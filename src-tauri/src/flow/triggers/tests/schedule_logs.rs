@@ -30,6 +30,7 @@ fn at(logs: &Logged, line: &str) -> usize {
 /// An IST wall time in November 2026 as an instant.
 fn ist_at(d: u32, h: u32, m: u32, s: u32) -> chrono::DateTime<chrono::Utc> {
     use chrono::TimeZone;
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
     chrono_tz::Asia::Kolkata
         .with_ymd_and_hms(2026, 11, d, h, m, s)
         .unwrap()

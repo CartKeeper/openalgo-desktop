@@ -5,6 +5,8 @@ use super::*;
 use crate::flow::store::workflows::NewWorkflow;
 
 fn app() -> crate::state::testing::TestCtx {
+    // The tests ported from the web read market time as IST.
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
     let t = crate::state::testing::build(
         crate::brokers::BrokerRegistry::new(),
         "2026-10-30T03:45:00Z".parse().unwrap(),

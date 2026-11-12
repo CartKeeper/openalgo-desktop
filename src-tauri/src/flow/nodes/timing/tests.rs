@@ -406,7 +406,7 @@ async fn times_are_market_time_on_any_machine() {
         NodeEnv::default(),
     );
     assert_eq!(
-        ist_now(c.clock.as_ref()).format("%H:%M").to_string(),
+        market_now(c.clock.as_ref()).format("%H:%M").to_string(),
         "02:30"
     );
     let out = run(
@@ -703,4 +703,5 @@ async fn the_operator_is_not_interpolated() {
     );
 }
 
+mod eastern;
 mod gate;

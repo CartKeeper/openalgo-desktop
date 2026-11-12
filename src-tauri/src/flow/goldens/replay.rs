@@ -223,6 +223,9 @@ fn missing_hook(g: &Value, types: &[String]) -> Option<&'static str> {
 }
 
 pub async fn replay(g: &Golden) -> Verdict {
+    // The web recorded every golden on an IST host; the replay reads market
+    // time the same way.
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
     let v = &g.v;
     let ts = types(v);
     if let Some(t) = ts.iter().find(|t| !registered(t)) {

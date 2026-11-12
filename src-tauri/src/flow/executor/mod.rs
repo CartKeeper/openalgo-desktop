@@ -22,7 +22,7 @@ use crate::flow::contract::client::app::AppFlowClient;
 use crate::flow::contract::model::{RunStatus, Workflow};
 use crate::flow::contract::node::{NodeCtx, NodeCtxParts, RunTrigger, ERROR};
 use crate::flow::contract::pyfmt;
-use crate::flow::contract::time::ist_now;
+use crate::flow::contract::time::market_now;
 use crate::flow::store::{executions, workflows};
 use crate::flow::validator::{self, ValidateOptions};
 use crate::security::Secret;
@@ -64,7 +64,7 @@ pub async fn execute(app: &Arc<AppState>, workflow_id: i64, req: RunRequest) -> 
         let stored = app
             .blocking(move |c| workflows::get(&*c.sqlite.conn()?, &c.security, workflow_id))
             .await;
-        let now = ist_now(app.clock.as_ref());
+        let now = market_now(app.clock.as_ref());
         matches!(stored, Ok(Some(w)) if waits::runs_in_background(&w.nodes, now))
     };
     let Some(claim) = app.flow.try_claim(workflow_id) else {
@@ -171,7 +171,7 @@ fn not_runnable(w: &Workflow) -> Option<Value> {
     }))
 }
 
-/// The run's context: the in-app client with the run's key, IST clock,
+/// The run's context: the in-app client with the run's key, market clock,
 /// stop token, the workflow's name as the order tag.
 fn context(
     app: &Arc<AppState>,

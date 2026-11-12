@@ -13,6 +13,8 @@ use std::time::Duration;
 pub(super) const NOW: &str = "2026-10-30T03:45:00Z";
 
 pub(super) fn app() -> crate::state::testing::TestCtx {
+    // The tests ported from the web read market time as IST.
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
     let t =
         crate::state::testing::build(crate::brokers::BrokerRegistry::new(), NOW.parse().unwrap());
     crate::flow::support::testkit::sign_in(&t.ctx);

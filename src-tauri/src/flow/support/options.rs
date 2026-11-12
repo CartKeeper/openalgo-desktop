@@ -26,7 +26,7 @@ const BSE_INDICES: &[&str] = &["SENSEX", "BANKEX", "SENSEX50"];
 pub const NO_SPOT: &[&str] = &["MCX", "CDS", "BCD", "NCDEX", "NCO"];
 
 /// Today's date in market time.
-pub fn today_ist(ctx: &AppState) -> NaiveDate {
+pub fn today_market(ctx: &AppState) -> NaiveDate {
     ctx.now()
         .with_timezone(&crate::flow::contract::time::market_tz())
         .date_naive()

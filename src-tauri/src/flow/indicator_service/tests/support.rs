@@ -6,7 +6,6 @@ use chrono::{DateTime, NaiveDateTime};
 use serde_json::{json, Map, Value};
 
 use crate::indicators_lib::tests::support::{json_diff, shape};
-use crate::clock::ist_offset;
 use crate::flow::contract::pyfmt;
 use crate::flow::indicator_service::IndicatorError;
 
@@ -31,15 +30,19 @@ pub(crate) const EDITOR_LISTS: &str =
 const ABS: f64 = 1e-6;
 const REL: f64 = 1e-9;
 
+/// A fixture, recorded by the web's package on an IST host: loading one
+/// puts the test under IST.
 pub(crate) fn json(text: &str) -> Value {
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
     serde_json::from_str(text).expect("fixture is JSON")
 }
 
 /// Epoch seconds as the recorder writes an ISO timestamp.
 fn iso_ist(epoch: i64) -> String {
+    let ist = chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60).expect("IST");
     DateTime::from_timestamp(epoch, 0)
         .expect("timestamp")
-        .with_timezone(&ist_offset())
+        .with_timezone(&ist)
         .format("%Y-%m-%dT%H:%M:%S+05:30")
         .to_string()
 }

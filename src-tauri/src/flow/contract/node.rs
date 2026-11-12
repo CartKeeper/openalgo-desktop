@@ -23,7 +23,7 @@ use super::env::NodeEnv;
 use super::pyfmt;
 use super::resolve::OrderFields;
 use super::subscriptions::Subscriptions;
-use super::vars::{iso_ist, VarStore};
+use super::vars::{iso_market, VarStore};
 use crate::clock::Clock;
 use crate::state::AppState;
 use async_trait::async_trait;
@@ -244,7 +244,7 @@ pub struct NodeCtxParts {
     /// `strategyTag`: the workflow's name.
     pub default_strategy: String,
     pub subscriptions: Arc<Subscriptions>,
-    /// The trading day's boundary, IST hour and minute (the app's session
+    /// The trading day's boundary, market-time hour and minute (the app's session
     /// expiry setting), which `{{session_date}}` turns at.
     pub session_boundary: (u32, u32),
     pub env: NodeEnv,
@@ -313,7 +313,7 @@ impl NodeCtx {
     }
 
     /// Add an entry to the run's log (`{"time", "message", "level"}`, the
-    /// time as the web's `isoformat()`, in IST).
+    /// time as the web's `isoformat()`, in market time).
     pub fn log(&self, message: impl Into<String>, level: &str) {
         let message = message.into();
         if level == ERROR {
@@ -322,7 +322,7 @@ impl NodeCtx {
             tracing::debug!("Flow: {}", message);
         }
         self.logs.lock().push(json!({
-            "time": iso_ist(self.now()),
+            "time": iso_market(self.now()),
             "message": message,
             "level": level,
         }));

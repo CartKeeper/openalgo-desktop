@@ -129,19 +129,10 @@ impl TriggerSide {
         );
     }
 
-    /// The gate on the app's trading calendar, the one copy the nodes use
-    /// too (`effective_session_window`, decision 25): a trading holiday
-    /// that does not list the exchange leaves it open, as on the web.
+    /// The gate on the market clock, the one copy the nodes use too
+    /// (`is_within_market_hours`).
     async fn within_market_hours(&self, app: &Arc<AppState>, hours: &MarketHours) -> bool {
-        let now = self.clock.now();
-        let hours = hours.clone();
-        let within = app
-            .blocking(move |c| Ok(is_within_market_hours(&*c.sqlite.conn()?, now, &hours)))
-            .await;
-        within.unwrap_or_else(|e| {
-            tracing::error!("Could not read the market calendar for a schedule: {}", e);
-            false
-        })
+        is_within_market_hours(app, self.clock.now(), hours).await
     }
 
     /// The price monitor's poll: every 5 s while there are alerts, idle

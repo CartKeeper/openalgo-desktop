@@ -19,7 +19,7 @@
 use crate::flow::contract::client::{FlowClient, History};
 use crate::flow::contract::node::{FlowNode, NodeCtx, NodeOutcome};
 use crate::flow::contract::pyfmt;
-use crate::flow::contract::time::ist_now;
+use crate::flow::contract::time::market_now;
 use crate::flow::indicator_service::{
     bar_at_offset, clamp_bars, clamp_history_range, history_window, prior_period_ohlc, trim_records,
 };
@@ -355,9 +355,9 @@ pub(crate) fn records_of(response: &Value) -> Vec<Value> {
     }
 }
 
-/// Today in IST, the end of every window a node asks for.
-pub(crate) fn today_ist(ctx: &NodeCtx) -> NaiveDate {
-    ist_now(ctx.clock.as_ref()).date()
+/// Today in market time, the end of every window a node asks for.
+pub(crate) fn today_market(ctx: &NodeCtx) -> NaiveDate {
+    market_now(ctx.clock.as_ref()).date()
 }
 
 /// A history failure: logged at error level and returned.
@@ -388,7 +388,7 @@ impl FlowNode for HistoryNode {
                 Err(abort) => return abort.into(),
             };
             if days > 0 {
-                let now = ist_now(ctx.clock.as_ref());
+                let now = market_now(ctx.clock.as_ref());
                 let first = Days::try_days(days)
                     .and_then(|d| now.checked_sub_signed(d))
                     .map(|t| t.date())
@@ -458,7 +458,7 @@ impl FlowNode for PriorPeriodOhlcNode {
             "previous_week" => 21,
             _ => 10,
         };
-        let window = history_window(100, Some(lookback_days), interval, today_ist(ctx));
+        let window = history_window(100, Some(lookback_days), interval, today_market(ctx));
         ctx.info(format!(
             "Fetching {} OHLC for: {} ({})",
             period, symbol, exchange
@@ -468,7 +468,7 @@ impl FlowNode for PriorPeriodOhlcNode {
             return failed(ctx, message);
         }
         let records = records_of(&history);
-        let row = match prior_period_ohlc(&records, &period, ist_now(ctx.clock.as_ref())) {
+        let row = match prior_period_ohlc(&records, &period, market_now(ctx.clock.as_ref())) {
             Ok(row) => row,
             Err(e) => {
                 ctx.error(format!("Prior period OHLC error: {}", e));
@@ -522,7 +522,7 @@ impl FlowNode for BarOffsetNode {
         if symbol.is_empty() {
             return NodeOutcome::error("Symbol is required");
         }
-        let window = history_window(offset_bars + 5, None, &interval, today_ist(ctx));
+        let window = history_window(offset_bars + 5, None, &interval, today_market(ctx));
         ctx.info(format!(
             "Fetching bar offset {} for {} ({})",
             offset_bars, symbol, interval
@@ -536,7 +536,7 @@ impl FlowNode for BarOffsetNode {
             &records,
             offset_bars,
             &interval,
-            ist_now(ctx.clock.as_ref()),
+            market_now(ctx.clock.as_ref()),
         ) {
             Ok(Some(row)) => row,
             Ok(None) => {

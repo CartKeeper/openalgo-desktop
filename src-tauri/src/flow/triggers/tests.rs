@@ -9,6 +9,8 @@ use crate::flow::store::workflows::{self, NewWorkflow};
 use serde_json::json;
 
 fn app() -> crate::state::testing::TestCtx {
+    // The tests ported from the web read market time as IST.
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
     let t = crate::state::testing::build(
         crate::brokers::BrokerRegistry::new(),
         "2026-11-03T04:00:00Z".parse().unwrap(),

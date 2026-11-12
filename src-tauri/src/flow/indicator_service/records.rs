@@ -6,7 +6,7 @@ use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime};
 use serde_json::Value;
 
 use super::IndicatorError;
-use crate::clock::ist_offset;
+use crate::flow::contract::time::market_tz;
 use crate::flow::contract::pyfmt;
 
 /// The candle columns the web converts to numbers.
@@ -70,7 +70,7 @@ pub(crate) fn parse_timestamp(value: Option<&Value>) -> Result<NaiveDateTime, In
     }
     let text = text.replace('Z', "+00:00");
     match parse_iso(&text) {
-        Some((wall, Some(offset))) => Ok(in_ist(wall, offset)),
+        Some((wall, Some(offset))) => Ok(in_market(wall, offset)),
         Some((wall, None)) => Ok(wall),
         None => Err(IndicatorError::value(match iso_range_error(&text) {
             Some(range) => range.to_string(),
@@ -124,7 +124,7 @@ fn iso_range_error(text: &str) -> Option<&'static str> {
     }
 }
 
-/// `datetime.fromtimestamp(seconds)` in IST.
+/// `datetime.fromtimestamp(seconds)` in market time.
 pub(crate) fn from_epoch(seconds: f64) -> Result<NaiveDateTime, IndicatorError> {
     if seconds.is_nan() {
         return Err(IndicatorError::value("cannot convert float NaN to integer"));
@@ -139,14 +139,14 @@ pub(crate) fn from_epoch(seconds: f64) -> Result<NaiveDateTime, IndicatorError> 
     let micros = ((seconds - whole) * 1e6).round_ties_even() as i64;
     let (whole, micros) = (whole as i64 + micros / 1_000_000, micros % 1_000_000);
     DateTime::from_timestamp(whole, (micros * 1000) as u32)
-        .map(|utc| utc.with_timezone(&ist_offset()).naive_local())
+        .map(|utc| utc.with_timezone(&market_tz()).naive_local())
         .ok_or_else(|| IndicatorError::value("year is out of range"))
 }
 
-/// Wall time written with a UTC offset, as IST wall time.
-fn in_ist(wall: NaiveDateTime, offset_seconds: i64) -> NaiveDateTime {
-    let utc = wall - Duration::seconds(offset_seconds);
-    utc + Duration::seconds(i64::from(ist_offset().local_minus_utc()))
+/// Wall time written with a UTC offset, as market wall time.
+fn in_market(wall: NaiveDateTime, offset_seconds: i64) -> NaiveDateTime {
+    let utc = (wall - Duration::seconds(offset_seconds)).and_utc();
+    utc.with_timezone(&market_tz()).naive_local()
 }
 
 /// `datetime.fromisoformat` (Python 3.12) for the forms a history source

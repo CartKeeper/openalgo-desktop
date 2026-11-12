@@ -16,6 +16,8 @@ use tokio_util::sync::CancellationToken;
 
 /// IST wall time `YYYY-MM-DDTHH:MM:SS` as a UTC instant.
 pub fn ist(text: &str) -> DateTime<Utc> {
+    // The tests ported from the web read market time as IST.
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
     let wall = NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S")
         .unwrap_or_else(|e| panic!("bad time {}: {}", text, e));
     Kolkata

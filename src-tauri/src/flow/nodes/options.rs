@@ -28,7 +28,6 @@ use crate::flow::node_contracts::{
 };
 use crate::flow::support::FLOW_EXCHANGES as VALID_EXCHANGES;
 use async_trait::async_trait;
-use chrono_tz::Asia::Kolkata;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -208,7 +207,7 @@ fn listed_expiries(data: &Value) -> Result<Vec<String>, String> {
 }
 
 /// `_resolve_expiry_date`: the date (DDMMMYY) a relative expiry type names
-/// for `symbol` on `exchange`, counted from today in IST; `None` (logged)
+/// for `symbol` on `exchange`, counted from today in market time; `None` (logged)
 /// when it cannot be read or matched.
 pub async fn resolve_expiry_date(
     ctx: &NodeCtx,
@@ -239,7 +238,10 @@ pub async fn resolve_expiry_date(
             return None;
         }
     };
-    let today = ctx.now().with_timezone(&Kolkata).date_naive();
+    let today = ctx
+        .now()
+        .with_timezone(&crate::flow::contract::time::market_tz())
+        .date_naive();
     let selected = select_expiry(&listed, expiry_type, today);
     if selected.is_none() {
         ctx.error(format!(

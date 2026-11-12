@@ -159,7 +159,7 @@ pub trait StrikeSource: Send + Sync {
         expiry: &str,
         count: i64,
     ) -> Result<Value, Reply>;
-    /// Today, IST: the month the monthly expiry types count from.
+    /// Today, market time: the month the monthly expiry types count from.
     fn today(&self) -> NaiveDate;
 }
 
@@ -190,7 +190,7 @@ impl StrikeSource for AppStrikes {
     }
 
     fn today(&self) -> NaiveDate {
-        crate::flow::support::options::today_ist(&self.0)
+        crate::flow::support::options::today_market(&self.0)
     }
 }
 

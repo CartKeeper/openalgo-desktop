@@ -40,7 +40,10 @@ pub(crate) const RAW: [(&str, &str); 5] = [
     ),
 ];
 
+/// A fixture, recorded by the web's package on an IST host: loading one
+/// puts the test under IST.
 pub(crate) fn json(text: &str) -> Value {
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
     serde_json::from_str(text).expect("fixture is JSON")
 }
 

@@ -1,18 +1,24 @@
-//! Flow's clock: market time (Asia/Kolkata) from the app's injected clock,
-//! the web's `parse_time_string`, and the bounds on waiting nodes. Every
-//! Flow time is IST on any machine (lead decision 1; the web reads the
-//! host's local clock).
+//! Flow's clock: market time from the app's injected clock, the web's
+//! `parse_time_string`, and the bounds on waiting nodes. Every Flow time is
+//! market time on any machine (the web reads the host's local clock);
+//! here the market is America/New_York (CLAUDE.md), where upstream fixed
+//! Asia/Kolkata.
 
 use crate::clock::Clock;
 use chrono::NaiveDateTime;
-use chrono_tz::Asia::Kolkata;
 use chrono_tz::Tz;
 
-/// The market's time zone in this app: America/New_York (CLAUDE.md), the
-/// zone every Flow wall-clock time is read and written in. Upstream fixed
-/// Asia/Kolkata; the carried goldens and the tests ported from the web
-/// were recorded in IST and set it for themselves
-/// ([`set_market_tz_for_tests`]).
+/// The longest a Delay node waits; longer belongs in a schedule
+/// (`DELAY_MAX_SECONDS`).
+pub const DELAY_MAX_SECONDS: i64 = 300;
+
+/// The longest a Wait Until node waits (`WAIT_UNTIL_MAX_SECONDS`).
+pub const WAIT_UNTIL_MAX_SECONDS: i64 = 1800;
+
+/// The market's time zone in this app: America/New_York, the zone every
+/// Flow wall-clock time is read and written in. The carried goldens and
+/// the tests ported from the web were recorded in IST and set it for
+/// themselves ([`set_market_tz_for_tests`]).
 pub const DEFAULT_MARKET_TZ: Tz = chrono_tz::America::New_York;
 
 #[cfg(test)]
@@ -29,26 +35,30 @@ pub fn market_tz() -> Tz {
     DEFAULT_MARKET_TZ
 }
 
+/// The market zone's short name for a sentence a trader reads (`ET`,
+/// `IST`; any other zone by its IANA name).
+pub fn market_label() -> &'static str {
+    match market_tz() {
+        Tz::America__New_York => "ET",
+        Tz::Asia__Kolkata => "IST",
+        other => other.name(),
+    }
+}
+
 /// Make `tz` the market zone on this thread for the rest of the test (a
-/// test runtime keeps its tasks on the thread; a thread-local rather than a
+/// test runtime keeps its tasks on the thread, and `AppState::blocking`
+/// carries it to the blocking pool); a thread-local rather than a
 /// process-wide cell, so IST goldens and Eastern tests share one test
-/// process).
+/// process.
 #[cfg(test)]
 pub fn set_market_tz_for_tests(tz: Tz) {
     MARKET_TZ_OVERRIDE.with(|c| c.set(Some(tz)));
 }
 
-/// The longest a Delay node waits; longer belongs in a schedule
-/// (`DELAY_MAX_SECONDS`).
-pub const DELAY_MAX_SECONDS: i64 = 300;
-
-/// The longest a Wait Until node waits (`WAIT_UNTIL_MAX_SECONDS`).
-pub const WAIT_UNTIL_MAX_SECONDS: i64 = 1800;
-
-/// Now, in IST, as a naive date-time (the web's `datetime.now()` on an
-/// IST host).
-pub fn ist_now(clock: &dyn Clock) -> NaiveDateTime {
-    clock.now().with_timezone(&Kolkata).naive_local()
+/// Now, in market time, as a naive date-time (the web's `datetime.now()`
+/// on a host in the market's zone).
+pub fn market_now(clock: &dyn Clock) -> NaiveDateTime {
+    clock.now().with_timezone(&market_tz()).naive_local()
 }
 
 /// `HH:MM` or `HH:MM:SS` as (hour, minute, second), never failing: a part
@@ -94,9 +104,17 @@ mod tests {
         assert_eq!(parse_time_string(Some(""), 9, 30), (9, 30, 0));
     }
 
+    /// 13:45Z on 2026-10-30 is 09:45 in New York (EDT) and 19:15 in
+    /// Kolkata; the tests ported from the web put themselves under IST.
     #[test]
-    fn now_is_market_time() {
-        let clock = crate::clock::ManualClock::new("2026-10-30T03:45:00Z".parse().unwrap());
-        assert_eq!(ist_now(clock.as_ref()).format("%H:%M").to_string(), "09:15");
+    fn now_is_market_time_and_tests_can_choose_the_zone() {
+        set_market_tz_for_tests(DEFAULT_MARKET_TZ);
+        let clock = crate::clock::ManualClock::new("2026-10-30T13:45:00Z".parse().unwrap());
+        assert_eq!(market_now(clock.as_ref()).format("%H:%M").to_string(), "09:45");
+        assert_eq!(market_label(), "ET");
+        set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
+        assert_eq!(market_now(clock.as_ref()).format("%H:%M").to_string(), "19:15");
+        assert_eq!(market_label(), "IST");
+        set_market_tz_for_tests(DEFAULT_MARKET_TZ);
     }
 }

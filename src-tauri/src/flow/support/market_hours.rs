@@ -2,9 +2,8 @@
 //! (upstream `db::sqlite::market_calendar::{SessionWindow,
 //! effective_session_window}` over its holiday and timing tables).
 //!
-//! Task A1 carries the type and the regular window only; Task A3 reads the
-//! live window from `MarketStatusService::get_clock` with this as the
-//! logged fallback.
+//! The gate (`flow::nodes::timing::is_within_market_hours`) reads the
+//! broker's market clock and falls back to this regular window, logged.
 
 use chrono::{Datelike, NaiveDate, NaiveTime, TimeZone, Weekday};
 
@@ -37,19 +36,6 @@ pub fn regular_window(date: NaiveDate) -> Option<SessionWindow> {
         end_ms: at(REGULAR_CLOSE)?,
         is_special: false,
     })
-}
-
-/// The window the gate reads when it has nothing better: the regular
-/// session (upstream read its calendar tables here).
-pub fn effective_session_window(
-    _conn: &rusqlite::Connection,
-    date: NaiveDate,
-    exchange: &str,
-) -> Option<SessionWindow> {
-    if exchange.is_empty() {
-        return None;
-    }
-    regular_window(date)
 }
 
 #[cfg(test)]

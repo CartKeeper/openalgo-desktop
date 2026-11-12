@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 
 // The log lines and run rules the wave-6 sweep asked to pin.
+mod market_time;
 mod rules_w6;
 
 /// R-35, one row per branch.
@@ -92,6 +93,8 @@ impl TriggerHooks for Hooks {
 }
 
 fn app() -> crate::state::testing::TestCtx {
+    // The tests ported from the web read market time as IST.
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
     let t = crate::state::testing::build(
         crate::brokers::BrokerRegistry::new(),
         "2026-10-30T03:45:00Z".parse().unwrap(),
