@@ -404,7 +404,18 @@ pub fn implied_volatility_american(market_price: f64, inp: &AmericanInputs) -> O
     let mut lo = IV_LOW;
     let mut hi = IV_HIGH;
     let p_lo = price_at(lo)?;
-    let p_hi = price_at(hi)?;
+    // The lattice overflows `Decimal` when σ·√(steps·T) is large (its top node is
+    // S·e^{σ√(steps·T)}), which the 5.0 cap reaches past roughly nine months.
+    // Shrink the cap until it prices rather than giving up on long-dated contracts.
+    let p_hi = loop {
+        if let Some(p) = price_at(hi) {
+            break p;
+        }
+        hi *= 0.5;
+        if hi <= lo {
+            return None;
+        }
+    };
     // Price rises with volatility: a quote at or below the floor price (intrinsic
     // for deep ITM contracts) or above the cap carries no volatility information.
     if market_price <= p_lo + IV_TOLERANCE || market_price > p_hi {
@@ -702,6 +713,30 @@ mod tests {
         inp.volatility = 0.20;
         let iv = implied_volatility_american(market, &inp).expect("converged");
         assert!((iv - 0.25).abs() < 1e-3, "implied vol {iv} vs 0.25");
+    }
+
+    /// σ = 5.0 (the bisection cap) overflows the Decimal lattice past roughly
+    /// nine months (u^200 = e^{5√(200·T)}); the solver must shrink its bracket
+    /// instead of answering "--" for every long-dated contract.
+    #[test]
+    fn implied_volatility_round_trips_for_long_dated_contracts() {
+        for (days, is_call, sigma) in [(365.0, false, 0.25), (730.0, true, 0.30), (1095.0, false, 0.45)] {
+            let mut inp = inputs(100.0, 100.0, days, is_call);
+            inp.volatility = sigma;
+            let market = price_american(&inp).expect("priced").price;
+
+            inp.volatility = 0.20;
+            let iv = implied_volatility_american(market, &inp)
+                .unwrap_or_else(|| panic!("no implied vol for {days} days (σ {sigma})"));
+            assert!((iv - sigma).abs() < 1e-3, "{days} days: implied vol {iv} vs {sigma}");
+        }
+    }
+
+    #[test]
+    fn implied_volatility_is_none_above_what_the_lattice_can_represent() {
+        // A one-year call quoted at (almost) the spot: above any representable volatility's price.
+        let call = inputs(100.0, 100.0, 365.0, true);
+        assert_eq!(implied_volatility_american(99.0, &call), None);
     }
 
     #[test]

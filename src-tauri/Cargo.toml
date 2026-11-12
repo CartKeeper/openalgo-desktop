@@ -121,3 +121,17 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+# Same four crates at full speed in release builds too: the app-wide "s" trades
+# speed for size, and the lattice is the one hot loop that must not pay for it.
+[profile.release.package.rust_decimal]
+opt-level = 3
+
+[profile.release.package.positive]
+opt-level = 3
+
+[profile.release.package.optionstratlib-core]
+opt-level = 3
+
+[profile.release.package.optionstratlib-pricing]
+opt-level = 3

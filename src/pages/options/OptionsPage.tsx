@@ -101,7 +101,7 @@ const GREEK_TOOLTIPS: Record<string, string> = {
   gamma: 'Rate of change of delta per $1 move in the underlying.',
   theta: 'Daily time decay — how much value the option loses per day.',
   vega: 'Sensitivity of option price to a 1% change in implied volatility.',
-  rho: 'Sensitivity of option price to a 1% change in interest rates.',
+  rho: 'Change in option price per 1.0 change in the risk-free rate (divide by 100 for a one-percentage-point move).',
   iv: 'The market-implied volatility derived from the option\'s market price, solved with the selected pricing model.',
   theoretical_price: 'Theoretical fair value from the selected pricing model.',
   early_exercise:
@@ -127,7 +127,7 @@ const OPTIONS_HELP: HelpItem[] = [
   {
     title: 'Pricing model',
     description:
-      'Black-Scholes is the closed-form model for European exercise: it never values exercising early. Binomial (American) runs a 200-step lattice that checks early exercise at every step. American pricing matters for puts, where exercising early to collect the strike can beat holding on, and for dividend-paying names, where calls may be worth exercising before an ex-dividend date. This calculator has no dividend input, so calls carry no early-exercise value here.',
+      'Black-Scholes is the closed-form model for European exercise: it never values exercising early. Binomial (American) runs a 200-step lattice that checks early exercise at every step. American pricing matters for puts, where exercising early to collect the strike can beat holding on, and for dividend-paying names, where calls may be worth exercising before an ex-dividend date. This calculator has no dividend input, so calls carry no early-exercise value here. The binomial model is slower: a full chain of 200 strikes can take several seconds.',
   },
   {
     title: 'Early exercise column',
@@ -137,7 +137,7 @@ const OPTIONS_HELP: HelpItem[] = [
   {
     title: 'Switching models',
     description:
-      'Switching recalculates a loaded chain or single-option result with the same inputs. Switch back to Black-Scholes and the original numbers return.',
+      'Switching recalculates a loaded chain or single-option result with the current inputs. Switch back to Black-Scholes and the original numbers return.',
   },
   {
     title: 'Single option calculator',
@@ -415,7 +415,11 @@ export default function OptionsPage() {
   // ---------------------------
 
   const isCalculating = chainState === 'loading' || singleState === 'loading'
-  const showEarlyExercise = pricingModel === 'binomial'
+  // The columns follow the rows on screen (a refused recalculation leaves the old
+  // rows up); only the loading skeleton follows the model being computed.
+  const loadedChainModel = (callData[0] ?? putData[0])?.model ?? null
+  const showEarlyExercise =
+    chainState === 'loading' ? pricingModel === 'binomial' : loadedChainModel === 'binomial'
 
   const handleModelChange = useCallback(
     (model: PricingModel) => {
