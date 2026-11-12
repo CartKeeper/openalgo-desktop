@@ -8,3 +8,4 @@
 
 pub mod dossier;
 pub mod schemas;
+pub mod stages;
