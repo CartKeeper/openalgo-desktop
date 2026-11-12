@@ -73,6 +73,7 @@ pub use history_service::{HistoryService, HistoryResult, IntervalsResult, Candle
 // [wp-anchor] WP3 staged-analysis
 //
 // [wp-anchor] WP4 report-metrics
+pub mod report_metrics;
 //
 // [wp-anchor] WP5 american-options
 pub mod american_pricing;
