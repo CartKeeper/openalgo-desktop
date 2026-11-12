@@ -83,6 +83,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "062_client_allocation_targets", CREATE_CLIENT_ALLOCATION_TARGETS)?;
     //
     // [wp-anchor] WP8 migrations
+    run_migration_fn(conn, "100_flow_core", crate::flow::store::migrate)?;
     //
 
     tracing::info!("Database migrations completed");
@@ -1003,4 +1004,24 @@ CREATE INDEX IF NOT EXISTS idx_allocation_targets_client ON client_allocation_ta
 "#;
 //
 // [wp-anchor] WP8 sql
+/// A migration written in Rust (Flow's store builds its own tables,
+/// `flow::store::migrate`): run once and recorded under `name` like the SQL
+/// ones above.
+fn run_migration_fn(
+    conn: &Connection,
+    name: &str,
+    migrate: fn(&Connection) -> Result<()>,
+) -> Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM migrations WHERE name = ?)",
+        [name],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        tracing::info!("Running migration: {}", name);
+        migrate(conn)?;
+        conn.execute("INSERT INTO migrations (name) VALUES (?)", [name])?;
+    }
+    Ok(())
+}
 //

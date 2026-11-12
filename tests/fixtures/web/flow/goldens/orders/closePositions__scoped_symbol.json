@@ -1,0 +1,121 @@
+{
+ "format": 1,
+ "web_commit": "96e5927e5",
+ "kind": "node",
+ "family": "orders",
+ "type": "closePositions",
+ "scenario": "scoped_symbol",
+ "note": "",
+ "parity": [
+  "N-closePositions-03",
+  "CL-09"
+ ],
+ "clock": "2026-10-29T10:15:00",
+ "analyzer": false,
+ "node": {
+  "type": "closePositions",
+  "data": {
+   "exchange": "NSE",
+   "outputVariable": "closed",
+   "symbol": "SBIN"
+  }
+ },
+ "workflow_name": "Golden Flow",
+ "vars_in": {},
+ "conditions_in": {},
+ "graph": {
+  "nodes": [
+   {
+    "id": "n1",
+    "type": "closePositions",
+    "position": {
+     "x": 0,
+     "y": 0
+    },
+    "data": {
+     "exchange": "NSE",
+     "outputVariable": "closed",
+     "symbol": "SBIN"
+    }
+   },
+   {
+    "id": "probe-next",
+    "type": "goldenProbe",
+    "position": {
+     "x": 0,
+     "y": 100
+    },
+    "data": {
+     "probe": "next"
+    }
+   }
+  ],
+  "edges": [
+   {
+    "id": "e-next",
+    "source": "n1",
+    "target": "probe-next"
+   }
+  ]
+ },
+ "start": "n1",
+ "env": {},
+ "script": [
+  {
+   "endpoint": "closeposition",
+   "reply": {
+    "status": "success",
+    "orderid": "250408000123456"
+   }
+  }
+ ],
+ "alert_reply": null,
+ "expected": {
+  "calls": [
+   {
+    "method": "close_position",
+    "endpoint": "closeposition",
+    "payload": {
+     "strategy": "Golden Flow",
+     "symbol": "SBIN",
+     "exchange": "NSE",
+     "product": "MIS"
+    }
+   }
+  ],
+  "outputs": {
+   "status": "success",
+   "orderid": "250408000123456"
+  },
+  "outputs_by": "node",
+  "vars_out": {
+   "closed": {
+    "status": "success",
+    "orderid": "250408000123456"
+   }
+  },
+  "conditions_out": {},
+  "logs": [
+   [
+    "info",
+    "Closing position: SBIN@NSE (MIS)"
+   ],
+   [
+    "info",
+    "Close position result: {'status': 'success', 'orderid': '250408000123456'}"
+   ],
+   [
+    "info",
+    "Stored result in variable: closed"
+   ]
+  ],
+  "next": [
+   "next"
+  ],
+  "error": null
+ },
+ "desktop_expected": {
+  "parity": "N-closePositions-03",
+  "why": "WEB-DEFECT CL-09: the web's live close ignores the symbol and squares off every position. The desktop node calls the client's close_position as the web does (same payload); the desktop client sends a call that names a symbol to an internal entry that closes only that position with a smart order to position size 0, under the position's lock, with Semi-Auto refusing it as it refuses closeposition (src-tauri/src/flow/nodes/internal.rs, services/order_service.rs close_one_position; pinned by flow::nodes::internal::tests)."
+ }
+}

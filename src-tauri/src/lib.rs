@@ -20,6 +20,10 @@ pub mod importers;
 pub mod analytics;
 //
 // [wp-anchor] WP8 flow
+pub mod clock;
+pub mod events;
+pub mod flow;
+pub mod indicators_lib;
 //
 
 use scheduler::{AutoLogoutScheduler, AlertMonitor};
@@ -77,7 +81,19 @@ pub fn run() {
             // Get webhook config before managing state
             let webhook_config = app_state.sqlite.get_webhook_config().ok();
 
+            // Flow's long-lived tasks hold the state weakly through this root
+            // Arc (state.rs): managed beside the handle, so it lives as long
+            // as the app.
+            let root = app_state.root();
             app.manage(app_state);
+            app.manage(root.clone());
+
+            // Flow: close the runs the last session left, install the node
+            // services, the scheduler and monitors, restore the active
+            // workflows. Inside the async runtime: the trigger side spawns.
+            tauri::async_runtime::spawn(async move {
+                crate::flow::start(&root);
+            });
 
             // Start auto-logout scheduler (configurable, default 3:00 AM IST)
             let scheduler = AutoLogoutScheduler::new(app.handle().clone());
@@ -428,6 +444,16 @@ pub fn run() {
             // [wp-anchor] WP8 flow
             //
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                // Flow: the trigger side stops, then every run in flight
+                // gets ten seconds to write its record before it is ended.
+                let state = app_handle.state::<AppState>().inner().clone();
+                tauri::async_runtime::block_on(
+                    state.shutdown_with(std::time::Duration::from_secs(10)),
+                );
+            }
+        });
 }

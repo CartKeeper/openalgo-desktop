@@ -18,26 +18,45 @@ use axum::{
     response::IntoResponse,
 };
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 use tracing::{error, info, warn};
 
 /// Shared state for webhook/API handlers
 pub struct WebhookState {
-    pub app_handle: AppHandle,
+    /// The app, held weakly: the router lives inside the app state
+    /// (`AppState::api_router`), so a strong handle would be a cycle.
+    pub state: crate::state::WeakAppState,
+    /// The window to emit to, when the state belongs to a running app.
+    pub app_handle: Option<AppHandle>,
 }
 
 impl WebhookState {
-    pub fn new(app_handle: AppHandle) -> Self {
-        Self { app_handle }
+    pub fn new(state: &AppState) -> Self {
+        Self {
+            state: state.downgrade(),
+            app_handle: state.app_handle.clone(),
+        }
     }
 
-    /// Get AppState from Tauri
-    fn get_app_state(&self) -> Option<tauri::State<'_, AppState>> {
-        self.app_handle.try_state::<AppState>()
+    /// Get AppState
+    pub(crate) fn get_app_state(&self) -> Option<AppState> {
+        self.state.upgrade()
+    }
+
+    /// Whether `apikey` is the app's own per-process token: a Flow run
+    /// calling these handlers in process (`flow::support::dispatch`).
+    pub(crate) fn is_internal(&self, apikey: &str) -> bool {
+        use subtle::ConstantTimeEq;
+        self.get_app_state().is_some_and(|state| {
+            bool::from(apikey.as_bytes().ct_eq(state.internal_token.as_bytes()))
+        })
     }
 
     /// Validate API key and return the key name if valid
     fn validate_api_key(&self, apikey: &str) -> Result<String, String> {
+        if self.is_internal(apikey) {
+            return Ok("flow".to_string());
+        }
         match self.get_app_state() {
             Some(state) => {
                 state.sqlite.validate_api_key(apikey, &state.security)
@@ -48,10 +67,22 @@ impl WebhookState {
         }
     }
 
-    /// Emit event to frontend
+    /// The key the services re-check: none for the app's own runs (the
+    /// trust a Tauri command has), the caller's key for everyone else.
+    fn service_key<'a>(&self, apikey: &'a str) -> Option<&'a str> {
+        if self.is_internal(apikey) {
+            None
+        } else {
+            Some(apikey)
+        }
+    }
+
+    /// Emit event to frontend (there is no window for a headless state)
     fn emit<T: serde::Serialize + Clone>(&self, event: &str, payload: &T) {
-        if let Err(e) = self.app_handle.emit(event, payload) {
-            warn!("Failed to emit {}: {}", event, e);
+        if let Some(handle) = &self.app_handle {
+            if let Err(e) = handle.emit(event, payload) {
+                warn!("Failed to emit {}: {}", event, e);
+            }
         }
     }
 
@@ -333,7 +364,7 @@ pub async fn place_order(
     };
 
     // Execute order via service
-    match OrderService::place_order(&app_state, order, Some(&req.apikey), None).await {
+    match OrderService::place_order(&app_state, order, state.service_key(&req.apikey), None).await {
         Ok(result) => {
             state.emit("api_order", &req);
             if result.success {
@@ -397,7 +428,7 @@ pub async fn place_smart_order(
         price: if req.price > 0.0 { Some(req.price) } else { None },
     };
 
-    match SmartOrderService::place_smart_order(&app_state, smart_order_req, Some(&req.apikey)).await {
+    match SmartOrderService::place_smart_order(&app_state, smart_order_req, state.service_key(&req.apikey)).await {
         Ok(result) => {
             state.emit("api_smart_order", &req);
             if result.success {
@@ -458,7 +489,7 @@ pub async fn modify_order(
         validity: None,
     };
 
-    match OrderService::modify_order(&app_state, &req.orderid, modify_req, Some(&req.apikey)).await {
+    match OrderService::modify_order(&app_state, &req.orderid, modify_req, state.service_key(&req.apikey)).await {
         Ok(result) => {
             state.emit("api_modify_order", &req);
             if result.success {
@@ -504,7 +535,7 @@ pub async fn cancel_order(
         }
     };
 
-    match OrderService::cancel_order(&app_state, &req.orderid, None, Some(&req.apikey)).await {
+    match OrderService::cancel_order(&app_state, &req.orderid, None, state.service_key(&req.apikey)).await {
         Ok(result) => {
             state.emit("api_cancel_order", &req);
             if result.success {
@@ -550,7 +581,7 @@ pub async fn cancel_all_orders(
         }
     };
 
-    match OrderService::cancel_all_orders(&app_state, Some(&req.apikey)).await {
+    match OrderService::cancel_all_orders(&app_state, state.service_key(&req.apikey)).await {
         Ok(results) => {
             state.emit("api_cancel_all_orders", &req);
             let cancelled_count = results.iter().filter(|r| r.success).count();
@@ -598,7 +629,7 @@ pub async fn close_position(
     };
 
     // Close all positions (ClosePositionRequest only has apikey and strategy)
-    match PositionService::close_all_positions(&app_state, Some(&req.apikey)).await {
+    match PositionService::close_all_positions(&app_state, state.service_key(&req.apikey)).await {
         Ok(results) => {
             state.emit("api_close_position", &req);
             let closed_count = results.iter().filter(|r| r.success).count();
@@ -636,7 +667,7 @@ pub async fn get_orderbook(
         }
     };
 
-    match OrderbookService::get_orderbook(&app_state, Some(&req.apikey)).await {
+    match OrderbookService::get_orderbook(&app_state, state.service_key(&req.apikey)).await {
         Ok(result) => {
             let orders: Vec<OrderData> = result.orders.into_iter().map(|o| OrderData {
                 orderid: o.order_id,
@@ -684,7 +715,7 @@ pub async fn get_tradebook(
         }
     };
 
-    match OrderbookService::get_tradebook(&app_state, Some(&req.apikey)).await {
+    match OrderbookService::get_tradebook(&app_state, state.service_key(&req.apikey)).await {
         Ok(result) => {
             let trades: Vec<TradeData> = result.trades.into_iter().map(|t| {
                 let trade_value = t.filled_quantity as f64 * t.average_price;
@@ -733,7 +764,7 @@ pub async fn get_positionbook(
         }
     };
 
-    match PositionService::get_positions(&app_state, Some(&req.apikey)).await {
+    match PositionService::get_positions(&app_state, state.service_key(&req.apikey)).await {
         Ok(result) => {
             let positions: Vec<PositionData> = result.positions.into_iter().map(|p| PositionData {
                 symbol: p.symbol,
@@ -777,7 +808,7 @@ pub async fn get_holdings(
         }
     };
 
-    match HoldingsService::get_holdings(&app_state, Some(&req.apikey)).await {
+    match HoldingsService::get_holdings(&app_state, state.service_key(&req.apikey)).await {
         Ok(result) => {
             let holdings: Vec<HoldingData> = result.holdings.into_iter().map(|h| HoldingData {
                 symbol: h.symbol,
@@ -820,7 +851,7 @@ pub async fn get_funds(
         }
     };
 
-    match FundsService::get_funds(&app_state, Some(&req.apikey)).await {
+    match FundsService::get_funds(&app_state, state.service_key(&req.apikey)).await {
         Ok(result) => {
             let funds = FundsData {
                 availablecash: result.funds.available_cash,
@@ -862,7 +893,7 @@ pub async fn get_quotes(
         }
     };
 
-    match QuotesService::get_quote(&app_state, &req.exchange, &req.symbol, Some(&req.apikey)).await {
+    match QuotesService::get_quote(&app_state, &req.exchange, &req.symbol, state.service_key(&req.apikey)).await {
         Ok(q) => {
             let quote = QuoteData {
                 bid: q.bid,
@@ -935,7 +966,7 @@ pub async fn place_basket_order(
         symbol_token: None,   // Set by OrderService from symbol cache
     }).collect();
 
-    match SmartOrderService::place_basket_order(&app_state, orders, Some(&req.apikey), None).await {
+    match SmartOrderService::place_basket_order(&app_state, orders, state.service_key(&req.apikey), None).await {
         Ok(order_results) => {
             let results: Vec<BasketOrderResult> = order_results.into_iter()
                 .enumerate()
@@ -995,7 +1026,7 @@ pub async fn place_split_order(
         price: if req.price > 0.0 { Some(req.price) } else { None },
     };
 
-    match SmartOrderService::place_split_order(&app_state, split_req, Some(&req.apikey)).await {
+    match SmartOrderService::place_split_order(&app_state, split_req, state.service_key(&req.apikey)).await {
         Ok(result) => {
             state.emit("api_split_order", &req);
             let api_result = SplitOrderResult {
@@ -1039,7 +1070,7 @@ pub async fn get_order_status(
         }
     };
 
-    match OrderbookService::get_order_status(&app_state, &req.orderid, Some(&req.apikey)).await {
+    match OrderbookService::get_order_status(&app_state, &req.orderid, state.service_key(&req.apikey)).await {
         Ok(result) => {
             match result.order {
                 Some(o) => {
@@ -1103,7 +1134,7 @@ pub async fn get_open_position(
         }
     };
 
-    match PositionService::get_open_position(&app_state, &req.exchange, &req.symbol, &req.product, Some(&req.apikey)).await {
+    match PositionService::get_open_position(&app_state, &req.exchange, &req.symbol, &req.product, state.service_key(&req.apikey)).await {
         Ok(Some(p)) => {
             let position = OpenPositionData {
                 symbol: p.symbol,
@@ -1165,7 +1196,7 @@ pub async fn get_depth(
         }
     };
 
-    match QuotesService::get_market_depth(&app_state, &req.exchange, &req.symbol, Some(&req.apikey)).await {
+    match QuotesService::get_market_depth(&app_state, &req.exchange, &req.symbol, state.service_key(&req.apikey)).await {
         Ok(result) => {
             let depth_data = result.depth;
             let buy: Vec<DepthLevel> = depth_data.bids.into_iter().map(|d| DepthLevel {
@@ -1288,7 +1319,7 @@ pub async fn get_history(
         &req.interval,
         start_date,
         end_date,
-        Some(&req.apikey),
+        state.service_key(&req.apikey),
     ).await {
         Ok(result) => {
             let candles: Vec<Candle> = result.candles.into_iter().map(|c| Candle {
@@ -1490,7 +1521,7 @@ pub async fn get_multiquotes(
         .map(|s| QuoteSymbol { exchange: s.exchange.clone(), symbol: s.symbol.clone() })
         .collect();
 
-    match QuotesService::get_multi_quotes(&app_state, symbols, Some(&req.apikey)).await {
+    match QuotesService::get_multi_quotes(&app_state, symbols, state.service_key(&req.apikey)).await {
         Ok(result) => {
             // MultiQuotesData is Vec<QuoteData>
             let quotes: MultiQuotesData = result.quotes.into_iter().map(|q| QuoteData {
@@ -1667,7 +1698,7 @@ pub async fn get_synthetic_future(
         }
     };
 
-    match OptionsService::get_synthetic_future(&app_state, &req.underlying, &req.exchange, &req.expiry_date, Some(&req.apikey)).await {
+    match OptionsService::get_synthetic_future(&app_state, &req.underlying, &req.exchange, &req.expiry_date, state.service_key(&req.apikey)).await {
         Ok(result) => {
             let data = SyntheticFutureData {
                 underlying: result.underlying,
@@ -1711,7 +1742,7 @@ pub async fn get_option_chain(
         }
     };
 
-    match OptionsService::get_option_chain(&app_state, &req.underlying, &req.exchange, req.expiry_date.as_deref(), Some(&req.apikey)).await {
+    match OptionsService::get_option_chain(&app_state, &req.underlying, &req.exchange, req.expiry_date.as_deref(), state.service_key(&req.apikey)).await {
         Ok(result) => {
             let strikes: Vec<OptionStrike> = result.strikes.into_iter().map(|s| OptionStrike {
                 strike: s.strike,
@@ -1768,7 +1799,7 @@ pub async fn get_option_greeks(
         }
     };
 
-    match OptionsService::get_option_greeks(&app_state, &req.symbol, &req.exchange, Some(&req.apikey)).await {
+    match OptionsService::get_option_greeks(&app_state, &req.symbol, &req.exchange, state.service_key(&req.apikey)).await {
         Ok(result) => {
             let data = OptionGreeksData {
                 symbol: result.symbol,
@@ -1830,7 +1861,7 @@ pub async fn place_options_order(
         pricetype: Some(req.price_type.clone()),
     };
 
-    match OptionsService::place_options_order(&app_state, options_req, Some(&req.apikey)).await {
+    match OptionsService::place_options_order(&app_state, options_req, state.service_key(&req.apikey)).await {
         Ok(result) => {
             if result.success {
                 let data = OptionsOrderResult {
@@ -1879,7 +1910,7 @@ pub async fn get_option_symbol(
     };
 
     // Get underlying LTP for strike calculation (default to 0 if unavailable)
-    let underlying_ltp = match QuotesService::get_quote(&app_state, &req.exchange, &req.underlying, Some(&req.apikey)).await {
+    let underlying_ltp = match QuotesService::get_quote(&app_state, &req.exchange, &req.underlying, state.service_key(&req.apikey)).await {
         Ok(q) => q.ltp,
         Err(_) => 0.0,
     };
@@ -1944,7 +1975,7 @@ pub async fn place_options_multi_order(
         }
     }).collect();
 
-    match OptionsService::place_options_multi_order(&app_state, &req.underlying, &req.exchange, req.expiry_date.as_deref(), &product, legs, Some(&req.apikey)).await {
+    match OptionsService::place_options_multi_order(&app_state, &req.underlying, &req.exchange, req.expiry_date.as_deref(), &product, legs, state.service_key(&req.apikey)).await {
         Ok(order_results) => {
             let results: Vec<OptionsOrderLegResult> = order_results.into_iter().enumerate().map(|(i, r)| {
                 OptionsOrderLegResult {

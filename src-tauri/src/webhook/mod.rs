@@ -16,7 +16,7 @@
 //! 4. Create strategies with webhook_id
 //! 5. Use the webhook URL: `<ngrok_url>/webhook/<webhook_id>`
 
-mod server;
+pub mod server;
 pub mod handlers;
 mod types;
 pub mod rate_limiter;
