@@ -1,8 +1,44 @@
 import { readFileSync, writeFileSync } from 'node:fs'
+import { inflateSync } from 'node:zlib'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { describe, expect, it } from 'vitest'
 import { GoldmanReport } from './GoldmanReport'
 import type { GoldmanBrief } from './types'
+
+/** Pages in a rendered PDF: one `/Type /Page` object each (`/Pages` is the tree root). */
+function pageCount(pdf: Buffer): number {
+  return (pdf.toString('latin1').match(/\/Type\s*\/Page(?![s\w])/g) ?? []).length
+}
+
+/**
+ * The text a PDF draws, with whitespace removed. react-pdf writes each glyph
+ * of the built-in fonts as a `<hex>` string inside deflated content streams,
+ * so inflating every stream and decoding those strings gives the page text.
+ */
+function pdfText(pdf: Buffer): string {
+  let streams = ''
+  let at = 0
+  for (;;) {
+    const start = pdf.indexOf('stream', at)
+    if (start < 0) break
+    let body = start + 'stream'.length
+    if (pdf[body] === 0x0d) body++
+    if (pdf[body] === 0x0a) body++
+    const end = pdf.indexOf('endstream', body)
+    if (end < 0) break
+    const chunk = pdf.subarray(body, end)
+    try {
+      streams += inflateSync(chunk).toString('latin1')
+    } catch {
+      streams += chunk.toString('latin1')
+    }
+    at = end + 'endstream'.length
+  }
+  const glyphs = [...streams.matchAll(/<([0-9a-fA-F]+)>/g)].map((m) => Buffer.from(m[1], 'hex').toString('latin1'))
+  return glyphs.join('').replace(/\s+/g, '')
+}
+
+const squeeze = (s: string) => s.replace(/\s+/g, '')
 
 const brief: GoldmanBrief = {
   client_name: 'Casey Borst',
@@ -103,6 +139,42 @@ describe('GoldmanReport', () => {
     const pdf = await renderToBuffer(<GoldmanReport brief={comparison} />)
     expect(pdf.subarray(0, 5).toString()).toBe('%PDF-')
   }, 30000)
+
+  it('renders the metrics and health movements of a comparison report', async () => {
+    const fixture = JSON.parse(
+      readFileSync(new URL('./__fixtures__/comparison-with-metrics.json', import.meta.url), 'utf8')
+    ) as GoldmanBrief
+    const kinds = fixture.movements.map((m) => m.kind)
+    expect(kinds).toEqual(['changes', 'measures', 'metrics', 'health', 'diagnosis', 'coda'])
+
+    const without: GoldmanBrief = {
+      ...fixture,
+      movements: fixture.movements.filter((m) => m.kind !== 'metrics' && m.kind !== 'health'),
+    }
+    const base = await renderToBuffer(<GoldmanReport brief={without} />)
+    const full = await renderToBuffer(<GoldmanReport brief={fixture} />)
+    expect(full.subarray(0, 5).toString()).toBe('%PDF-')
+    // Each new movement starts on its own page.
+    expect(pageCount(full)).toBeGreaterThanOrEqual(pageCount(base) + 2)
+
+    const text = pdfText(full)
+    expect(text).toContain('MonteCarlo')
+    expect(text).toContain('Health')
+    // The metrics table, the monthly grid, a drawdown row and the odds line, as the app prints them.
+    expect(text).toContain(squeeze('CAGR'))
+    expect(text).toContain(squeeze('12.3%'))
+    expect(text).toContain(squeeze('Monthly returns'))
+    expect(text).toContain(squeeze('Mar 13, 2026'))
+    expect(text).toContain(squeeze('odds of a -20% drawdown 23%'))
+    expect(text).toContain(squeeze('odds of +10% or better 68%'))
+    // -0.0625 is an exact binary half: the PDF must round it the way the Rust prompt text does (-6.3%).
+    expect(text).toContain(squeeze('percentile -6.3% to +71.0%'))
+    // Health rows carry both sides and the threshold.
+    expect(text).toContain(squeeze('Largest position'))
+    expect(text).toContain(squeeze('TQQQ · 74.6%'))
+    expect(text).toContain(squeeze('warn above 10%, fail above 25% of holdings value'))
+    expect(text).toContain(squeeze('No expense ratio on record for TQQQ'))
+  }, 60000)
 
   // Visual check of a real brief: GOLDMAN_BRIEF_JSON=<brief.json> GOLDMAN_PDF_OUT=<out.pdf>
   it.runIf(!!process.env.GOLDMAN_BRIEF_JSON && !!process.env.GOLDMAN_PDF_OUT)(
