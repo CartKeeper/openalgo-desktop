@@ -75,6 +75,7 @@ pub use history_service::{HistoryService, HistoryResult, IntervalsResult, Candle
 // [wp-anchor] WP4 report-metrics
 //
 // [wp-anchor] WP5 american-options
+pub mod american_pricing;
 //
 // [wp-anchor] WP6 talib-indicators
 pub mod indicator_catalog;
