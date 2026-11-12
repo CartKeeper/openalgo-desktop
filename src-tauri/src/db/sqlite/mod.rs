@@ -24,6 +24,10 @@ pub mod alerts;
 mod clients;
 mod client_scenarios;
 pub mod backtest;
+// [wp-anchor] WP1 chart-tools
+//
+// [wp-anchor] WP2 analytics
+//
 
 pub use reports::{ResearchReport, ResearchReportSummary, ReportNote};
 pub use watchlist::WatchlistItem;

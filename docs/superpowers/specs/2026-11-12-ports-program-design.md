@@ -120,11 +120,13 @@ Each WP plan carries the detailed tasks. The requirements below are the contract
 
 **WP8** Carry, don't rewrite: `git checkout upstream/master -- <paths>` for `src-tauri/src/flow/**`, `src-tauri/src/clock.rs`, `src-tauri/src/security/secret.rs`, `src-tauri/src/agent/indicators/**` (as `indicators_lib`), the goldens under `tests/fixtures/web/flow/**`, and the frontend Flow tree. Adapt at the documented seams only. `/flow/api/*` becomes 22 Tauri commands; the public webhook stays an axum route. Four sequential phases, each merge-ready.
 
-## Open items the user decides at plan review
+## Open items — decided 2026-11-12
 
-1. The health thresholds and the "app default" rules (keep, change, or drop any).
-2. WP3: ~9 Claude calls per full analysis is acceptable?
-3. WP7: include OTC/pink sheets by default or behind the checkbox (plan says checkbox)?
-4. WP8: Telegram settings live on the existing Telegram page (plan) or in Settings → Providers?
-5. WP1: toolbar tool set (plan proposes pointer, trend line, horizontal line, ray, rectangle, Fibonacci retracement, text, plus a "More tools" menu with the remaining 79).
-6. **Table standard.** `CLAUDE.md`'s table-interaction spec requires click-anywhere selection, Select All, Shift-range, and a Copy/Move/Delete action bar on every table. The app's existing tables (Order Book, Positions, Clients) do not have it, and Copy/Move/Delete have no meaning on the read-only analytics tables WP2, WP4, WP7 and WP8 add (lots, drift, metadata results, run history). The plans follow the existing app table pattern. Decide: (a) accept that for these tables, or (b) schedule a separate app-wide table WP that implements the spec once and retrofits every table.
+The user delegated these to the planner's recommendation ("go with what your recommendation is"). Decisions, binding for the agents:
+
+1. **Health thresholds:** keep all eight rules with the defaults in the table above. They are informational rows in a PDF; each lives in one constant so an advisor can retune later.
+2. **WP3 cost:** accepted. The full analysis is an explicit button, never the default chat path, and shows its stages while it runs.
+3. **WP7 OTC:** behind the checkbox, default off. One click adds the 14.5 MB pink-sheet file when a client holds OTC names.
+4. **WP8 Telegram settings:** on the existing Telegram page (it is a stub today and already sits in the navigation).
+5. **WP1 toolbar:** the seven primary tools (pointer, trend line, horizontal line, ray, rectangle, Fibonacci retracement, text) plus a "More tools" menu with the rest.
+6. **Table standard:** option (a) for this program — the new read-only tables follow the existing `src/components/ui/table` pattern. A separate app-wide table work package (implement the selection/action-bar spec once, retrofit every table) is the right way to meet `CLAUDE.md`'s table-interaction spec and is deferred, not dropped.

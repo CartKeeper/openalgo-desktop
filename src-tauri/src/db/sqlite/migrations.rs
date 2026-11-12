@@ -76,6 +76,12 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "058_dismissed_protection", CREATE_DISMISSED_PROTECTION_TABLE)?;
     run_migration(conn, "059_report_scenario_link", ADD_REPORT_SCENARIO_LINK)?;
     run_migration(conn, "060_scenario_cash", ADD_SCENARIO_CASH)?;
+    // [wp-anchor] WP1 migrations
+    //
+    // [wp-anchor] WP2 migrations
+    //
+    // [wp-anchor] WP8 migrations
+    //
 
     tracing::info!("Database migrations completed");
     Ok(())
@@ -970,3 +976,10 @@ CREATE TABLE dismissed_protection (
     PRIMARY KEY (symbol, quantity)
 );
 "#;
+
+// [wp-anchor] WP1 sql
+//
+// [wp-anchor] WP2 sql
+//
+// [wp-anchor] WP8 sql
+//

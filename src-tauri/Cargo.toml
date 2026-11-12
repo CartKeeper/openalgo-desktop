@@ -79,6 +79,14 @@ urlencoding = "2.1"
 uuid = { version = "1.8", features = ["v4"] }
 ta = "0.5"
 statrs = "0.17"
+# [wp-anchor] WP5 deps
+#
+# [wp-anchor] WP6 deps
+#
+# [wp-anchor] WP7 deps
+#
+# [wp-anchor] WP8 deps
+#
 
 [dev-dependencies]
 tempfile = "3.10"

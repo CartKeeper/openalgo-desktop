@@ -35,3 +35,17 @@ pub mod activities;
 pub mod market_status;
 pub mod broker_watchlist;
 pub mod backtest;
+// [wp-anchor] WP1 chart-tools
+//
+// [wp-anchor] WP2 analytics
+//
+// [wp-anchor] WP3 staged-analysis
+//
+// [wp-anchor] WP5 american-options
+//
+// [wp-anchor] WP6 talib-indicators
+//
+// [wp-anchor] WP7 symbol-metadata
+//
+// [wp-anchor] WP8 flow
+//

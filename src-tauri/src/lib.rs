@@ -15,6 +15,11 @@ pub mod error;
 pub mod state;
 pub mod services;
 pub mod importers;
+// [wp-anchor] modules: each WP adds its top-level `mod` line under its own marker.
+// [wp-anchor] WP2 analytics
+//
+// [wp-anchor] WP8 flow
+//
 
 use scheduler::{AutoLogoutScheduler, AlertMonitor};
 use state::AppState;
@@ -395,6 +400,20 @@ pub fn run() {
             commands::backtest::save_backtest_run,
             commands::backtest::list_backtest_runs,
             commands::backtest::get_backtest_run,
+            // [wp-anchor] WP1 chart-tools
+            //
+            // [wp-anchor] WP2 analytics
+            //
+            // [wp-anchor] WP3 staged-analysis
+            //
+            // [wp-anchor] WP5 american-options
+            //
+            // [wp-anchor] WP6 talib-indicators
+            //
+            // [wp-anchor] WP7 symbol-metadata
+            //
+            // [wp-anchor] WP8 flow
+            //
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

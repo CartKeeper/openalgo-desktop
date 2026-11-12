@@ -68,3 +68,15 @@ pub use symbol_service::{SymbolService, SymbolSearchResult, ExpiryResult};
 pub use analyzer_service::{AnalyzerService, AnalyzerStatus};
 pub use options_service::{OptionsService, OptionChainResult, OptionGreeks, OptionSymbolResult, SyntheticFutureResult};
 pub use history_service::{HistoryService, HistoryResult, IntervalsResult, CandleData};
+// [wp-anchor] WP2 analytics
+//
+// [wp-anchor] WP3 staged-analysis
+//
+// [wp-anchor] WP4 report-metrics
+//
+// [wp-anchor] WP5 american-options
+//
+// [wp-anchor] WP6 talib-indicators
+//
+// [wp-anchor] WP7 symbol-metadata
+//
