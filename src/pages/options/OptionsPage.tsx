@@ -9,6 +9,8 @@ import {
 import { useCallback, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
+import { HelpButton, type HelpItem } from '@/components/HelpButton'
+import { ModelSwitch, type PricingModel } from '@/components/options/ModelSwitch'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -31,9 +33,6 @@ import {
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-/** Pricing model accepted by the `compute_greeks*` commands. */
-type PricingModel = 'black_scholes' | 'binomial'
 
 interface OptionGreeksResult {
   strike: number
@@ -87,6 +86,12 @@ function fmtIV(v: number | null): string {
   return `${(v * 100).toFixed(2)}%`
 }
 
+/** Early-exercise premium, formatted like the price column; "--" when the model has none. */
+function fmtPremium(v: number | null): string {
+  if (v === null || v === undefined) return '--'
+  return fmtPrice(v)
+}
+
 // ---------------------------------------------------------------------------
 // Greek tooltip descriptions
 // ---------------------------------------------------------------------------
@@ -97,15 +102,68 @@ const GREEK_TOOLTIPS: Record<string, string> = {
   theta: 'Daily time decay — how much value the option loses per day.',
   vega: 'Sensitivity of option price to a 1% change in implied volatility.',
   rho: 'Sensitivity of option price to a 1% change in interest rates.',
-  iv: 'The market-implied volatility derived from the option\'s market price.',
-  theoretical_price: 'Theoretical fair value computed via Black-Scholes.',
+  iv: 'The market-implied volatility derived from the option\'s market price, solved with the selected pricing model.',
+  theoretical_price: 'Theoretical fair value from the selected pricing model.',
+  early_exercise:
+    'Value of the right to exercise before expiry: the binomial price minus the European price of the same lattice. Zero for calls on names without dividends.',
 }
+
+const PRICE_TOOLTIPS: Record<PricingModel, string> = {
+  black_scholes: 'Theoretical fair value computed via Black-Scholes (European exercise).',
+  binomial:
+    'Theoretical fair value from the 200-step binomial lattice with American (early) exercise.',
+}
+
+// ---------------------------------------------------------------------------
+// Help panel
+// ---------------------------------------------------------------------------
+
+const OPTIONS_HELP: HelpItem[] = [
+  {
+    title: 'Chain parameters',
+    description:
+      'Spot price, days to expiry, risk-free rate and implied volatility drive every contract in the chain. Set a strike range and step, then Calculate Chain. Calls are on the left, puts on the right; in-the-money cells are shaded and the at-the-money strike is marked.',
+  },
+  {
+    title: 'Pricing model',
+    description:
+      'Black-Scholes is the closed-form model for European exercise: it never values exercising early. Binomial (American) runs a 200-step lattice that checks early exercise at every step. American pricing matters for puts, where exercising early to collect the strike can beat holding on, and for dividend-paying names, where calls may be worth exercising before an ex-dividend date. This calculator has no dividend input, so calls carry no early-exercise value here.',
+  },
+  {
+    title: 'Early exercise column',
+    description:
+      'Shown with the binomial model: the binomial price minus the European price of the same lattice, i.e. what the right to exercise early is worth. It is largest for puts deep in the money with time left, and zero for calls on names without dividends.',
+  },
+  {
+    title: 'Switching models',
+    description:
+      'Switching recalculates a loaded chain or single-option result with the same inputs. Switch back to Black-Scholes and the original numbers return.',
+  },
+  {
+    title: 'Single option calculator',
+    description:
+      'Greeks for one strike using the chain parameters above. Enter a market price to solve implied volatility with the selected model; "--" means no volatility explains that price (for example a quote at or below intrinsic value).',
+  },
+  {
+    title: 'Greek units',
+    description:
+      'Delta is per $1 move in the underlying, gamma per $1 of delta change, theta per calendar day, vega per one volatility point, and rho per 1.0 change in the rate (divide by 100 for a one-point move). Both models report the same units.',
+  },
+]
 
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function GreekLabel({ label, tooltipKey }: { label: string; tooltipKey: string }) {
+function GreekLabel({
+  label,
+  tooltipKey,
+  tooltip,
+}: {
+  label: string
+  tooltipKey: string
+  tooltip?: string
+}) {
   return (
     <div className="flex items-center gap-1">
       <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -116,19 +174,19 @@ function GreekLabel({ label, tooltipKey }: { label: string; tooltipKey: string }
           <Info className="h-3 w-3 text-muted-foreground cursor-help" />
         </TooltipTrigger>
         <TooltipContent side="top" className="max-w-[240px]">
-          {GREEK_TOOLTIPS[tooltipKey] ?? ''}
+          {tooltip ?? GREEK_TOOLTIPS[tooltipKey] ?? ''}
         </TooltipContent>
       </Tooltip>
     </div>
   )
 }
 
-function ChainSkeletonRows({ count }: { count: number }) {
+function ChainSkeletonRows({ count, columns }: { count: number; columns: number }) {
   return (
     <>
       {Array.from({ length: count }).map((_, i) => (
         <TableRow key={i}>
-          {Array.from({ length: 11 }).map((_, j) => (
+          {Array.from({ length: columns }).map((_, j) => (
             <TableCell key={j}>
               <Skeleton className="h-4 w-14" />
             </TableCell>
@@ -178,7 +236,7 @@ export default function OptionsPage() {
   })
 
   // Pricing model shared by the chain and the single-option calculator
-  const [pricingModel] = useState<PricingModel>('black_scholes')
+  const [pricingModel, setPricingModel] = useState<PricingModel>('black_scholes')
 
   // Chain data
   const [chainState, setChainState] = useState<ChainState>('idle')
@@ -223,7 +281,9 @@ export default function OptionsPage() {
     return result
   }, [chainParams.strikeFrom, chainParams.strikeTo, chainParams.strikeStep])
 
-  const calculateChain = useCallback(async () => {
+  // `modelOverride` lets a model switch recalculate before the state update lands.
+  const calculateChain = useCallback(async (modelOverride?: PricingModel) => {
+    const model = modelOverride ?? pricingModel
     const spotPrice = parseFloat(chainParams.spotPrice)
     const expiryDays = parseFloat(chainParams.expiryDays)
     const riskFreeRate = parseFloat(chainParams.riskFreeRate) / 100
@@ -263,7 +323,7 @@ export default function OptionsPage() {
         expiryDays,
         riskFreeRate,
         volatility,
-        model: pricingModel,
+        model,
       })
 
       // Split results into calls and puts
@@ -298,7 +358,8 @@ export default function OptionsPage() {
   // Single option calculation
   // ---------------------------
 
-  const calculateSingle = useCallback(async () => {
+  const calculateSingle = useCallback(async (modelOverride?: PricingModel) => {
+    const model = modelOverride ?? pricingModel
     const spotPrice = parseFloat(chainParams.spotPrice)
     const expiryDays = parseFloat(chainParams.expiryDays)
     const riskFreeRate = parseFloat(chainParams.riskFreeRate) / 100
@@ -336,7 +397,7 @@ export default function OptionsPage() {
         volatility,
         isCall: singleParams.optionType === 'call',
         marketPrice,
-        model: pricingModel,
+        model,
       })
 
       setSingleResult(result)
@@ -348,6 +409,24 @@ export default function OptionsPage() {
       toast.error('Failed to compute Greeks')
     }
   }, [chainParams, singleParams, pricingModel])
+
+  // ---------------------------
+  // Pricing model switch
+  // ---------------------------
+
+  const isCalculating = chainState === 'loading' || singleState === 'loading'
+  const showEarlyExercise = pricingModel === 'binomial'
+
+  const handleModelChange = useCallback(
+    (model: PricingModel) => {
+      if (model === pricingModel) return
+      setPricingModel(model)
+      // Re-price whatever is on screen with the new model and the same inputs.
+      if (chainState === 'loaded') void calculateChain(model)
+      if (singleState === 'loaded') void calculateSingle(model)
+    },
+    [pricingModel, chainState, singleState, calculateChain, calculateSingle]
+  )
 
   // ---------------------------
   // Helpers for chain rendering
@@ -405,7 +484,8 @@ export default function OptionsPage() {
           </h1>
         </div>
         <p className="text-muted-foreground">
-          Black-Scholes options chain and single-option Greeks calculator
+          Options chain and single-option Greeks calculator with Black-Scholes or binomial
+          (American) pricing
         </p>
       </div>
 
@@ -541,7 +621,7 @@ export default function OptionsPage() {
               />
             </div>
             <Button
-              onClick={calculateChain}
+              onClick={() => calculateChain()}
               disabled={chainState === 'loading'}
               className="h-9"
             >
@@ -554,6 +634,18 @@ export default function OptionsPage() {
                 'Calculate Chain'
               )}
             </Button>
+          </div>
+
+          {/* Pricing Model */}
+          <div className="mt-4 space-y-1.5">
+            <Label>Pricing Model</Label>
+            <div>
+              <ModelSwitch
+                value={pricingModel}
+                onChange={handleModelChange}
+                disabled={isCalculating}
+              />
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -577,7 +669,7 @@ export default function OptionsPage() {
               <div className="text-red-500 text-sm font-medium">
                 {chainError || 'An unexpected error occurred'}
               </div>
-              <Button variant="outline" size="sm" onClick={calculateChain}>
+              <Button variant="outline" size="sm" onClick={() => calculateChain()}>
                 Retry
               </Button>
             </div>
@@ -595,6 +687,11 @@ export default function OptionsPage() {
                       <TableHead className="text-right text-xs uppercase tracking-wider">Gamma</TableHead>
                       <TableHead className="text-right text-xs uppercase tracking-wider">Theta</TableHead>
                       <TableHead className="text-right text-xs uppercase tracking-wider">Vega</TableHead>
+                      {showEarlyExercise && (
+                        <TableHead className="text-right text-xs uppercase tracking-wider">
+                          Early exercise
+                        </TableHead>
+                      )}
 
                       {/* Strike center */}
                       <TableHead className="text-center text-xs uppercase tracking-wider font-bold border-x border-border">
@@ -607,21 +704,34 @@ export default function OptionsPage() {
                       <TableHead className="text-right text-xs uppercase tracking-wider">Gamma</TableHead>
                       <TableHead className="text-right text-xs uppercase tracking-wider">Theta</TableHead>
                       <TableHead className="text-right text-xs uppercase tracking-wider">Vega</TableHead>
+                      {showEarlyExercise && (
+                        <TableHead className="text-right text-xs uppercase tracking-wider">
+                          Early exercise
+                        </TableHead>
+                      )}
                     </TableRow>
 
                     {/* Section labels row */}
                     <TableRow>
-                      <TableHead colSpan={5} className="text-center text-xs font-semibold text-emerald-500 py-1">
+                      <TableHead
+                        colSpan={showEarlyExercise ? 6 : 5}
+                        className="text-center text-xs font-semibold text-emerald-500 py-1"
+                      >
                         CALLS
                       </TableHead>
                       <TableHead className="border-x border-border" />
-                      <TableHead colSpan={5} className="text-center text-xs font-semibold text-red-500 py-1">
+                      <TableHead
+                        colSpan={showEarlyExercise ? 6 : 5}
+                        className="text-center text-xs font-semibold text-red-500 py-1"
+                      >
                         PUTS
                       </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {chainState === 'loading' && <ChainSkeletonRows count={8} />}
+                    {chainState === 'loading' && (
+                      <ChainSkeletonRows count={8} columns={showEarlyExercise ? 13 : 11} />
+                    )}
 
                     {chainState === 'loaded' &&
                       strikes.map((strike) => {
@@ -666,6 +776,13 @@ export default function OptionsPage() {
                             >
                               {call ? fmtGreek(call.vega) : '--'}
                             </TableCell>
+                            {showEarlyExercise && (
+                              <TableCell
+                                className={`text-right tabular-nums ${callITM ? 'bg-emerald-500/8' : ''}`}
+                              >
+                                {call ? fmtPremium(call.early_exercise_premium) : '--'}
+                              </TableCell>
+                            )}
 
                             {/* Strike center */}
                             <TableCell
@@ -707,6 +824,13 @@ export default function OptionsPage() {
                             >
                               {put ? fmtGreek(put.vega) : '--'}
                             </TableCell>
+                            {showEarlyExercise && (
+                              <TableCell
+                                className={`text-right tabular-nums ${putITM ? 'bg-red-500/8' : ''}`}
+                              >
+                                {put ? fmtPremium(put.early_exercise_premium) : '--'}
+                              </TableCell>
+                            )}
                           </TableRow>
                         )
                       })}
@@ -731,8 +855,8 @@ export default function OptionsPage() {
                 <HelpCircle className="h-4 w-4 text-muted-foreground cursor-help" />
               </TooltipTrigger>
               <TooltipContent side="right" className="max-w-[280px]">
-                Compute Greeks for a single option. Provide a market price to
-                calculate implied volatility.
+                Compute Greeks for a single option with the pricing model selected above.
+                Provide a market price to calculate implied volatility.
               </TooltipContent>
             </Tooltip>
           </CardTitle>
@@ -812,7 +936,7 @@ export default function OptionsPage() {
 
             {/* Calculate */}
             <Button
-              onClick={calculateSingle}
+              onClick={() => calculateSingle()}
               disabled={singleState === 'loading'}
               className="h-9"
             >
@@ -846,10 +970,18 @@ export default function OptionsPage() {
           )}
 
           {singleState === 'loaded' && singleResult && (
-            <div className="mt-6 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
+            <div
+              className={`mt-6 grid grid-cols-2 sm:grid-cols-4 gap-4 ${
+                singleResult.early_exercise_premium !== null ? 'lg:grid-cols-8' : 'lg:grid-cols-7'
+              }`}
+            >
               {/* Theoretical Price */}
               <div className="space-y-1">
-                <GreekLabel label="Price" tooltipKey="theoretical_price" />
+                <GreekLabel
+                  label="Price"
+                  tooltipKey="theoretical_price"
+                  tooltip={PRICE_TOOLTIPS[singleResult.model]}
+                />
                 <div className="text-lg font-bold tabular-nums">
                   {fmtPrice(singleResult.theoretical_price)}
                 </div>
@@ -908,10 +1040,23 @@ export default function OptionsPage() {
                   {fmtGreek(singleResult.rho)}
                 </div>
               </div>
+
+              {/* Early exercise premium (binomial only) */}
+              {singleResult.early_exercise_premium !== null && (
+                <div className="space-y-1">
+                  <GreekLabel label="Early exercise" tooltipKey="early_exercise" />
+                  <div className="text-lg font-bold tabular-nums">
+                    {fmtPremium(singleResult.early_exercise_premium)}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </CardContent>
       </Card>
+
+      {/* Contextual Help */}
+      <HelpButton pageTitle="Options Calculator" items={OPTIONS_HELP} />
     </div>
   )
 }
