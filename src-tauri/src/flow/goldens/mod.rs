@@ -33,6 +33,8 @@ struct Tally {
     not_built: BTreeMap<String, usize>,
     needs: BTreeMap<String, usize>,
     evidence_only: usize,
+    /// Scenarios this app decides differently by design, by reason.
+    not_applicable: BTreeMap<&'static str, Vec<String>>,
     failed: Vec<(String, Vec<String>)>,
 }
 
@@ -51,18 +53,25 @@ async fn replay_family(family: &str) {
             Verdict::NotBuilt(ty) => *t.not_built.entry(ty).or_default() += 1,
             Verdict::NeedsHook(h) => *t.needs.entry(h.to_string()).or_default() += 1,
             Verdict::EvidenceOnly => t.evidence_only += 1,
+            Verdict::NotApplicable(why) => {
+                t.not_applicable.entry(why).or_default().push(g.name.clone())
+            }
             Verdict::Failed(d) => t.failed.push((g.name.clone(), d)),
         }
     }
     let not_built: usize = t.not_built.values().sum();
+    let not_applicable: usize = t.not_applicable.values().map(Vec::len).sum();
     eprintln!(
-        "goldens {family}: {} total, replayed {}, matched {}, not built {not_built}, needs a hook {}, web evidence only {}",
+        "goldens {family}: {} total, replayed {}, matched {}, not built {not_built}, needs a hook {}, web evidence only {}, not applicable here {not_applicable}",
         t.total,
         t.matched + t.failed.len(),
         t.matched,
         t.needs.values().sum::<usize>(),
         t.evidence_only
     );
+    for (why, names) in &t.not_applicable {
+        eprintln!("  not applicable ({why}): {}", names.join(", "));
+    }
     if not_built > 0 {
         let types: Vec<String> = t
             .not_built

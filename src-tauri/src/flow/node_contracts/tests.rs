@@ -173,6 +173,17 @@ fn derivative_segments_carry_and_cash_and_index_stay_intraday() {
     }
 }
 
+/// WP8 (this app): the US venues are cash segments whose carry product is
+/// CNC, the spec's default; the web's rule for its own exchanges is kept.
+#[test]
+fn us_exchanges_default_to_cnc() {
+    for exchange in ["NASDAQ", "NYSE", "AMEX", "ARCA", "BATS", "OTC", "US", "nasdaq", " NYSE "] {
+        assert_eq!(default_product_for_exchange(Some(exchange)), "CNC", "{exchange}");
+    }
+    assert_eq!(default_product_for_exchange(Some("NFO")), "NRML");
+    assert_eq!(default_product_for_exchange(Some("NSE")), "MIS");
+}
+
 #[test]
 fn the_exchange_is_read_case_and_space_insensitively() {
     for value in ["nfo", " NFO ", "NfO"] {

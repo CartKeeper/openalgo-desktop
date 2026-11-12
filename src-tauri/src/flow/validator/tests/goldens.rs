@@ -44,7 +44,7 @@ pub(super) fn checked_answer(
     let case = web_case(name);
     let errors = validate_workflow(&case["payload"], self::level(level));
     assert_eq!(
-        serde_json::to_value(&errors).unwrap(),
+        as_the_web_lists(serde_json::to_value(&errors).unwrap()),
         case["levels"][level]["errors"],
         "{name} ({level}) differs from the web"
     );
@@ -59,6 +59,30 @@ pub(super) fn web_trigger_config_fields() -> Vec<&'static str> {
         .iter()
         .map(|f| f.as_str().unwrap())
         .collect()
+}
+
+/// This app accepts the web's exchanges and its own US venues
+/// (`flow::support::US_EXCHANGES`), so an exchange refusal's `expected`
+/// list is the web's with the US venues among it; the web recorded its
+/// own. The desktop's errors are compared with the US venues set aside.
+fn as_the_web_lists(errors: Value) -> Value {
+    let us = crate::flow::support::US_EXCHANGES;
+    let mut desktop: Vec<&str> = crate::flow::support::FLOW_EXCHANGES.to_vec();
+    desktop.sort_unstable();
+    let Value::Array(mut list) = errors else {
+        return errors;
+    };
+    for error in list.iter_mut() {
+        let Some(expected) = error.get_mut("expected").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        let same = expected.len() == desktop.len()
+            && expected.iter().zip(&desktop).all(|(e, d)| e.as_str() == Some(d));
+        if same {
+            expected.retain(|e| !e.as_str().is_some_and(|e| us.contains(&e)));
+        }
+    }
+    Value::Array(list)
 }
 
 fn level(name: &str) -> ValidateOptions {
@@ -97,7 +121,7 @@ fn every_error_is_the_webs_error_in_the_webs_order() {
         let name = case["name"].as_str().unwrap();
         for (level_name, result) in case["levels"].as_object().unwrap() {
             let got = validate_workflow(&case["payload"], level(level_name));
-            let got = serde_json::to_value(&got).unwrap();
+            let got = as_the_web_lists(serde_json::to_value(&got).unwrap());
             let got = got.as_array().unwrap();
             if let Some(raised) = result.get("raises") {
                 // The web answers a 500 here; the desktop answers errors.

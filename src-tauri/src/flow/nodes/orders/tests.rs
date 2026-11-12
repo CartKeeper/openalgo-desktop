@@ -71,11 +71,13 @@ async fn the_first_bad_field_is_reported_and_nothing_is_sent() {
             json!({"symbol": "sbin", "exchange": "XX", "action": "HOLD", "quantity": 0}),
         )
         .await;
+    // The accepted list is this app's: the web's exchanges and its US venues,
+    // sorted (the web's own message began "BCD, BFO,").
     assert!(errors[0]["message"]
         .as_str()
         .unwrap_or_default()
         .starts_with(
-            "Place order has invalid runtime order data: exchange must be one of BCD, BFO,"
+            "Place order has invalid runtime order data: exchange must be one of AMEX, ARCA, BATS, BCD, BFO,"
         ));
     assert!(run.calls().is_empty());
     let run = Run::new();

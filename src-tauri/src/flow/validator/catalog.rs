@@ -2,8 +2,8 @@
 //! them trigger, branch or only decorate, the fields each needs, and the
 //! constants an order field may hold. Copied from the module-level constants
 //! of the web's `services/flow_workflow_validator.py`, in its order; the
-//! order constants themselves come from `brokers::common::mapping`, the
-//! desktop's one copy of `docs/prompt/order-constants.md`.
+//! order constants themselves come from `flow::support::mapping`, the web's
+//! exchanges followed by this app's US venues.
 
 use crate::flow::support::mapping::{Action, Exchange, PriceType, Product};
 

@@ -34,7 +34,7 @@ pub use reply::Reply;
 
 /// Every exchange a Flow node may name: upstream's list (OpenAlgo web's
 /// `VALID_EXCHANGES`, in its order, so a workflow exported from the web
-/// imports unchanged).
+/// imports unchanged) followed by this app's US venues.
 pub const FLOW_EXCHANGES: &[&str] = &[
     "NSE",
     "NFO",
@@ -50,7 +50,18 @@ pub const FLOW_EXCHANGES: &[&str] = &[
     "MCX_INDEX",
     "GLOBAL_INDEX",
     "CRYPTO",
+    "NYSE",
+    "NASDAQ",
+    "AMEX",
+    "ARCA",
+    "BATS",
+    "OTC",
+    "US",
 ];
+
+/// This app's US venues (the tail of [`FLOW_EXCHANGES`]): cash segments
+/// whose default product is `CNC`.
+pub const US_EXCHANGES: &[&str] = &["NYSE", "NASDAQ", "AMEX", "ARCA", "BATS", "OTC", "US"];
 
 /// What a broker-backed call answers while no broker is logged in
 /// (upstream's `strategy::dispatch::NO_BROKER_SESSION`).
@@ -62,8 +73,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_exchange_list_starts_with_upstreams_in_its_order() {
+    fn the_exchange_list_is_upstreams_followed_by_the_us_venues() {
         assert_eq!(&FLOW_EXCHANGES[..14], &["NSE", "NFO", "CDS", "BSE", "BFO", "BCD", "MCX", "NCDEX", "NCO", "NSE_INDEX", "BSE_INDEX", "MCX_INDEX", "GLOBAL_INDEX", "CRYPTO"]);
+        assert_eq!(&FLOW_EXCHANGES[14..], US_EXCHANGES);
         assert!(!FLOW_EXCHANGES.contains(&"XYZ"));
     }
 }

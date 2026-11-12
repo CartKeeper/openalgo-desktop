@@ -10,6 +10,7 @@
 //! | `rules` | rules the web's tests leave unpinned, and the desktop's fixes |
 //! | `py_values` | Python's `repr`, `float()`, `int()` and `==` over JSON values |
 //! | `editor_parity` | the web's tests over the editor's sources and the import-format doc (ignored until carried) |
+//! | `us_exchanges` | this app's US venues validate; an unknown exchange is refused with the accepted list |
 
 mod branches;
 mod editor_parity;
@@ -18,6 +19,7 @@ mod goldens;
 mod ordering;
 mod py_values;
 mod rules;
+mod us_exchanges;
 mod web_regressions;
 mod web_validator;
 

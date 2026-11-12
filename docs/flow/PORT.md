@@ -278,6 +278,28 @@ an_exchange_without_hours_uses_the_default}` and
   order with its id, the token gate, the no-broker cause) and
   `nodes/internal.rs` (the strike refusal, a flat and a held scoped close).
 
+## Task A5: US exchanges and the `CNC` default
+
+- `flow::support::FLOW_EXCHANGES` is the web's fourteen exchanges in the
+  web's order followed by `US_EXCHANGES` (`NYSE, NASDAQ, AMEX, ARCA, BATS,
+  OTC, US`); `flow::support::mapping::Exchange` has the same variants
+  (`is_us()`, and `is_cash()` includes them). Every node that checks an
+  exchange (`placeOrder`, `basketOrder`, the option nodes, the margin
+  basket) and the validator's `Vocabulary::Exchange` read that one list.
+- `node_contracts::default_product_for_exchange`: `NRML` on the web's
+  derivative segments (unchanged), `CNC` on the US venues (the spec's
+  default), `MIS` elsewhere (unchanged).
+- A refusal's accepted list is this app's (sorted, so it begins `AMEX,
+  ARCA, BATS, BCD, ...`). The web recorded its own fourteen, so the
+  validator goldens (`validator/tests/goldens.rs::as_the_web_lists`) and
+  the behaviour goldens (`goldens/replay.rs::as_the_web_lists`) compare the
+  desktop's list with the US venues set aside; the carried orders test
+  expects this app's list.
+- Goldens the web recorded as refusals of a US venue (`got 'NASDAQ'`,
+  `got 'NYSE'`) are this app's accepted path by design: the replay reports
+  them `not applicable here` with the reason, per family (see
+  `docs/flow/parity.md`).
+
 ### `indicators_lib` in this app
 
 - `discovery.rs`, `scan.rs` and `outcome.rs` (the Agent's tools) are

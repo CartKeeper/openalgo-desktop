@@ -1,6 +1,6 @@
 //! Loading a golden, running it on the desktop, and collecting what happened.
 
-use super::compare::{diff, diff_logs};
+use super::compare::{diff as diff_raw, diff_logs as diff_logs_raw};
 use super::env::GoldenEnv;
 use crate::clock::ManualClock;
 use crate::flow::contract::client::fake::FakeFlowClient;
@@ -62,6 +62,73 @@ pub enum Verdict {
     /// The web's behaviour on something the desktop client never does
     /// (a service that raises, parity CL-26): recorded, not replayed.
     EvidenceOnly,
+    /// A scenario this app decides differently by design (the web refusing
+    /// a US venue this app accepts): recorded, not replayed; the reason is
+    /// the parity table's.
+    NotApplicable(&'static str),
+}
+
+/// The accepted-exchange list as this app writes it in a refusal (sorted,
+/// the US venues among the web's) and as the web wrote it: the desktop's
+/// strings are compared with the US venues set aside, as the validator
+/// goldens are.
+fn exchange_lists() -> (String, String) {
+    let mut desktop: Vec<&str> = crate::flow::support::FLOW_EXCHANGES.to_vec();
+    desktop.sort_unstable();
+    let web: Vec<&str> = desktop
+        .iter()
+        .copied()
+        .filter(|e| !crate::flow::support::US_EXCHANGES.contains(e))
+        .collect();
+    (desktop.join(", "), web.join(", "))
+}
+
+fn as_the_web_lists_text(text: &str) -> String {
+    let (desktop, web) = exchange_lists();
+    text.replace(&desktop, &web)
+}
+
+/// Every string in `v` with the desktop's accepted-exchange list written as
+/// the web's.
+fn as_the_web_lists(v: &Value) -> Value {
+    match v {
+        Value::String(s) => Value::String(as_the_web_lists_text(s)),
+        Value::Array(a) => Value::Array(a.iter().map(as_the_web_lists).collect()),
+        Value::Object(m) => Value::Object(
+            m.iter()
+                .map(|(k, x)| (k.clone(), as_the_web_lists(x)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// `compare::diff` over the desktop's value with its exchange list written
+/// as the web's.
+fn diff(want: &Value, got: &Value, path: &str, out: &mut Vec<String>) {
+    diff_raw(want, &as_the_web_lists(got), path, out)
+}
+
+/// `compare::diff_logs`, the same way.
+fn diff_logs(want: &Value, got: &[(String, String)], out: &mut Vec<String>) {
+    let got: Vec<(String, String)> = got
+        .iter()
+        .map(|(level, message)| (level.clone(), as_the_web_lists_text(message)))
+        .collect();
+    diff_logs_raw(want, &got, out)
+}
+
+/// The web refused a venue this app accepts (`flow::support::US_EXCHANGES`):
+/// the recorded run stops at the exchange check where this app's goes on.
+fn refuses_a_us_venue(v: &Value) -> bool {
+    let pattern = regex::Regex::new(r"exchange must be one of [A-Z_, ]+, got '([A-Z]+)'").unwrap();
+    let text = v["expected"].to_string();
+    for found in pattern.captures_iter(&text) {
+        if crate::flow::support::US_EXCHANGES.contains(&&found[1]) {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn load_all() -> Vec<Golden> {
@@ -234,6 +301,9 @@ pub async fn replay(g: &Golden) -> Verdict {
     let script = script_of(v);
     if script.iter().any(|(_, r)| r.get("$raise").is_some()) {
         return Verdict::EvidenceOnly;
+    }
+    if refuses_a_us_venue(v) {
+        return Verdict::NotApplicable("the web refuses a US venue this app accepts");
     }
     if let Some(h) = missing_hook(v, &ts) {
         return Verdict::NeedsHook(h);

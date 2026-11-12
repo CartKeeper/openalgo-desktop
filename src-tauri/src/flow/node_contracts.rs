@@ -35,9 +35,10 @@ pub const VALID_EXPIRY_TYPES: [&str; 4] =
 
 /// Segments that trade contracts carried on margin rather than cash-settled
 /// holdings. A position in one of these is normally taken NRML, so that is
-/// what a node defaults to when its author never picked a product; MIS is
-/// the default everywhere else. Index pseudo-exchanges are absent because no
-/// order is ever placed on them, and so is CRYPTO, as on the web.
+/// what a node defaults to when its author never picked a product; CNC on
+/// this app's US venues (`flow::support::US_EXCHANGES`); MIS is the default
+/// everywhere else. Index pseudo-exchanges are absent because no order is
+/// ever placed on them, and so is CRYPTO, as on the web.
 pub const DERIVATIVE_EXCHANGES: [&str; 7] = ["BCD", "BFO", "CDS", "MCX", "NCDEX", "NCO", "NFO"];
 
 /// The price monitor's own conditions, and the editor's spellings it accepts
@@ -103,6 +104,9 @@ pub fn default_product_for_exchange(exchange: Option<&str>) -> &'static str {
     let segment = crate::flow::validator::py::strip(exchange.unwrap_or_default()).to_uppercase();
     if DERIVATIVE_EXCHANGES.contains(&segment.as_str()) {
         "NRML"
+    } else if crate::flow::support::US_EXCHANGES.contains(&segment.as_str()) {
+        // This app's venues: whole shares held, `CNC` (the spec's default).
+        "CNC"
     } else {
         "MIS"
     }

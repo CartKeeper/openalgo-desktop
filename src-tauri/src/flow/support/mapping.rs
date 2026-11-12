@@ -80,7 +80,7 @@ macro_rules! oa_enum {
 }
 
 oa_enum!(
-    /// OpenAlgo exchange codes.
+    /// OpenAlgo exchange codes: the web's, then this app's US venues.
     Exchange, "exchange", {
         Nse => "NSE",
         Nfo => "NFO",
@@ -96,6 +96,13 @@ oa_enum!(
         McxIndex => "MCX_INDEX",
         GlobalIndex => "GLOBAL_INDEX",
         Crypto => "CRYPTO",
+        Nyse => "NYSE",
+        Nasdaq => "NASDAQ",
+        Amex => "AMEX",
+        Arca => "ARCA",
+        Bats => "BATS",
+        Otc => "OTC",
+        Us => "US",
     }
 );
 
@@ -125,7 +132,21 @@ impl Exchange {
 
     /// Cash segments, where the carry product is `CNC`.
     pub fn is_cash(self) -> bool {
-        matches!(self, Exchange::Nse | Exchange::Bse)
+        matches!(self, Exchange::Nse | Exchange::Bse) || self.is_us()
+    }
+
+    /// This app's US venues.
+    pub fn is_us(self) -> bool {
+        matches!(
+            self,
+            Exchange::Nyse
+                | Exchange::Nasdaq
+                | Exchange::Amex
+                | Exchange::Arca
+                | Exchange::Bats
+                | Exchange::Otc
+                | Exchange::Us
+        )
     }
 }
 
@@ -205,8 +226,9 @@ mod tests {
             assert_eq!(p.as_str().parse::<Product>().unwrap(), *p);
         }
         assert!("nse".parse::<Exchange>().is_err());
-        assert_eq!(serde_json::to_string(&Exchange::Nse).unwrap(), "\"NSE\"");
+        assert_eq!(serde_json::to_string(&Exchange::Nasdaq).unwrap(), "\"NASDAQ\"");
         assert!(Exchange::Nse.is_cash());
+        assert!(Exchange::Nasdaq.is_cash() && Exchange::Nasdaq.is_us());
         assert!(!Exchange::Nfo.is_cash() && Exchange::Nfo.is_derivative());
     }
 
