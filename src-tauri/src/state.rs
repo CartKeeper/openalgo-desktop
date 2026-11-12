@@ -1,14 +1,20 @@
 //! Application state management
 
 use crate::brokers::BrokerRegistry;
+use crate::clock::{Clock, SystemClock};
 use crate::db::duckdb::DuckDb;
 use crate::db::sqlite::SqliteDb;
 use crate::error::{AppError, Result};
+use crate::events::{self, OrderUpdates};
+use crate::flow::support::symbols::SymbolStore;
+use crate::flow::FlowModule;
 use crate::security::SecurityManager;
 use crate::websocket::WebSocketManager;
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use reqwest::Client;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
@@ -84,6 +90,23 @@ pub struct AppState {
 
     /// Application data directory
     pub data_dir: PathBuf,
+
+    /// The clock everything that depends on wall time reads (a manual
+    /// clock in tests).
+    pub clock: Arc<dyn Clock>,
+
+    /// Flow: the workflows' runs, triggers and node services.
+    pub flow: Arc<FlowModule>,
+
+    /// The master contract as Flow reads it (filled with the symbol cache).
+    pub symbols: SymbolStore,
+
+    /// The per-process credential Flow's in-process `/api/v1` calls carry
+    /// (32 random bytes, hex); never logged, never stored.
+    pub internal_token: String,
+
+    /// Order updates for Flow's order-update triggers.
+    pub order_updates: OrderUpdates,
 }
 
 impl AppState {
@@ -132,7 +155,51 @@ impl AppState {
             symbol_reverse_cache: DashMap::new(),
             http_client,
             data_dir,
+            clock: Arc::new(SystemClock),
+            flow: Arc::new(FlowModule::new()),
+            symbols: SymbolStore::new(),
+            internal_token: new_internal_token(),
+            order_updates: events::channel(),
         })
+    }
+
+    /// Now, by the app's clock.
+    pub fn now(&self) -> DateTime<Utc> {
+        self.clock.now()
+    }
+
+    /// Run synchronous database work on the blocking pool, so a slow query
+    /// never holds an async worker.
+    pub async fn blocking<T, F>(self: &Arc<Self>, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&AppState) -> Result<T> + Send + 'static,
+    {
+        let ctx = self.clone();
+        tokio::task::spawn_blocking(move || f(&ctx))
+            .await
+            .map_err(|e| AppError::Internal(format!("Blocking task failed: {}", e)))?
+    }
+
+    /// Spawn a background task on the app's async runtime.
+    pub fn spawn<F>(&self, fut: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::spawn(fut);
+        } else {
+            tauri::async_runtime::spawn(fut);
+        }
+    }
+
+    /// When the trading session turns (hour, minute in market time): the
+    /// auto-logout time, 03:00 when it cannot be read.
+    pub fn session_boundary(&self) -> (u32, u32) {
+        match self.sqlite.get_auto_logout_config() {
+            Ok(c) => (c.hour.min(23), c.minute.min(59)),
+            Err(_) => (3, 0),
+        }
     }
 
     /// Check if user is authenticated
@@ -204,6 +271,7 @@ impl AppState {
     pub fn load_symbol_cache(&self, symbols: Vec<SymbolInfo>) {
         self.symbol_cache.clear();
         self.symbol_reverse_cache.clear();
+        self.symbols.load_infos(symbols.iter());
 
         for symbol in symbols {
             let cache_key = format!("{}:{}", symbol.exchange, symbol.token);
@@ -223,4 +291,10 @@ impl AppState {
             .map(|entry| entry.value().clone())
             .collect()
     }
+}
+
+/// A fresh internal token: 32 random bytes as hex.
+fn new_internal_token() -> String {
+    let bytes: [u8; 32] = rand::random();
+    hex::encode(bytes)
 }

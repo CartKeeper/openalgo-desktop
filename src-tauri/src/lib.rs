@@ -19,6 +19,10 @@ pub mod importers;
 // [wp-anchor] WP2 analytics
 //
 // [wp-anchor] WP8 flow
+pub mod clock;
+pub mod events;
+pub mod flow;
+pub mod indicators_lib;
 //
 
 use scheduler::{AutoLogoutScheduler, AlertMonitor};

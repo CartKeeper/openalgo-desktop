@@ -78,6 +78,12 @@ impl SqliteDb {
         migrations::run_migrations(&conn)
     }
 
+    /// The connection, for a module that runs its own statements (Flow's
+    /// store). The guard holds the database lock: drop it before any await.
+    pub fn conn(&self) -> Result<parking_lot::MutexGuard<'_, Connection>> {
+        Ok(self.conn.lock())
+    }
+
     // ========== User Methods ==========
 
     /// Verify user credentials
