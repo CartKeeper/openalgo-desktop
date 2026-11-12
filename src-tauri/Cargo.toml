@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "OpenAlgo Desktop - Algorithmic Trading Platform"
 authors = ["OpenAlgo"]
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.89"
 
 [lib]
 name = "openalgo_desktop_lib"
@@ -80,6 +80,10 @@ uuid = { version = "1.8", features = ["v4"] }
 ta = "0.5"
 statrs = "0.17"
 # [wp-anchor] WP5 deps
+# American option pricing (binomial lattice); the facade's `pricing` feature pulls
+# only optionstratlib-core/-math/-pricing. Requires rustc 1.89 (edition 2024).
+optionstratlib = { version = "0.24.3", default-features = false, features = ["pricing"] }
+rust_decimal = "1"
 #
 # [wp-anchor] WP6 deps
 #
