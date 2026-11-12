@@ -46,6 +46,8 @@ import type {
 import { ACCOUNT_TYPES } from '@/types/clients'
 import { useAccountStore } from '@/stores/accountStore'
 import { AccountSwitcher } from '@/components/AccountSwitcher'
+import { LotsTable } from '@/components/clients/LotsTable'
+import { PerformanceCard } from '@/components/clients/PerformanceCard'
 import ImportCsvDialog, { ComplianceTable } from './ImportCsvDialog'
 
 function errMsg(err: unknown): string {
@@ -563,6 +565,8 @@ export default function ClientDetail() {
           <TabsTrigger value="compliance">
             Compliance{unresolvedViolationCount > 0 ? ` (${unresolvedViolationCount})` : ''}
           </TabsTrigger>
+          <TabsTrigger value="performance">Performance</TabsTrigger>
+          <TabsTrigger value="lots">Lots</TabsTrigger>
         </TabsList>
 
         {/* Positions Tab */}
@@ -945,6 +949,16 @@ export default function ClientDetail() {
               />
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Performance Tab — time- and money-weighted returns (WP2) */}
+        <TabsContent value="performance">
+          <PerformanceCard clientId={clientId} />
+        </TabsContent>
+
+        {/* Lots Tab — tax lots under FIFO/LIFO/HIFO/average (WP2) */}
+        <TabsContent value="lots">
+          <LotsTable clientId={clientId} />
         </TabsContent>
       </Tabs>
 
