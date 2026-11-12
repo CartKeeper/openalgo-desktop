@@ -32,6 +32,9 @@ import {
 // Types
 // ---------------------------------------------------------------------------
 
+/** Pricing model accepted by the `compute_greeks*` commands. */
+type PricingModel = 'black_scholes' | 'binomial'
+
 interface OptionGreeksResult {
   strike: number
   expiry: string
@@ -43,6 +46,9 @@ interface OptionGreeksResult {
   theta: number
   vega: number
   rho: number
+  model: PricingModel
+  /** Binomial only: price minus the European price of the same lattice. */
+  early_exercise_premium: number | null
 }
 
 interface ChainParams {
@@ -171,6 +177,9 @@ export default function OptionsPage() {
     strikeStep: '5',
   })
 
+  // Pricing model shared by the chain and the single-option calculator
+  const [pricingModel] = useState<PricingModel>('black_scholes')
+
   // Chain data
   const [chainState, setChainState] = useState<ChainState>('idle')
   const [chainError, setChainError] = useState('')
@@ -247,12 +256,14 @@ export default function OptionsPage() {
     setChainError('')
 
     try {
+      // Tauri reads command arguments by their camelCase names.
       const results = await invoke<OptionGreeksResult[]>('compute_greeks_batch', {
-        spot_price: spotPrice,
+        spotPrice,
         strikes: generatedStrikes,
-        expiry_days: expiryDays,
-        risk_free_rate: riskFreeRate,
-        volatility: volatility,
+        expiryDays,
+        riskFreeRate,
+        volatility,
+        model: pricingModel,
       })
 
       // Split results into calls and puts
@@ -281,7 +292,7 @@ export default function OptionsPage() {
       setChainState('error')
       toast.error('Failed to compute options chain')
     }
-  }, [chainParams, generateStrikes])
+  }, [chainParams, generateStrikes, pricingModel])
 
   // ---------------------------
   // Single option calculation
@@ -316,14 +327,16 @@ export default function OptionsPage() {
     setSingleError('')
 
     try {
+      // Tauri reads command arguments by their camelCase names.
       const result = await invoke<OptionGreeksResult>('compute_greeks', {
-        spot_price: spotPrice,
-        strike: strike,
-        expiry_days: expiryDays,
-        risk_free_rate: riskFreeRate,
-        volatility: volatility,
-        is_call: singleParams.optionType === 'call',
-        market_price: marketPrice,
+        spotPrice,
+        strike,
+        expiryDays,
+        riskFreeRate,
+        volatility,
+        isCall: singleParams.optionType === 'call',
+        marketPrice,
+        model: pricingModel,
       })
 
       setSingleResult(result)
@@ -334,7 +347,7 @@ export default function OptionsPage() {
       setSingleState('error')
       toast.error('Failed to compute Greeks')
     }
-  }, [chainParams, singleParams])
+  }, [chainParams, singleParams, pricingModel])
 
   // ---------------------------
   // Helpers for chain rendering
