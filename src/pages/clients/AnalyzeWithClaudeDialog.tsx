@@ -73,12 +73,12 @@ const HELP_ITEMS: Array<{ title: string; description: string }> = [
   {
     title: 'Run full analysis',
     description:
-      'A staged analysis of this scenario. The app first builds a dossier (positions, live prices, fundamentals, headlines, sector and macro data); Claude then works through four analysts, a bull case, a bear case, a research manager, a risk panel and a portfolio manager. It takes several minutes and about nine Claude calls.',
+      'A staged analysis of this scenario. The app first builds a dossier (positions, live prices, fundamentals, headlines, sector and macro data); Claude then works through four analysts, a bull case, a bear case, a research manager, a risk panel and a portfolio manager. It takes several minutes, about nine Claude calls and roughly a hundred market-data calls (FMP, FRED, Yahoo). Closing this dialog does not stop a run; reopen it to see the stages or the report.',
   },
   {
     title: 'The stages',
     description:
-      'Dossier, Analysts, Bull case, Bear case, Research manager, Risk panel, Portfolio manager, Checks, Report. The list above the input shows each stage as it runs; a stage that fails is marked, and the error names it. Nothing is lost from earlier stages.',
+      'Dossier, Analysts, Bull case, Bear case, Research manager, Risk panel, Portfolio manager, Checks, Report. The list above the input shows each stage as it runs. A stage that fails is marked and the error names it; stages already finished stay marked done, and there is no partial report, so start the run again.',
   },
   {
     title: 'Focus',
@@ -147,6 +147,9 @@ export default function AnalyzeWithClaudeDialog({
   // The staged "Run full analysis": its stage list while it runs (or after it failed).
   const [stages, setStages] = useState<StageRow[] | null>(null)
   const [isRunningFull, setIsRunningFull] = useState(false)
+  // Mirrors isRunningFull for the close effect, which must not re-run when a
+  // run ends while the dialog is closed (that would discard the report).
+  const runningFullRef = useRef(false)
   const [isSaving, setIsSaving] = useState(false)
   const [isGeneratingBrief, setIsGeneratingBrief] = useState(false)
   const [isConfigured, setIsConfigured] = useState<boolean | null>(null)
@@ -160,15 +163,19 @@ export default function AnalyzeWithClaudeDialog({
 
   useEffect(() => {
     if (!open) {
-      setMessages([])
-      setConversationHistory([])
-      setInputValue('')
-      setStages(null)
       // Flush any in-flight review so the items don't bleed into other
       // ActionReviewModal hosts (briefing, copilot, reports) on next navigation.
       if (useActionQueueStore.getState().isReviewOpen) {
         useActionQueueStore.getState().close()
       }
+      // A full analysis keeps running after the dialog closes (it cannot be
+      // cancelled); keep its request, stage list and eventual report so that
+      // reopening shows them. Everything else resets as before.
+      if (runningFullRef.current) return
+      setMessages([])
+      setConversationHistory([])
+      setInputValue('')
+      setStages(null)
     }
   }, [open])
 
@@ -258,6 +265,7 @@ export default function AnalyzeWithClaudeDialog({
     setInputValue('')
     setStages(initialStages())
     setIsRunningFull(true)
+    runningFullRef.current = true
 
     let unlisten: (() => void) | undefined
     try {
@@ -278,6 +286,7 @@ export default function AnalyzeWithClaudeDialog({
       toast.error(`Full analysis failed: ${msg}`)
     } finally {
       unlisten?.()
+      runningFullRef.current = false
       setIsRunningFull(false)
     }
   }
