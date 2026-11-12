@@ -15,7 +15,9 @@ import {
   Document,
   Font,
   Page,
+  Path,
   StyleSheet,
+  Svg,
   Text,
   View,
   type DocumentProps,
@@ -31,9 +33,16 @@ import type {
   CodaMovement,
   DiagnosisIssue,
   DiagnosisMovement,
+  DrawdownTable,
   GoldmanBrief,
   GoldmanMovement,
+  HealthCell,
+  HealthMovement,
+  HealthStatus,
   MeasuresMovement,
+  MetricsMovement,
+  MonteCarloLine,
+  MonthlyTable,
   NarrativeMovement,
   PortfolioRow,
   RestructuringMovement,
@@ -254,6 +263,21 @@ const s = StyleSheet.create({
   tickerCell: { fontFamily: FONT.sansBold, color: C.gold, fontSize: 10 },
   plCell: { fontFamily: FONT.serifBold, fontSize: 10, textAlign: 'right' },
 
+  // Metrics and health (comparison report) ---------------------------
+  windowLine: { fontFamily: FONT.serifItalic, fontSize: 9, color: C.muted, paddingBottom: 4 },
+  gridRow: {
+    flexDirection: 'row',
+    borderBottomWidth: 0.6,
+    borderBottomColor: C.goldSoft,
+    paddingVertical: 4,
+  },
+  gridHeaderCell: { fontSize: 6.5, color: C.muted, letterSpacing: 0.8 },
+  gridCell: { fontSize: 8, color: C.ink, lineHeight: 1.3 },
+  thresholdCell: { fontSize: 8.5, color: C.body, lineHeight: 1.3 },
+  cellDetail: { fontFamily: FONT.serifItalic, fontSize: 8, color: C.muted, lineHeight: 1.3, paddingTop: 2, paddingLeft: 14 },
+  legendRow: { flexDirection: 'row', alignItems: 'center', paddingTop: 8 },
+  legendText: { fontSize: 8.5, color: C.muted, paddingRight: 14 },
+
   // Coda checklist ----------------------------------------------------
   checkRow: { flexDirection: 'row', paddingTop: 7, alignItems: 'flex-start' },
   checkBox: {
@@ -291,6 +315,39 @@ function plColor(pl: string): string {
 }
 
 const TICKER = /^[A-Z0-9.-]{1,6}$/
+
+// ----- Metrics formatting (keep in step with scenario_comparison.rs, which prints the same figures for Claude) -----
+
+/** A return fraction as a signed percentage with one decimal: "+12.3%", "-8.1%", "0.0%". Mirrors `signed_pct_text`. */
+const returnPct = (v: number) => {
+  const x = Math.round(v * 1000) / 10
+  return `${x > 0 ? '+' : ''}${x.toFixed(1)}%`
+}
+
+/** A threshold as a signed whole percentage: "-20%", "+10%". Mirrors `signed_whole_pct`. */
+const signedWholePct = (v: number) => {
+  const x = Math.round(v * 100)
+  return `${x > 0 ? '+' : ''}${x}%`
+}
+
+/** A probability as a whole percentage: 0.234 -> "23%". Mirrors `odds_text`. */
+const odds = (p: number) => `${Math.round(p * 100)}%`
+
+/** The Monte Carlo sentence, word for word as `monte_carlo_text` prints it for Claude. */
+function monteCarloText(l: MonteCarloLine): string {
+  return `In ${l.paths.toLocaleString('en-US')} bootstrapped years (${l.horizon_days} trading days each): median ${returnPct(l.p50)}; 5th to 95th percentile ${returnPct(l.p5)} to ${returnPct(l.p95)}; odds of a ${signedWholePct(l.bust_threshold)} drawdown ${odds(l.bust_probability)}; odds of ${signedWholePct(l.goal_threshold)} or better ${odds(l.goal_probability)}.`
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** "2026-03-13" -> "Mar 13, 2026", read from the string so no timezone can shift the day. */
+function isoDate(iso: string): string {
+  const [y, m, d] = iso.split('-').map(Number)
+  return `${MONTHS[m - 1]} ${d}, ${y}`
+}
+
+/** A monthly-grid cell in percent without the sign: "+4.1", "-2.3"; blank outside the window. */
+const monthCell = (v: number | null) => (v === null ? '' : returnPct(v).replace('%', ''))
 
 // ----- Public component -----
 
@@ -408,8 +465,8 @@ function ComparisonPanel({ comparison }: { comparison: BriefComparison }) {
       </Text>
       <View style={s.compareHeaderRow}>
         <View style={s.compareLabelCell} />
-        <SideHeading role="ORIGINAL" name={o.name} style={s.compareValueCell} />
-        <SideHeading role="RECOMMENDED" name={r.name} style={s.compareValueCell} />
+        <SideHeading heading="ORIGINAL" name={o.name} style={s.compareValueCell} />
+        <SideHeading heading="RECOMMENDED" name={r.name} style={s.compareValueCell} />
       </View>
       {rows.map(([label, a, b]) => (
         <View key={label} style={s.compareRow}>
@@ -429,11 +486,11 @@ function ComparisonPanel({ comparison }: { comparison: BriefComparison }) {
   )
 }
 
-/** A portfolio column heading: the role ("ORIGINAL") over the scenario's name. */
-function SideHeading({ role, name, style }: { role: string; name: string; style: ComponentProps<typeof View>["style"] }) {
+/** A portfolio column heading: the column's heading ("ORIGINAL") over the scenario's name. */
+function SideHeading({ heading, name, style }: { heading: string; name: string; style: ComponentProps<typeof View>["style"] }) {
   return (
     <View style={style}>
-      <Text style={s.compareRole}>{role}</Text>
+      <Text style={s.compareRole}>{heading}</Text>
       <Text style={s.compareName}>{name}</Text>
     </View>
   )
@@ -492,6 +549,10 @@ function renderMovement(m: GoldmanMovement) {
       return <ChangesView m={m} />
     case 'measures':
       return <MeasuresView m={m} />
+    case 'metrics':
+      return <MetricsView m={m} />
+    case 'health':
+      return <HealthView m={m} />
   }
 }
 
@@ -764,26 +825,243 @@ function ChangeTable({ heading, rows }: { heading: string; rows: ChangeRow[] }) 
 
 // ----- Measures (comparison report) -----
 
-function MeasuresView({ m }: { m: MeasuresMovement }) {
+/** Label | original | recommended rows under the two portfolio headings. */
+function SideBySideTable({
+  column,
+  originalLabel,
+  recommendedLabel,
+  rows,
+}: {
+  column: string
+  originalLabel: string
+  recommendedLabel: string
+  rows: { label: string; original: string; recommended: string }[]
+}) {
   const widths = ['36%', '32%', '32%']
+  return (
+    <View wrap={false}>
+      <View style={s.tableHeaderRow}>
+        <Text style={[s.tableHeaderCell, { width: widths[0], paddingLeft: 4 }]}>{column}</Text>
+        <SideHeading heading="ORIGINAL" name={originalLabel} style={{ width: widths[1], paddingRight: 10 }} />
+        <SideHeading heading="RECOMMENDED" name={recommendedLabel} style={{ width: widths[2], paddingRight: 10 }} />
+      </View>
+      {rows.map((row) => (
+        <View key={row.label} style={s.tableRow}>
+          <Text style={[s.tableCell, { width: widths[0], paddingLeft: 4, paddingRight: 10 }]}>{row.label}</Text>
+          <Text style={[s.tableCell, { width: widths[1], paddingRight: 10 }]}>{row.original}</Text>
+          <Text style={[s.tableCell, s.checkLead, { width: widths[2], paddingRight: 10 }]}>{row.recommended}</Text>
+        </View>
+      ))}
+    </View>
+  )
+}
+
+function MeasuresView({ m }: { m: MeasuresMovement }) {
   return (
     <View>
       <MovementHeader m={m} />
-      <View wrap={false}>
-        <View style={s.tableHeaderRow}>
-          <Text style={[s.tableHeaderCell, { width: widths[0], paddingLeft: 4 }]}>MEASURE</Text>
-          <SideHeading role="ORIGINAL" name={m.original_label} style={{ width: widths[1], paddingRight: 10 }} />
-          <SideHeading role="RECOMMENDED" name={m.recommended_label} style={{ width: widths[2], paddingRight: 10 }} />
+      <SideBySideTable
+        column="MEASURE"
+        originalLabel={m.original_label}
+        recommendedLabel={m.recommended_label}
+        rows={m.rows}
+      />
+      {m.note && <Text style={s.factNote}>{m.note}</Text>}
+    </View>
+  )
+}
+
+// ----- Metrics (comparison report) -----
+
+function MetricsView({ m }: { m: MetricsMovement }) {
+  return (
+    <View>
+      <MovementHeader m={m} />
+      <Text style={s.windowLine}>{m.window}</Text>
+      {m.rows.length > 0 && (
+        <SideBySideTable
+          column="METRIC"
+          originalLabel={m.original_label}
+          recommendedLabel={m.recommended_label}
+          rows={m.rows}
+        />
+      )}
+      {m.monthly.map((table) => (
+        <MonthlyGrid key={table.label} table={table} />
+      ))}
+      {m.drawdowns.map((table) => (
+        <DrawdownTableView key={table.label} table={table} />
+      ))}
+      {m.monte_carlo.length > 0 && (
+        <View>
+          <Heading>Monte Carlo</Heading>
+          {m.monte_carlo.map((line) => (
+            <Text key={line.label} style={s.paragraph} wrap={false}>
+              <Text style={s.checkLead}>{line.label}.</Text> {monteCarloText(line)}
+            </Text>
+          ))}
+        </View>
+      )}
+      <Text style={s.factNote}>{m.note}</Text>
+    </View>
+  )
+}
+
+/** Year + twelve months + YTD, in percent; a short table that moves to the next page whole. */
+function MonthlyGrid({ table }: { table: MonthlyTable }) {
+  const columns = ['YEAR', ...MONTHS.map((m) => m.toUpperCase()), 'YTD']
+  const width = (i: number) => (i === 0 ? '9%' : i === 13 ? '10%' : '6.75%')
+  const cell = (i: number) => ({
+    width: width(i),
+    paddingLeft: i === 0 ? 4 : 0,
+    paddingRight: 3,
+    textAlign: (i === 0 ? 'left' : 'right') as 'left' | 'right',
+  })
+  return (
+    <View wrap={false}>
+      <Text style={s.h3}>Monthly returns, % — {table.label}</Text>
+      <View style={s.tableHeaderRow}>
+        {columns.map((c, i) => (
+          <Text key={c} style={[s.gridHeaderCell, cell(i)]}>
+            {c}
+          </Text>
+        ))}
+      </View>
+      {table.years.map((y) => (
+        <View key={y.year} style={s.gridRow}>
+          <Text style={[s.gridCell, cell(0)]}>{y.year}</Text>
+          {y.months.map((v, i) => (
+            <Text key={MONTHS[i]} style={[s.gridCell, cell(i + 1), { color: plColor(monthCell(v)) }]}>
+              {monthCell(v)}
+            </Text>
+          ))}
+          <Text style={[s.gridCell, s.checkLead, cell(13), { color: plColor(monthCell(y.ytd)) }]}>
+            {monthCell(y.ytd)}
+          </Text>
+        </View>
+      ))}
+    </View>
+  )
+}
+
+/** The deepest peak-to-recovery episodes, deepest first. */
+function DrawdownTableView({ table }: { table: DrawdownTable }) {
+  const cols: { label: string; width: string; right?: boolean }[] = [
+    { label: 'START', width: '22%' },
+    { label: 'TROUGH', width: '22%' },
+    { label: 'END', width: '26%' },
+    { label: 'DEPTH', width: '16%', right: true },
+    { label: 'DAYS', width: '14%', right: true },
+  ]
+  const cell = (i: number) => ({
+    width: cols[i].width,
+    paddingLeft: i === 0 ? 4 : 0,
+    paddingRight: cols[i].right ? 12 : 8,
+    textAlign: (cols[i].right ? 'right' : 'left') as 'right' | 'left',
+  })
+  return (
+    <View wrap={false}>
+      <Text style={s.h3}>Drawdowns — {table.label}</Text>
+      <View style={s.tableHeaderRow}>
+        {cols.map((c, i) => (
+          <Text key={c.label} style={[s.tableHeaderCell, cell(i)]}>
+            {c.label}
+          </Text>
+        ))}
+      </View>
+      {table.rows.map((r) => (
+        <View key={`${r.start}-${r.trough}`} style={s.tableRow}>
+          <Text style={[s.tableCell, cell(0)]}>{isoDate(r.start)}</Text>
+          <Text style={[s.tableCell, cell(1)]}>{isoDate(r.trough)}</Text>
+          <Text style={[s.tableCell, cell(2)]}>{r.end === null ? 'Not yet recovered' : isoDate(r.end)}</Text>
+          <Text style={[s.plCell, cell(3), { color: plColor(returnPct(r.depth_pct)) }]}>{returnPct(r.depth_pct)}</Text>
+          <Text style={[s.tableCell, cell(4)]}>{r.days}</Text>
+        </View>
+      ))}
+    </View>
+  )
+}
+
+// ----- Health (comparison report) -----
+
+const STATUS_COLOR: Record<HealthStatus, string> = {
+  pass: C.green,
+  warn: C.gold,
+  fail: C.burgundy,
+  na: C.muted,
+}
+
+/** Check, exclamation, cross and dash paths in a 10×10 box. */
+const STATUS_PATH: Record<HealthStatus, string> = {
+  pass: 'M1.5 5.4 L4 7.8 L8.5 2.2',
+  warn: 'M5 1.4 L5 6 M5 7.8 L5 8.6',
+  fail: 'M2 2 L8 8 M8 2 L2 8',
+  na: 'M2 5 L8 5',
+}
+
+const STATUS_WORD: Record<HealthStatus, string> = { pass: 'pass', warn: 'warn', fail: 'fail', na: 'not judged' }
+
+/** A status mark drawn as a path: the built-in PDF fonts have no check or cross glyphs. */
+function StatusGlyph({ status }: { status: HealthStatus }) {
+  return (
+    <Svg width={9} height={9} viewBox="0 0 10 10" style={{ marginTop: 2, marginRight: 5 }}>
+      <Path
+        d={STATUS_PATH[status]}
+        stroke={STATUS_COLOR[status]}
+        strokeWidth={1.6}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </Svg>
+  )
+}
+
+function HealthCellView({ cell, style }: { cell: HealthCell; style: ComponentProps<typeof View>['style'] }) {
+  return (
+    <View style={style}>
+      <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+        <StatusGlyph status={cell.status} />
+        <Text style={[s.tableCell, { flex: 1 }]}>{cell.value_text}</Text>
+      </View>
+      {cell.detail && <Text style={s.cellDetail}>{cell.detail}</Text>}
+    </View>
+  )
+}
+
+function HealthView({ m }: { m: HealthMovement }) {
+  const widths = ['22%', '27%', '27%', '24%']
+  // As in ChangeTable: a short table moves to the next page whole; a long one keeps its
+  // header with its first rows and repeats it at the top of each page it continues onto.
+  const unbreakable = m.rows.length <= 6
+  return (
+    <View>
+      <MovementHeader m={m} />
+      <View wrap={!unbreakable}>
+        <View style={s.tableHeaderRow} minPresenceAhead={unbreakable ? undefined : 60} fixed={!unbreakable}>
+          <Text style={[s.tableHeaderCell, { width: widths[0], paddingLeft: 4 }]}>CHECK</Text>
+          <SideHeading heading="ORIGINAL" name={m.original_label} style={{ width: widths[1], paddingRight: 8 }} />
+          <SideHeading heading="RECOMMENDED" name={m.recommended_label} style={{ width: widths[2], paddingRight: 8 }} />
+          <Text style={[s.tableHeaderCell, { width: widths[3] }]}>THRESHOLD</Text>
         </View>
         {m.rows.map((row) => (
-          <View key={row.label} style={s.tableRow}>
-            <Text style={[s.tableCell, { width: widths[0], paddingLeft: 4, paddingRight: 10 }]}>{row.label}</Text>
-            <Text style={[s.tableCell, { width: widths[1], paddingRight: 10 }]}>{row.original}</Text>
-            <Text style={[s.tableCell, s.checkLead, { width: widths[2], paddingRight: 10 }]}>{row.recommended}</Text>
+          <View key={row.key} style={s.tableRow} wrap={false}>
+            <Text style={[s.tableCell, s.checkLead, { width: widths[0], paddingLeft: 4, paddingRight: 8 }]}>{row.title}</Text>
+            <HealthCellView cell={row.original} style={{ width: widths[1], paddingRight: 8 }} />
+            <HealthCellView cell={row.recommended} style={{ width: widths[2], paddingRight: 8 }} />
+            <Text style={[s.thresholdCell, { width: widths[3] }]}>{row.threshold}</Text>
           </View>
         ))}
       </View>
-      {m.note && <Text style={s.factNote}>{m.note}</Text>}
+      <View style={s.legendRow} wrap={false}>
+        {(['pass', 'warn', 'fail', 'na'] as HealthStatus[]).map((status) => (
+          <View key={status} style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+            <StatusGlyph status={status} />
+            <Text style={s.legendText}>{STATUS_WORD[status]}</Text>
+          </View>
+        ))}
+      </View>
+      <Text style={s.factNote}>{m.note}</Text>
     </View>
   )
 }
