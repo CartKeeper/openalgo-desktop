@@ -28,6 +28,7 @@ pub mod backtest;
 pub mod chart_preferences;
 //
 // [wp-anchor] WP2 analytics
+pub mod allocation_targets;
 //
 
 pub use reports::{ResearchReport, ResearchReportSummary, ReportNote};
