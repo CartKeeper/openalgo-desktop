@@ -4,6 +4,8 @@
 import { ArrowLeft } from 'lucide-react'
 import { Link } from 'react-router'
 import { Button } from '@/components/ui/button'
+import { HelpButton } from '@/components/HelpButton'
+import { FLOW_SHORTCUTS_HELP } from './flowHelp'
 
 interface ShortcutItem {
   keys: string[]
@@ -79,6 +81,7 @@ function KeyBadge({ children }: { children: React.ReactNode }) {
 export default function FlowKeyboardShortcuts() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-8">
+      <HelpButton items={FLOW_SHORTCUTS_HELP} pageTitle="Keyboard Shortcuts" />
       <div className="mb-8 flex items-center gap-4">
         <Button variant="ghost" size="icon" asChild aria-label="Back to flows list">
           <Link to="/flow">

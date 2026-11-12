@@ -40,6 +40,7 @@ import {
 } from '@/api/flow'
 // Desktop: webhook URLs on the tunnel's address, and the note when they are local.
 import { getWebhookInfoForTrader } from '@/api/flowDesktop'
+import { HelpButton } from '@/components/HelpButton'
 import {
   DeleteWorkflowDialog,
   RegenerateWebhookDialog,
@@ -69,6 +70,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { listDate } from '@/lib/flow/listDate'
 import { cn } from '@/lib/utils'
 import { showToast } from '@/utils/toast'
+import { FLOW_INDEX_HELP } from './flowHelp'
 
 function StatusIcon({ status }: { status: string | null }) {
   switch (status) {
@@ -681,6 +683,7 @@ export default function FlowIndex() {
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
+      <HelpButton items={FLOW_INDEX_HELP} pageTitle="Flow" />
       <div className="mb-8 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Flow Editor</h1>

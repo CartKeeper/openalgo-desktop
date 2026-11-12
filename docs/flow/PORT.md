@@ -560,3 +560,71 @@ those files.
   "Ignored until the frontend arrives (Phase B)" is therefore resolved; that
   file is outside Phase B's list and was not edited (Phase D owns its final
   table).
+
+### Task B3: routes, the sidebar entry and help
+
+- `src/App.tsx`: `/flow` (the list) and `/flow/shortcuts` under `Layout`,
+  `/flow/editor/:id` under `FullWidthLayout` (no navbar: the canvas has the
+  viewport, and the editor's own header carries the account controls), as
+  upstream mounts them; lazy pages like every other route.
+- `src/config/navigation.ts`: `{ href: '/flow', label: 'Flow', icon:
+  Workflow }` in the Strategy group for every region, and `isActiveRoute`
+  keeps `/flow` lit on `/flow/editor/:id` and `/flow/shortcuts` (exact
+  `/flow` or a `/flow/` prefix), as the Strategies entry does on its nested
+  pages. `src/config/navigation.test.ts` gains a `describe` for both; its
+  three stale assertions are the base branch's and were left alone.
+- Help: `src/pages/flow/flowHelp.ts` (new) holds the three pages' items for
+  the app's shared `HelpButton` (`src/components/HelpButton.tsx`, the
+  floating trigger every page has), adapted from upstream's user guide
+  chapter 21 in this app's words (AAPL on NASDAQ, whole shares, CNC on US
+  venues, Eastern time and the 9:30 AM to 4:00 PM ET session, the Sandbox
+  page, the Ngrok/Public URL setting). `src/pages/flow/flowHelp.test.tsx`
+  renders each page and reads the panel.
+- The help says only what this branch does. Two facts shaped it: the
+  Sandbox page is in the sidebar for Indian brokers only, so the help points
+  a US trader to the Orderbook, which shows the sandbox's orders in analyzer
+  mode (`get_order_book` routes there); and the public webhook route, the
+  order-update poller and Telegram are Phase C's, so a "Not connected yet"
+  item says a webhook address does not receive alerts yet, an Order Update
+  trigger does not fire, and a Telegram Alert node stops with "Telegram is
+  not set up". Phase C replaces that item when it connects them.
+
+### Bundle note: a manual chunk this phase could not add
+
+`vite.config.ts` is outside WP8's files, so this was reported, not
+changed. Its `manualChunks` rule `id.includes('/react/')` also matches
+`node_modules/@xyflow/react/`, so React Flow lands in `vendor-react`, the
+chunk every page loads: `vendor-react` grows from 220.54 kB to 358.34 kB
+(minified) with a 15.87 kB stylesheet, and because React Flow imports
+`d3-zoom`/`d3-drag`/`d3-selection` (the `vendor-charts` rule), the entry
+now also preloads `vendor-charts` (247.33 kB) on every page. Measured with
+a copy of the config outside the repository, these two rules put React
+Flow in a `vendor-flow` chunk (136.49 kB + 15.87 kB CSS) that only the
+`/flow/editor` route loads, return `vendor-react` to 220.55 kB, and take
+`vendor-charts` off the startup preloads, with no circular-chunk warning.
+The first rule matters: without it Rollup's CommonJS helpers land in
+`vendor-flow`, React's chunk imports them back, and Rollup warns
+"Circular chunk: vendor-react -> vendor-flow -> vendor-react".
+
+```ts
+        manualChunks: (id) => {
+          // Rollup's CommonJS interop helpers (a virtual module, outside node_modules):
+          // with React's chunk, which every page loads, so a lazy vendor chunk never holds them.
+          if (id.includes('commonjsHelpers')) {
+            return 'vendor-react'
+          }
+          if (id.includes('node_modules')) {
+            // Flow editor (React Flow) - only /flow/editor. Before the React rule:
+            // '@xyflow/react/' contains '/react/'.
+            if (id.includes('/@xyflow/')) {
+              return 'vendor-flow'
+            }
+            // Core React - most stable, cached long-term
+```
+
+### Hand edits to carried files (Task B3)
+
+| File | Edit |
+| --- | --- |
+| `src/pages/flow/FlowIndex.tsx`, `FlowEditor.tsx`, `FlowKeyboardShortcuts.tsx` | `<HelpButton items={…} pageTitle="…" />` as the first child of the page's root (the editor's inside `FlowEditorContent`, before the Replace dialog), with the two imports. |
+| `src/pages/flow/FlowEditorMenu.pinned.test.tsx` | The header test's `getByText('Flow Editor')` scoped to the header bar: the help panel's title, in the DOM while closed, is "Flow Editor" too. |

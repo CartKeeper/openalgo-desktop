@@ -41,6 +41,7 @@ import {
   updateWorkflow,
 } from '@/api/flow'
 import { FlowEditorAccountControls } from '@/components/desktop/FlowEditorAccountControls'
+import { HelpButton } from '@/components/HelpButton'
 import { FlowLeaveGuard, useGuardedNavigate } from '@/components/desktop/FlowLeaveGuard'
 import { edgeTypes } from '@/components/flow/edges'
 // Import Flow components
@@ -73,6 +74,7 @@ import { FLOW_STARTED_IN_BACKGROUND, failedRunLog, startedInBackgroundLog } from
 import { DEFAULT_NODE_DATA } from '@/lib/flow/constants'
 import { cn } from '@/lib/utils'
 import { useFlowWorkflowStore } from '@/stores/flowWorkflowStore'
+import { FLOW_EDITOR_HELP } from './flowHelp'
 
 let nodeId = 0
 
@@ -627,6 +629,7 @@ function FlowEditorContent() {
         </div>
       </div>
 
+      <HelpButton items={FLOW_EDITOR_HELP} pageTitle="Flow Editor" />
       <Dialog open={showReplaceDialog} onOpenChange={setShowReplaceDialog}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>

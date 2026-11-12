@@ -186,7 +186,8 @@ describe('F-164 the editor header', () => {
     const logo = screen.getByRole('img', { name: 'OpenAlgo' })
     expect(logo).toHaveAttribute('src', '/images/android-chrome-192x192.png')
     const brand = screen.getByText('openalgo')
-    const title = screen.getByText('Flow Editor')
+    // Desktop (this app): the page's help panel is titled Flow Editor too, so the header's own.
+    const title = within(logo.closest('.h-12') as HTMLElement).getByText('Flow Editor')
     const dashboard = screen.getByRole('link', { name: /Dashboard/ })
     const userMenu = screen.getByRole('button', { name: 'Open user menu' })
     expect(precedes(logo, brand)).toBe(true)
