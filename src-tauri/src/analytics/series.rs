@@ -76,10 +76,14 @@ pub async fn holdings_value_series(
         .chain(openings.iter().map(|opening| opening.symbol.as_str()))
         .collect();
 
+    // One request per symbol, all in flight together; results keep the symbol order.
+    let fetched =
+        futures_util::future::join_all(symbols.iter().map(|symbol| closes.closes(symbol, from, to))).await;
+
     let mut warnings = Vec::new();
     let mut history: BTreeMap<&str, Vec<(NaiveDate, f64)>> = BTreeMap::new();
-    for symbol in symbols {
-        match closes.closes(symbol, from, to).await {
+    for (&symbol, result) in symbols.iter().zip(fetched) {
+        match result {
             Ok(mut rows) => {
                 rows.retain(|(date, close)| *date >= from && *date <= to && *close > 0.0);
                 if rows.is_empty() {

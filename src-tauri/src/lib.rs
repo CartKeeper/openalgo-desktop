@@ -406,6 +406,12 @@ pub fn run() {
             commands::chart_preferences::chart_save_preference,
             //
             // [wp-anchor] WP2 analytics
+            commands::analytics::analytics_client_lots,
+            commands::analytics::analytics_client_performance,
+            commands::analytics::analytics_list_targets,
+            commands::analytics::analytics_save_targets,
+            commands::analytics::analytics_scenario_drift,
+            commands::analytics::analytics_rebalance_plan,
             //
             // [wp-anchor] WP3 staged-analysis
             //
