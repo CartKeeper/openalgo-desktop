@@ -8,10 +8,8 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
-
 /// The broad class a holding belongs to, as the rules see it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AssetClass {
     Equity,
     FixedIncome,
@@ -27,8 +25,9 @@ pub struct HealthHolding {
     pub value: f64,
     pub asset_class: Option<AssetClass>,
     pub sector: Option<String>,
-    /// An ETF or mutual fund, so an expense ratio is expected of it.
-    pub is_fund: bool,
+    /// `Some(true)`: an ETF or mutual fund, so an expense ratio is expected of
+    /// it; `Some(false)`: not a fund; `None`: unknown (nothing could be looked up).
+    pub is_fund: Option<bool>,
     /// Annual expense ratio as a fraction (0.0003 = 0.03%); funds only.
     pub expense_ratio: Option<f64>,
 }
@@ -44,8 +43,7 @@ pub struct HealthInput {
     pub unresolved_violations: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HealthStatus {
     Pass,
     Warn,
@@ -93,7 +91,7 @@ pub const RULES: &[Rule] = &[
     Rule { key: "fee_ratio", title: "Trading costs", source: "Ghostfolio FeeRatioTotalInvestmentVolume" },
     Rule { key: "fund_expenses", title: "Fund expenses", source: "app default" },
     Rule { key: "buying_power", title: "Buying power", source: "Ghostfolio BuyingPower" },
-    Rule { key: "single_position", title: "Largest position", source: "app default" },
+    Rule { key: "single_position", title: "Largest position (of holdings)", source: "app default" },
     Rule { key: "sector_concentration", title: "Sector concentration", source: "app default" },
     Rule { key: "account_rules", title: "Account guidelines", source: "client_compliance_violations" },
 ];
@@ -190,13 +188,33 @@ fn fee_ratio(trade_fees: Option<(f64, f64)>) -> Verdict {
     }
 }
 
-/// Expense ratios of the funds held, weighted by their value; a fund without
-/// one on record is left out and named.
-fn fund_expenses(held: &[&HealthHolding]) -> Verdict {
+/// Expense ratios of the funds held, weighted by their value. A fund without
+/// one on record is left out and named; a holding whose fund status could not
+/// be looked up is named too, and when such holdings are more than
+/// `UNKNOWN_MAX` of value the rule is not judged.
+fn fund_expenses(held: &[&HealthHolding], invested: f64) -> Verdict {
     let threshold = format!("at most {} weighted by fund value", pct2(FUND_EXPENSE_MAX));
-    let funds: Vec<&HealthHolding> = held.iter().copied().filter(|h| h.is_fund).collect();
+    if invested <= 0.0 {
+        return Verdict::na("No holdings", threshold, None);
+    }
+    let unchecked: Vec<&str> = held.iter().filter(|h| h.is_fund.is_none()).map(|h| h.symbol.as_str()).collect();
+    let unknown = held.iter().filter(|h| h.is_fund.is_none()).map(|h| h.value).sum::<f64>() / invested;
+    if unknown > UNKNOWN_MAX {
+        let detail = format!(
+            "Fund status could not be checked for {} of holdings value ({}).",
+            pct1(unknown),
+            unchecked.join(", ")
+        );
+        return Verdict::na("Unknown", threshold, Some(detail));
+    }
+    let mut details: Vec<String> = Vec::new();
+    if !unchecked.is_empty() {
+        details.push(format!("Fund status not checked for {}.", unchecked.join(", ")));
+    }
+    let funds: Vec<&HealthHolding> = held.iter().copied().filter(|h| h.is_fund == Some(true)).collect();
     if funds.is_empty() {
-        return Verdict::na("No funds held", threshold, None);
+        let value = if unchecked.is_empty() { "No funds held" } else { "No funds found" };
+        return Verdict::na(value, threshold, (!details.is_empty()).then(|| details.join(" ")));
     }
     let (mut weight, mut cost) = (0.0, 0.0);
     let mut missing: Vec<&str> = Vec::new();
@@ -209,8 +227,10 @@ fn fund_expenses(held: &[&HealthHolding]) -> Verdict {
             None => missing.push(&fund.symbol),
         }
     }
-    let detail = (!missing.is_empty())
-        .then(|| format!("No expense ratio on record for {}; left out of the average.", missing.join(", ")));
+    if !missing.is_empty() {
+        details.push(format!("No expense ratio on record for {}; left out of the average.", missing.join(", ")));
+    }
+    let detail = (!details.is_empty()).then(|| details.join(" "));
     if weight <= 0.0 {
         return Verdict::na("Unknown", threshold, detail);
     }
@@ -297,7 +317,7 @@ pub fn evaluate(input: &HealthInput) -> Vec<HealthRow> {
                 "equity_share" => class_share(&held, invested, AssetClass::Equity, EQUITY_BAND),
                 "fixed_income_share" => class_share(&held, invested, AssetClass::FixedIncome, FIXED_INCOME_BAND),
                 "fee_ratio" => fee_ratio(input.trade_fees),
-                "fund_expenses" => fund_expenses(&held),
+                "fund_expenses" => fund_expenses(&held, invested),
                 "buying_power" => buying_power(input.cash),
                 "single_position" => single_position(&held, invested),
                 "sector_concentration" => sector_concentration(&held, invested),
@@ -326,13 +346,35 @@ mod tests {
             value,
             asset_class: class,
             sector: sector.map(str::to_string),
-            is_fund: false,
+            is_fund: Some(false),
             expense_ratio: None,
         }
     }
 
     fn etf(symbol: &str, value: f64, expense_ratio: Option<f64>) -> HealthHolding {
-        HealthHolding { is_fund: true, expense_ratio, ..holding(symbol, value, Some(AssetClass::Equity), None) }
+        HealthHolding { is_fund: Some(true), expense_ratio, ..holding(symbol, value, Some(AssetClass::Equity), None) }
+    }
+
+    /// Nothing could be looked up for this holding (no FMP key, or the lookup failed).
+    fn unknown(symbol: &str, value: f64) -> HealthHolding {
+        HealthHolding { is_fund: None, ..holding(symbol, value, None, None) }
+    }
+
+    #[test]
+    fn unknown_fund_status_is_never_reported_as_no_funds_held() {
+        // Nothing could be looked up: the rule is not judged rather than stated wrongly.
+        let rows = evaluate(&input(vec![unknown("VOO", 60.0), unknown("BND", 40.0)]));
+        let r = row(&rows, "fund_expenses");
+        assert_eq!((r.status, r.value_text.as_str()), (HealthStatus::Na, "Unknown"));
+        assert!(r.detail.as_deref().unwrap().contains("100.0%"), "{:?}", r.detail);
+        // One failed lookup among known holdings: the average still prints and the unchecked one is named.
+        let rows = evaluate(&input(vec![etf("VOO", 90.0, Some(0.0003)), unknown("ZZZ", 10.0)]));
+        let r = row(&rows, "fund_expenses");
+        assert_eq!((r.status, r.value_text.as_str()), (HealthStatus::Pass, "0.03%"));
+        assert!(r.detail.as_deref().unwrap().contains("ZZZ"), "{:?}", r.detail);
+        // Known stocks only: no funds held.
+        let rows = evaluate(&input(vec![holding("AAPL", 100.0, Some(AssetClass::Equity), None)]));
+        assert_eq!(row(&rows, "fund_expenses").value_text, "No funds held");
     }
 
     fn input(holdings: Vec<HealthHolding>) -> HealthInput {
@@ -509,10 +551,9 @@ mod tests {
     }
 
     #[test]
-    fn statuses_serialize_in_lowercase_for_the_pdf() {
-        for status in [HealthStatus::Pass, HealthStatus::Warn, HealthStatus::Fail, HealthStatus::Na] {
-            assert_eq!(serde_json::to_string(&status).unwrap(), format!("\"{}\"", status.as_str()));
-        }
-        assert_eq!(HealthStatus::Na.as_str(), "na");
+    fn statuses_spell_as_the_report_prints_them() {
+        let words: Vec<&str> =
+            [HealthStatus::Pass, HealthStatus::Warn, HealthStatus::Fail, HealthStatus::Na].iter().map(|s| s.as_str()).collect();
+        assert_eq!(words, vec!["pass", "warn", "fail", "na"]);
     }
 }

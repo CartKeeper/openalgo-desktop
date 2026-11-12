@@ -7,7 +7,7 @@
 //! date). The math that `quant_service` already has is reused; nothing here
 //! does I/O.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use chrono::{Datelike, NaiveDate};
 use futures_util::{stream, StreamExt};
@@ -273,16 +273,14 @@ pub struct SeriesBuild {
     pub skipped: Vec<String>,
 }
 
-/// Value the positions day by day at their closes. The date axis is the union
-/// of the symbols' dates; a symbol without a close on a day keeps its last one
-/// (forward fill). The axis opens on the first day every priced symbol has a
-/// close, since a holding entering later would read as a jump in value.
-pub fn hypothetical_series(
+/// The priced positions (shares and closes sorted by date) and the symbols
+/// without any closes (once each, in position order). Zero holdings are dropped.
+fn held_and_skipped(
     positions: &[(String, f64)],
     closes: &HashMap<String, Vec<(NaiveDate, f64)>>,
-) -> SeriesBuild {
+) -> (Vec<(f64, Vec<(NaiveDate, f64)>)>, Vec<String>) {
+    let mut held = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
-    let mut held: Vec<(f64, Vec<(NaiveDate, f64)>)> = Vec::new();
     for (symbol, qty) in positions {
         if *qty == 0.0 {
             continue;
@@ -297,20 +295,72 @@ pub fn hypothetical_series(
             None => skipped.push(symbol.clone()),
         }
     }
-    let Some(start) = held.iter().map(|(_, c)| c[0].0).max() else {
+    (held, skipped)
+}
+
+/// The day the window opens for every portfolio in `holdings`: the latest
+/// first close among their priced symbols, so no holding enters mid-window as
+/// a jump in value. The symbol is named when it opened the window later than
+/// the earliest first close; `None` when nothing is priced.
+pub fn common_start(
+    holdings: &[&[(String, f64)]],
+    closes: &HashMap<String, Vec<(NaiveDate, f64)>>,
+) -> Option<(NaiveDate, Option<String>)> {
+    let mut firsts: BTreeMap<String, NaiveDate> = BTreeMap::new();
+    for positions in holdings {
+        for (symbol, qty) in positions.iter() {
+            if *qty == 0.0 {
+                continue;
+            }
+            if let Some(first) = closes.get(symbol).and_then(|c| c.iter().map(|(d, _)| *d).min()) {
+                firsts.insert(symbol.clone(), first);
+            }
+        }
+    }
+    let (symbol, start) = firsts.iter().max_by_key(|(_, d)| **d)?;
+    let earliest = firsts.values().min().copied()?;
+    let limited_by = (*start > earliest).then(|| symbol.clone());
+    Some((*start, limited_by))
+}
+
+/// The dates on or after `start` on which any priced symbol in `holdings` has
+/// a close: one axis shared by every portfolio measured together.
+pub fn shared_axis(
+    holdings: &[&[(String, f64)]],
+    closes: &HashMap<String, Vec<(NaiveDate, f64)>>,
+    start: NaiveDate,
+) -> Vec<NaiveDate> {
+    let mut dates = BTreeSet::new();
+    for positions in holdings {
+        for (symbol, qty) in positions.iter() {
+            if *qty == 0.0 {
+                continue;
+            }
+            if let Some(c) = closes.get(symbol) {
+                dates.extend(c.iter().map(|(d, _)| *d).filter(|d| *d >= start));
+            }
+        }
+    }
+    dates.into_iter().collect()
+}
+
+/// Value the positions on each day of `axis` at their closes, carrying a
+/// symbol's last close forward over a day it has none (forward fill). Every
+/// priced symbol must have a close on or before the axis's first day, which
+/// `common_start` guarantees. Symbols without any closes are left out and named.
+pub fn hypothetical_series_on(
+    positions: &[(String, f64)],
+    closes: &HashMap<String, Vec<(NaiveDate, f64)>>,
+    axis: &[NaiveDate],
+) -> SeriesBuild {
+    let (held, skipped) = held_and_skipped(positions, closes);
+    if held.is_empty() || axis.is_empty() {
         return SeriesBuild { dates: Vec::new(), values: Vec::new(), skipped };
-    };
-    let dates: Vec<NaiveDate> = held
-        .iter()
-        .flat_map(|(_, c)| c.iter().map(|(d, _)| *d))
-        .filter(|d| *d >= start)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let mut values = vec![0.0; dates.len()];
+    }
+    let mut values = vec![0.0; axis.len()];
     for (qty, c) in &held {
         let (mut i, mut last) = (0, c[0].1);
-        for (k, date) in dates.iter().enumerate() {
+        for (k, date) in axis.iter().enumerate() {
             while i < c.len() && c[i].0 <= *date {
                 last = c[i].1;
                 i += 1;
@@ -318,7 +368,7 @@ pub fn hypothetical_series(
             values[k] += qty * last;
         }
     }
-    SeriesBuild { dates, values, skipped }
+    SeriesBuild { dates: axis.to_vec(), values, skipped }
 }
 
 /// FMP's daily rows as dated closes, ascending. A row with an unreadable date
@@ -500,12 +550,20 @@ mod tests {
             .collect()
     }
 
+    /// One portfolio's series over its own window (its start, its symbols' dates).
+    fn series(positions: &[(String, f64)], closes: &HashMap<String, Vec<(NaiveDate, f64)>>) -> SeriesBuild {
+        let Some((start, _)) = common_start(&[positions], closes) else {
+            return hypothetical_series_on(positions, closes, &[]);
+        };
+        hypothetical_series_on(positions, closes, &shared_axis(&[positions], closes, start))
+    }
+
     #[test]
     fn hypothetical_series_forward_fills_a_missing_day() {
         // BBB has no close on day 1 (a holiday on its exchange); its day-0 close carries over.
         let positions = [("AAA".to_string(), 1.0), ("BBB".to_string(), 2.0)];
         let closes = closes(&[("AAA", &[(0, 10.0), (1, 11.0), (2, 12.0)]), ("BBB", &[(0, 20.0), (2, 22.0)])]);
-        let built = hypothetical_series(&positions, &closes);
+        let built = series(&positions, &closes);
         assert_eq!(built.dates, days(3));
         assert_eq!(built.values, vec![50.0, 51.0, 56.0]);
         assert!(built.skipped.is_empty());
@@ -515,9 +573,13 @@ mod tests {
     fn unpriced_symbol_is_noted() {
         let positions = [("AAA".to_string(), 1.0), ("ZZZ".to_string(), 3.0)];
         let closes = closes(&[("AAA", &[(0, 10.0), (1, 11.0)])]);
-        let built = hypothetical_series(&positions, &closes);
+        let built = series(&positions, &closes);
         assert_eq!(built.skipped, vec!["ZZZ".to_string()]);
         assert_eq!(built.values, vec![10.0, 11.0]);
+        // Nothing priced at all: an empty series that still names the symbols.
+        let none = series(&positions, &HashMap::new());
+        assert!(none.dates.is_empty() && none.values.is_empty());
+        assert_eq!(none.skipped, vec!["AAA".to_string(), "ZZZ".to_string()]);
     }
 
     #[test]
@@ -526,9 +588,26 @@ mod tests {
         // jump when it appears, so the window starts on day 2.
         let positions = [("AAA".to_string(), 1.0), ("BBB".to_string(), 1.0)];
         let closes = closes(&[("AAA", &[(0, 10.0), (1, 11.0), (2, 12.0), (3, 13.0)]), ("BBB", &[(2, 5.0), (3, 6.0)])]);
-        let built = hypothetical_series(&positions, &closes);
+        let built = series(&positions, &closes);
         assert_eq!(built.dates, vec![day(2), day(3)]);
         assert_eq!(built.values, vec![17.0, 19.0]);
+    }
+
+    #[test]
+    fn a_shared_axis_measures_both_portfolios_over_the_same_days() {
+        let closes = closes(&[("AAA", &[(0, 10.0), (1, 11.0), (2, 12.0), (3, 13.0)]), ("BBB", &[(2, 5.0), (3, 6.0)])]);
+        let a = [("AAA".to_string(), 1.0)];
+        let b = [("AAA".to_string(), 1.0), ("BBB".to_string(), 1.0)];
+        // The window opens at the latest first close over both portfolios, and names
+        // the symbol that set it when it cut the window short.
+        assert_eq!(common_start(&[&a, &b], &closes), Some((day(2), Some("BBB".to_string()))));
+        assert_eq!(common_start(&[&a], &closes), Some((day(0), None)));
+        assert_eq!(common_start(&[&[("ZZZ".to_string(), 1.0)]], &closes), None);
+        let axis = shared_axis(&[&a, &b], &closes, day(2));
+        assert_eq!(axis, vec![day(2), day(3)]);
+        // A alone would have started on day 0; on the shared axis it is measured from day 2.
+        let built = hypothetical_series_on(&a, &closes, &axis);
+        assert_eq!((built.dates, built.values), (vec![day(2), day(3)], vec![12.0, 13.0]));
     }
 
     #[test]

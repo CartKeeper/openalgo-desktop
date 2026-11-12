@@ -54,7 +54,7 @@
       "intro": "Held through the past year, the recommended score would have drawn down 11.2% at worst against 38.5% for the original, with a Sharpe ratio of 0.84 against 0.31.",
       "original_label": "Casey Borst Sch #0001",
       "recommended_label": "Casey Borst Sch #0001 (copy)",
-      "window": "Trailing 365 days of daily closes, November 12, 2025 to November 11, 2026",
+      "window": "Daily closes, November 12, 2025 to November 11, 2026 (251 trading days)",
       "rows": [
         { "label": "CAGR", "original": "9.8%", "recommended": "12.3%" },
         { "label": "Volatility (annualized)", "original": "41.2%", "recommended": "15.6%" },
@@ -101,10 +101,10 @@
         }
       ],
       "monte_carlo": [
-        { "label": "Casey Borst Sch #0001", "paths": 1000, "horizon_days": 252, "p5": -0.42, "p50": 0.08, "p95": 0.71, "bust_threshold": -0.2, "bust_probability": 0.61, "goal_threshold": 0.1, "goal_probability": 0.47 },
+        { "label": "Casey Borst Sch #0001", "paths": 1000, "horizon_days": 252, "p5": -0.0625, "p50": 0.08, "p95": 0.71, "bust_threshold": -0.2, "bust_probability": 0.61, "goal_threshold": 0.1, "goal_probability": 0.47 },
         { "label": "Casey Borst Sch #0001 (copy)", "paths": 1000, "horizon_days": 252, "p5": -0.081, "p50": 0.123, "p95": 0.31, "bust_threshold": -0.2, "bust_probability": 0.23, "goal_threshold": 0.1, "goal_probability": 0.68 }
       ],
-      "note": "Casey Borst Sch #0001: 251 trading days, November 12, 2025 to November 11, 2026. No price history for YOURF; left out of Casey Borst Sch #0001. Casey Borst Sch #0001 (copy): 251 trading days, November 12, 2025 to November 11, 2026. Each portfolio is today's holdings carried through the window at daily closes. Ratios use a 0% risk-free rate. Monte Carlo odds come from 1,000 bootstrapped years of each portfolio's own daily returns, drawn with a fixed seed so a re-run prints the same odds."
+      "note": "No price history for YOURF; left out of Casey Borst Sch #0001. Each portfolio is today's holdings carried through the window at daily closes: price returns, excluding dividends; the first and last months, and an earlier year's total, cover only the days inside the window. Ratios use a 0% risk-free rate. Monte Carlo odds come from 1,000 bootstrapped years of each portfolio's own daily returns, drawn with a fixed seed so a re-run prints the same odds."
     },
     {
       "kind": "health",
@@ -121,7 +121,7 @@
         { "key": "fee_ratio", "title": "Trading costs", "original": { "status": "pass", "value_text": "0.3%", "detail": "$42.10 in fees on $14,000 traded." }, "recommended": { "status": "pass", "value_text": "0.3%", "detail": "$42.10 in fees on $14,000 traded." }, "threshold": "at most 1.0% of traded volume" },
         { "key": "fund_expenses", "title": "Fund expenses", "original": { "status": "na", "value_text": "Unknown", "detail": "No expense ratio on record for TQQQ; left out of the average." }, "recommended": { "status": "pass", "value_text": "0.03%" }, "threshold": "at most 0.50% weighted by fund value" },
         { "key": "buying_power", "title": "Buying power", "original": { "status": "na", "value_text": "Cash not recorded" }, "recommended": { "status": "na", "value_text": "Cash not recorded" }, "threshold": "cash at or above $0" },
-        { "key": "single_position", "title": "Largest position", "original": { "status": "fail", "value_text": "TQQQ · 74.6%" }, "recommended": { "status": "warn", "value_text": "VOO · 24.0%" }, "threshold": "warn above 10%, fail above 25% of holdings value" },
+        { "key": "single_position", "title": "Largest position (of holdings)", "original": { "status": "fail", "value_text": "TQQQ · 74.6%" }, "recommended": { "status": "warn", "value_text": "VOO · 24.0%" }, "threshold": "warn above 10%, fail above 25% of holdings value" },
         { "key": "sector_concentration", "title": "Sector concentration", "original": { "status": "na", "value_text": "Sectors unknown", "detail": "100.0% of holdings value has no sector on record." }, "recommended": { "status": "pass", "value_text": "Technology · 18.0%" }, "threshold": "at most 30% of holdings value in one sector" },
         { "key": "account_rules", "title": "Account guidelines", "original": { "status": "fail", "value_text": "2 unresolved" }, "recommended": { "status": "fail", "value_text": "2 unresolved" }, "threshold": "no unresolved guideline violations" }
       ],

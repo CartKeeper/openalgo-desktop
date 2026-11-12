@@ -318,20 +318,23 @@ const TICKER = /^[A-Z0-9.-]{1,6}$/
 
 // ----- Metrics formatting (keep in step with scenario_comparison.rs, which prints the same figures for Claude) -----
 
+/** Round half away from zero, as Rust's `f64::round` does (`Math.round` sends -62.5 to -62). */
+const roundHalfAway = (x: number) => Math.sign(x) * Math.round(Math.abs(x))
+
 /** A return fraction as a signed percentage with one decimal: "+12.3%", "-8.1%", "0.0%". Mirrors `signed_pct_text`. */
 const returnPct = (v: number) => {
-  const x = Math.round(v * 1000) / 10
+  const x = roundHalfAway(v * 1000) / 10
   return `${x > 0 ? '+' : ''}${x.toFixed(1)}%`
 }
 
 /** A threshold as a signed whole percentage: "-20%", "+10%". Mirrors `signed_whole_pct`. */
 const signedWholePct = (v: number) => {
-  const x = Math.round(v * 100)
+  const x = roundHalfAway(v * 100)
   return `${x > 0 ? '+' : ''}${x}%`
 }
 
 /** A probability as a whole percentage: 0.234 -> "23%". Mirrors `odds_text`. */
-const odds = (p: number) => `${Math.round(p * 100)}%`
+const odds = (p: number) => `${roundHalfAway(p * 100)}%`
 
 /** The Monte Carlo sentence, word for word as `monte_carlo_text` prints it for Claude. */
 function monteCarloText(l: MonteCarloLine): string {

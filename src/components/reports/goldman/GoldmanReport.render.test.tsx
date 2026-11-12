@@ -167,6 +167,8 @@ describe('GoldmanReport', () => {
     expect(text).toContain(squeeze('Mar 13, 2026'))
     expect(text).toContain(squeeze('odds of a -20% drawdown 23%'))
     expect(text).toContain(squeeze('odds of +10% or better 68%'))
+    // -0.0625 is an exact binary half: the PDF must round it the way the Rust prompt text does (-6.3%).
+    expect(text).toContain(squeeze('percentile -6.3% to +71.0%'))
     // Health rows carry both sides and the threshold.
     expect(text).toContain(squeeze('Largest position'))
     expect(text).toContain(squeeze('TQQQ · 74.6%'))

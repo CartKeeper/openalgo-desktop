@@ -18,6 +18,7 @@ use tracing::warn;
 use crate::error::{AppError, Result};
 use crate::importers::schwab::rules_401k::holding_flag;
 use crate::providers::fmp::FmpClient;
+use crate::providers::ProviderError;
 use crate::providers::types::{
     BriefComparison, ChangeRow, ChangesMovement, ChecklistGroup, ClientTrade, CodaMovement,
     CompanyProfile, ComparisonSide, CoverTitle, DiagnosisIssue, DiagnosisMovement, DrawdownRow,
@@ -34,8 +35,9 @@ use crate::services::copilot_service::CopilotService;
 use crate::services::portfolio_health::{evaluate, AssetClass, HealthHolding, HealthInput, HealthRow};
 use crate::services::quant_service::compute_returns;
 use crate::services::report_metrics::{
-    drawdown_periods, fetch_closes, hypothetical_series, metric_rows, monte_carlo, monthly_returns,
-    DrawdownPeriod, MetricFormat, MetricRow, MonteCarlo, MonthlyRow, MIN_DAYS,
+    common_start, drawdown_periods, fetch_closes, hypothetical_series_on, metric_rows, monte_carlo,
+    monthly_returns, shared_axis, DrawdownPeriod, MetricFormat, MetricRow, MonteCarlo, MonthlyRow,
+    MIN_DAYS,
 };
 use crate::services::ride_report::{client_ride, load_client_market_data};
 use crate::state::AppState;
@@ -458,15 +460,24 @@ pub(crate) struct SideMetrics {
     pub(crate) monte_carlo: Option<MonteCarlo>,
     /// Held symbols with no price history, left out of the series.
     pub(crate) skipped: Vec<String>,
-    /// Trading days in the series, and its first and last date.
+    /// Trading days in the series (0 when none of the side's holdings is priced).
     pub(crate) days: usize,
-    pub(crate) span: Option<(NaiveDate, NaiveDate)>,
 }
 
-/// Both sides' figures, or the one reason there are none.
+/// The days both portfolios are measured over.
+pub(crate) struct MetricsWindow {
+    pub(crate) first: NaiveDate,
+    pub(crate) last: NaiveDate,
+    pub(crate) days: usize,
+    /// The holding whose first close opened the window later than the others'.
+    pub(crate) limited_by: Option<String>,
+}
+
+/// Both sides' figures over one window, or the one reason there are none.
 pub(crate) struct MetricsBuild {
     pub(crate) original: Option<SideMetrics>,
     pub(crate) recommended: Option<SideMetrics>,
+    pub(crate) window: Option<MetricsWindow>,
     pub(crate) note: Option<&'static str>,
 }
 
@@ -475,8 +486,12 @@ fn holdings_of(positions: &[ScenarioPosition]) -> Vec<(String, f64)> {
     net_shares(positions).into_iter().filter(|(_, q)| q.abs() > EPS).collect()
 }
 
-fn side_metrics(positions: &[(String, f64)], closes: &HashMap<String, Vec<(NaiveDate, f64)>>) -> SideMetrics {
-    let built = hypothetical_series(positions, closes);
+fn side_metrics(
+    positions: &[(String, f64)],
+    closes: &HashMap<String, Vec<(NaiveDate, f64)>>,
+    axis: &[NaiveDate],
+) -> SideMetrics {
+    let built = hypothetical_series_on(positions, closes, axis);
     let enough = built.values.len() >= MIN_DAYS;
     let returns = compute_returns(&built.values);
     SideMetrics {
@@ -492,12 +507,12 @@ fn side_metrics(positions: &[(String, f64)], closes: &HashMap<String, Vec<(Naive
             MONTE_CARLO_GOAL,
         ),
         days: built.values.len(),
-        span: built.dates.first().copied().zip(built.dates.last().copied()),
         skipped: built.skipped,
     }
 }
 
-/// Metrics for both portfolios from their holdings and the fetched closes.
+/// Metrics for both portfolios from their holdings and the fetched closes,
+/// measured over one shared window so their figures compare like with like.
 /// Nothing held, a failed fetch, or closes covering none of the holdings give
 /// no figures and a note saying so; the report goes on without them.
 pub(crate) fn build_metrics(
@@ -505,7 +520,8 @@ pub(crate) fn build_metrics(
     recommended: &[(String, f64)],
     closes: Result<HashMap<String, Vec<(NaiveDate, f64)>>>,
 ) -> MetricsBuild {
-    let none = |note: &'static str| MetricsBuild { original: None, recommended: None, note: Some(note) };
+    let none =
+        |note: &'static str| MetricsBuild { original: None, recommended: None, window: None, note: Some(note) };
     if original.is_empty() && recommended.is_empty() {
         return none(NOTE_NO_HOLDINGS);
     }
@@ -516,13 +532,22 @@ pub(crate) fn build_metrics(
             return none(NOTE_NO_PRICES);
         }
     };
-    let side = |positions: &[(String, f64)]| (!positions.is_empty()).then(|| side_metrics(positions, &closes));
-    let (original, recommended) = (side(original), side(recommended));
-    let priced = |s: &Option<SideMetrics>| s.as_ref().is_some_and(|s| s.days > 0);
-    if !priced(&original) && !priced(&recommended) {
+    let Some((start, limited_by)) = common_start(&[original, recommended], &closes) else {
         return none(NOTE_NO_PRICES);
+    };
+    let axis = shared_axis(&[original, recommended], &closes, start);
+    let (Some(first), Some(last)) = (axis.first().copied(), axis.last().copied()) else {
+        return none(NOTE_NO_PRICES);
+    };
+    let side = |positions: &[(String, f64)]| {
+        (!positions.is_empty()).then(|| side_metrics(positions, &closes, &axis))
+    };
+    MetricsBuild {
+        original: side(original),
+        recommended: side(recommended),
+        window: Some(MetricsWindow { first, last, days: axis.len(), limited_by }),
+        note: None,
     }
-    MetricsBuild { original, recommended, note: None }
 }
 
 /// A fraction as a percentage with one decimal; a rounded zero never shows a sign.
@@ -586,43 +611,60 @@ pub(crate) fn monte_carlo_text(line: &MonteCarloLine) -> String {
     )
 }
 
-/// The movement's note: each side's window and what was left out, then how
-/// the figures were made.
+/// The movement's note: what each side lacks, then how the figures were made.
 fn metrics_note(sides: &[(&str, Option<&SideMetrics>)]) -> String {
     let mut parts: Vec<String> = Vec::new();
+    let mut short = false;
     for (label, side) in sides {
         let Some(s) = side else {
             parts.push(format!("{label}: no holdings to measure."));
             continue;
         };
-        match s.span {
-            Some((first, last)) => {
-                parts.push(format!("{label}: {} trading days, {} to {}.", s.days, long_date(first), long_date(last)))
-            }
-            None => parts.push(format!("{label}: no price history.")),
+        if s.days == 0 {
+            parts.push(format!("{label}: no price history."));
         }
-        if s.days > 0 && s.days < MIN_DAYS {
-            parts.push(format!("Fewer than {MIN_DAYS} trading days, so its figures read n/a (insufficient history)."));
-        }
+        short |= s.days > 0 && s.days < MIN_DAYS;
         if !s.skipped.is_empty() {
             parts.push(format!("No price history for {}; left out of {label}.", s.skipped.join(", ")));
         }
     }
+    if short {
+        parts.push(format!(
+            "Fewer than {MIN_DAYS} trading days in the window, so the figures read n/a (insufficient history)."
+        ));
+    }
     parts.push(format!(
-        "Each portfolio is today's holdings carried through the window at daily closes. Ratios use a 0% risk-free rate. Monte Carlo odds come from {} bootstrapped years of each portfolio's own daily returns, drawn with a fixed seed so a re-run prints the same odds.",
+        "Each portfolio is today's holdings carried through the window at daily closes: price returns, excluding dividends; the first and last months, and an earlier year's total, cover only the days inside the window. Ratios use a 0% risk-free rate. Monte Carlo odds come from {} bootstrapped years of each portfolio's own daily returns, drawn with a fixed seed so a re-run prints the same odds.",
         group_thousands(MONTE_CARLO_PATHS as u64)
     ));
     parts.join(" ")
 }
 
-/// The Metrics movement from both sides' figures. Prose (`tempo`, `intro`)
-/// is filled in from Claude's answer afterwards.
+/// The window line under the heading: the days measured, and the holding that
+/// set the opening day when it cut the window short; without figures, the
+/// window that was asked for.
+fn window_text(window: Option<&MetricsWindow>, to: NaiveDate) -> String {
+    let Some(w) = window else {
+        return format!("Trailing {METRICS_WINDOW_DAYS} days of daily closes to {}", long_date(to));
+    };
+    let mut text = format!("Daily closes, {} to {} ({} trading days)", long_date(w.first), long_date(w.last), w.days);
+    if let Some(symbol) = &w.limited_by {
+        text.push_str(&format!(
+            "; the window opens at {symbol}'s first close, so both portfolios are measured over the same days"
+        ));
+    }
+    text
+}
+
+/// The Metrics movement from both sides' figures; `to` is the report's price
+/// date. Prose (`tempo`, `intro`) is filled in from Claude's answer afterwards.
 pub(crate) fn metrics_movement_from(
     build: &MetricsBuild,
     original_label: &str,
     recommended_label: &str,
-    window: String,
+    to: NaiveDate,
 ) -> MetricsMovement {
+    let window = window_text(build.window.as_ref(), to);
     let (o, r) = (build.original.as_ref(), build.recommended.as_ref());
     let cell = |side: Option<&SideMetrics>, i: usize| {
         side.and_then(|s| s.rows.get(i)).map_or_else(|| "n/a".to_string(), |m| metric_text(m.value, m.format))
@@ -697,70 +739,85 @@ pub(crate) fn metrics_movement_from(
 }
 
 /// Class, sector and fund facts for one symbol, from FMP's fund info and
-/// company profile.
+/// company profile. The default is "nothing known".
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct Classification {
     pub(crate) asset_class: Option<AssetClass>,
     pub(crate) sector: Option<String>,
-    pub(crate) is_fund: bool,
+    /// `None` when fund status could not be looked up.
+    pub(crate) is_fund: Option<bool>,
     /// Annual expense ratio as a fraction.
     pub(crate) expense_ratio: Option<f64>,
 }
 
+/// What an FMP lookup gave for a symbol.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Lookup<T> {
+    Found(T),
+    /// FMP answered and has no record.
+    Absent,
+    /// The request failed, so nothing is known either way.
+    Failed,
+}
+
 /// A fund is classed by FMP's asset-class text and carries its expense ratio
 /// (FMP reports it in percent: 0.03 = 0.03%); a fund has no sector of its own.
-/// A stock is equity in its profile's sector. Nothing known: unclassified.
-pub(crate) fn classify(fund: Option<&EtfInfo>, profile: Option<&CompanyProfile>) -> Classification {
-    if let Some(fund) = fund {
-        let asset_class = fund.asset_class.as_deref().map(|text| {
-            let t = text.to_lowercase();
-            if t.contains("equity") {
-                AssetClass::Equity
-            } else if t.contains("fixed") || t.contains("bond") {
-                AssetClass::FixedIncome
-            } else if t.contains("commodit") {
-                AssetClass::Commodity
-            } else {
-                AssetClass::Other
+/// A symbol FMP has no fund record for but a profile is a stock: equity in
+/// its profile's sector. A failed fund lookup cannot tell a bond fund from a
+/// stock, and nothing on record says nothing: both stay unknown.
+pub(crate) fn classify(fund: Lookup<&EtfInfo>, profile: Lookup<&CompanyProfile>) -> Classification {
+    match (fund, profile) {
+        (Lookup::Found(fund), _) => {
+            let asset_class = fund.asset_class.as_deref().map(|text| {
+                let t = text.to_lowercase();
+                if t.contains("equity") {
+                    AssetClass::Equity
+                } else if t.contains("fixed") || t.contains("bond") {
+                    AssetClass::FixedIncome
+                } else if t.contains("commodit") {
+                    AssetClass::Commodity
+                } else {
+                    AssetClass::Other
+                }
+            });
+            Classification {
+                asset_class,
+                sector: None,
+                is_fund: Some(true),
+                expense_ratio: fund.expense_ratio.map(|percent| percent / 100.0),
             }
-        });
-        return Classification {
-            asset_class,
-            sector: None,
-            is_fund: true,
-            expense_ratio: fund.expense_ratio.map(|percent| percent / 100.0),
-        };
+        }
+        (Lookup::Absent, Lookup::Found(profile)) => {
+            let sector = profile.sector.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+            Classification { asset_class: Some(AssetClass::Equity), sector, is_fund: Some(false), expense_ratio: None }
+        }
+        _ => Classification::default(),
     }
-    if let Some(profile) = profile {
-        let sector = profile.sector.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from);
-        return Classification { asset_class: Some(AssetClass::Equity), sector, is_fund: false, expense_ratio: None };
+}
+
+/// An FMP answer as a `Lookup`, logging a failure (never the key).
+fn lookup<'a, T>(answer: &'a std::result::Result<Option<T>, ProviderError>, what: &str, symbol: &str) -> Lookup<&'a T> {
+    match answer {
+        Ok(Some(found)) => Lookup::Found(found),
+        Ok(None) => Lookup::Absent,
+        Err(e) => {
+            warn!("comparison report: {} for {} failed: {}", what, symbol, e);
+            Lookup::Failed
+        }
     }
-    Classification::default()
 }
 
 /// Class, sector and fund facts per uppercase symbol: two FMP calls each,
-/// eight symbols at a time. Without an FMP client, or when a lookup fails,
-/// the symbol stays unclassified.
+/// eight symbols at a time. Without an FMP client the map is empty, and a
+/// symbol whose lookup failed stays unknown (never guessed to be a stock).
 async fn lookup_classes(fmp: Option<&FmpClient>, symbols: &[String]) -> HashMap<String, Classification> {
     let Some(fmp) = fmp else { return HashMap::new() };
     stream::iter(symbols.iter().cloned())
         .map(|symbol| async move {
             let (fund, profile) = join(fmp.get_etf_info(&symbol), fmp.get_company_profile(&symbol)).await;
-            let fund = match fund {
-                Ok(funds) => funds.into_iter().next(),
-                Err(e) => {
-                    warn!("comparison report: fund info for {} failed: {}", symbol, e);
-                    None
-                }
-            };
-            let profile = match profile {
-                Ok(profile) => profile,
-                Err(e) => {
-                    warn!("comparison report: profile for {} failed: {}", symbol, e);
-                    None
-                }
-            };
-            (symbol.to_uppercase(), classify(fund.as_ref(), profile.as_ref()))
+            let fund = fund.map(|funds| funds.into_iter().next());
+            let class = classify(lookup(&fund, "fund info", &symbol), lookup(&profile, "profile", &symbol));
+            (symbol.to_uppercase(), class)
         })
         .buffer_unordered(LOOKUP_CONCURRENCY)
         .collect()
@@ -995,12 +1052,7 @@ impl ScenarioComparisonService {
             None => Err(AppError::Provider("FMP API key not configured".to_string())),
         };
         let metrics = build_metrics(&holdings_of(&original_positions), &holdings_of(&recommended_positions), closes);
-        let window = format!(
-            "Trailing {METRICS_WINDOW_DAYS} days of daily closes, {} to {}",
-            long_date(from),
-            long_date(today)
-        );
-        let mut metrics_movement = metrics_movement_from(&metrics, &original.name, &recommended.name, window);
+        let mut metrics_movement = metrics_movement_from(&metrics, &original.name, &recommended.name, today);
         let classes = lookup_classes(fmp.as_ref(), &tradable).await;
         let fees = trade_fees(&state.sqlite.get_client_trades(recommended.client_id).unwrap_or_default());
         let violations = state.sqlite.count_unresolved_violations(recommended.client_id).ok();
@@ -1292,6 +1344,11 @@ mod tests {
         NaiveDate::from_ymd_opt(y, m, day).unwrap()
     }
 
+    const REQUESTED: (NaiveDate, NaiveDate) = match (NaiveDate::from_ymd_opt(2025, 11, 12), NaiveDate::from_ymd_opt(2026, 11, 11)) {
+        (Some(from), Some(to)) => (from, to),
+        _ => unreachable!(),
+    };
+
     fn side(rows: Vec<(&str, Option<f64>, MetricFormat)>) -> SideMetrics {
         SideMetrics {
             rows: rows.into_iter().map(|(l, v, f)| MetricRow { label: l.to_string(), value: v, format: f }).collect(),
@@ -1300,7 +1357,6 @@ mod tests {
             monte_carlo: None,
             skipped: Vec::new(),
             days: 60,
-            span: Some((d(2025, 11, 12), d(2026, 11, 11))),
         }
     }
 
@@ -1309,13 +1365,16 @@ mod tests {
         use MetricFormat::{Pct, Ratio};
         let o = side(vec![("CAGR", Some(0.123), Pct), ("Sharpe ratio (rf 0%)", Some(1.234), Ratio), ("Max drawdown", Some(0.0), Pct)]);
         let r = side(vec![("CAGR", None, Pct), ("Sharpe ratio (rf 0%)", Some(-0.001), Ratio), ("Max drawdown", Some(-0.2), Pct)]);
-        let build = MetricsBuild { original: Some(o), recommended: Some(r), note: None };
-        let m = metrics_movement_from(&build, "Current", "Rebalanced", "window".to_string());
+        let window = MetricsWindow { first: REQUESTED.0, last: REQUESTED.1, days: 60, limited_by: None };
+        let build = MetricsBuild { original: Some(o), recommended: Some(r), window: Some(window), note: None };
+        let m = metrics_movement_from(&build, "Current", "Rebalanced", REQUESTED.1);
         assert_eq!(m.rows[0], MeasureRow { label: "CAGR".into(), original: "12.3%".into(), recommended: "n/a".into() });
         assert_eq!((m.rows[1].original.as_str(), m.rows[1].recommended.as_str()), ("1.23", "0.00"));
         assert_eq!((m.rows[2].original.as_str(), m.rows[2].recommended.as_str()), ("0.0%", "-20.0%"));
-        assert_eq!((m.original_label.as_str(), m.recommended_label.as_str(), m.window.as_str()), ("Current", "Rebalanced", "window"));
-        assert!(m.note.contains("Current: 60 trading days, November 12, 2025 to November 11, 2026."), "{}", m.note);
+        assert_eq!((m.original_label.as_str(), m.recommended_label.as_str()), ("Current", "Rebalanced"));
+        assert_eq!(m.window, "Daily closes, November 12, 2025 to November 11, 2026 (60 trading days)");
+        assert!(m.note.contains("price returns, excluding dividends"), "{}", m.note);
+        assert!(m.note.contains("cover only the days inside the window"), "{}", m.note);
         assert!(m.monthly.is_empty() && m.drawdowns.is_empty() && m.monte_carlo.is_empty());
     }
 
@@ -1323,8 +1382,9 @@ mod tests {
     fn all_cash_prints_no_holdings() {
         let build = build_metrics(&[], &[], Ok(HashMap::new()));
         assert_eq!(build.note, Some(NOTE_NO_HOLDINGS));
-        let m = metrics_movement_from(&build, "Current", "Rebalanced", "w".to_string());
+        let m = metrics_movement_from(&build, "Current", "Rebalanced", REQUESTED.1);
         assert_eq!(m.note, "No holdings to measure.");
+        assert_eq!(m.window, "Trailing 365 days of daily closes to November 11, 2026");
         assert!(m.rows.is_empty() && m.monthly.is_empty() && m.drawdowns.is_empty() && m.monte_carlo.is_empty());
         let h = health_movement_from(&HealthInput::default(), &HealthInput::default(), "Current", "Rebalanced");
         assert!(h.note.starts_with("No holdings to measure."), "{}", h.note);
@@ -1337,30 +1397,33 @@ mod tests {
         let build = build_metrics(&held, &held, Err(AppError::Provider("FMP down".into())));
         assert!(build.original.is_none() && build.recommended.is_none());
         assert_eq!(build.note, Some(NOTE_NO_PRICES));
-        let m = metrics_movement_from(&build, "a", "b", "w".to_string());
+        let m = metrics_movement_from(&build, "a", "b", REQUESTED.1);
         assert_eq!(m.note, "Price history was not available; metrics were skipped.");
         assert!(m.rows.is_empty() && m.monte_carlo.is_empty());
         // Closes that cover none of the held symbols read the same way.
         assert_eq!(build_metrics(&held, &held, Ok(HashMap::new())).note, Some(NOTE_NO_PRICES));
     }
 
-    #[test]
-    fn metrics_from_closes_fill_every_table_and_name_unpriced_symbols() {
-        let start = d(2025, 11, 12);
-        let points: Vec<(NaiveDate, f64)> = (0..300)
+    fn closes_for(symbol: &str, from: NaiveDate, days: i64) -> (String, Vec<(NaiveDate, f64)>) {
+        let points = (0..days)
             .map(|i| {
                 let dip = if i % 7 == 3 { 0.98 } else { 1.0 };
-                (start + Duration::days(i), 100.0 * (1.0 + 0.0005 * i as f64) * dip)
+                (from + Duration::days(i), 100.0 * (1.0 + 0.0005 * i as f64) * dip)
             })
             .collect();
-        let closes: HashMap<String, Vec<(NaiveDate, f64)>> = [("VOO".to_string(), points)].into();
+        (symbol.to_string(), points)
+    }
+
+    #[test]
+    fn metrics_from_closes_fill_every_table_and_name_unpriced_symbols() {
+        let closes: HashMap<String, Vec<(NaiveDate, f64)>> = [closes_for("VOO", REQUESTED.0, 300)].into();
         let build = build_metrics(
             &[("VOO".to_string(), 1.0)],
             &[("VOO".to_string(), 2.0), ("ZZZ".to_string(), 1.0)],
             Ok(closes),
         );
         assert_eq!(build.note, None);
-        let m = metrics_movement_from(&build, "Current", "Rebalanced", "w".to_string());
+        let m = metrics_movement_from(&build, "Current", "Rebalanced", REQUESTED.1);
         assert_eq!(m.rows.len(), 10);
         assert_eq!((m.monthly.len(), m.drawdowns.len(), m.monte_carlo.len()), (2, 2, 2));
         assert_eq!((m.monthly[1].label.as_str(), m.monthly[0].years[0].year), ("Rebalanced", 2025));
@@ -1375,7 +1438,28 @@ mod tests {
         assert_eq!(m.rows[0].original, m.rows[0].recommended);
         assert_eq!(m.monte_carlo[0].p50, m.monte_carlo[1].p50);
         assert!(m.note.contains("No price history for ZZZ; left out of Rebalanced."), "{}", m.note);
-        assert!(m.note.contains("Current: 300 trading days"), "{}", m.note);
+        assert_eq!(m.window, "Daily closes, November 12, 2025 to September 7, 2026 (300 trading days)");
+    }
+
+    #[test]
+    fn a_young_holding_on_one_side_shortens_both_windows_and_is_named() {
+        // XYZ first traded on June 1, 2026: both portfolios are measured from that day, and the
+        // window line says so, so the side-by-side figures stay comparable.
+        let closes: HashMap<String, Vec<(NaiveDate, f64)>> =
+            [closes_for("VOO", REQUESTED.0, 365), closes_for("XYZ", d(2026, 6, 1), 164)].into();
+        let build = build_metrics(
+            &[("VOO".to_string(), 1.0)],
+            &[("VOO".to_string(), 1.0), ("XYZ".to_string(), 3.0)],
+            Ok(closes),
+        );
+        let (o, r) = (build.original.as_ref().unwrap(), build.recommended.as_ref().unwrap());
+        assert_eq!((o.days, r.days), (164, 164));
+        let m = metrics_movement_from(&build, "Current", "Rebalanced", REQUESTED.1);
+        assert_eq!(
+            m.window,
+            "Daily closes, June 1, 2026 to November 11, 2026 (164 trading days); the window opens at XYZ's first close, so both portfolios are measured over the same days"
+        );
+        assert!(!m.note.contains("No price history"), "{}", m.note);
     }
 
     #[test]
@@ -1383,9 +1467,11 @@ mod tests {
         let points: Vec<(NaiveDate, f64)> = (0..10).map(|i| (d(2026, 11, 1) + Duration::days(i), 100.0 + i as f64)).collect();
         let closes: HashMap<String, Vec<(NaiveDate, f64)>> = [("VOO".to_string(), points)].into();
         let build = build_metrics(&[("VOO".to_string(), 1.0)], &[], Ok(closes));
-        let m = metrics_movement_from(&build, "Current", "Rebalanced", "w".to_string());
+        let m = metrics_movement_from(&build, "Current", "Rebalanced", REQUESTED.1);
         assert!(m.rows.iter().all(|r| r.original == "n/a" && r.recommended == "n/a"), "{:?}", m.rows);
-        assert!(m.note.contains("Current: 10 trading days") && m.note.contains("insufficient history"), "{}", m.note);
+        assert_eq!(m.window, "Daily closes, November 1, 2026 to November 10, 2026 (10 trading days)");
+        assert!(m.note.contains("Fewer than 30 trading days in the window"), "{}", m.note);
+        assert!(m.note.contains("insufficient history"), "{}", m.note);
         assert!(m.note.contains("Rebalanced: no holdings to measure."), "{}", m.note);
         assert!(m.monte_carlo.is_empty());
     }
@@ -1416,7 +1502,7 @@ mod tests {
             value,
             asset_class: Some(AssetClass::Equity),
             sector: None,
-            is_fund: false,
+            is_fund: Some(false),
             expense_ratio: None,
         }
     }
@@ -1482,23 +1568,33 @@ mod tests {
             last_dividend: None,
             image: None,
         };
+        use Lookup::{Absent, Failed, Found};
         // A fund: FMP's expense ratio is in percent (0.03 = 0.03%); a fund has no sector of its own.
-        let fund = classify(Some(&etf(Some("Equity"), Some(0.03))), Some(&profile(Some("Financial Services"))));
-        assert_eq!((fund.asset_class, fund.sector, fund.is_fund), (Some(AssetClass::Equity), None, true));
+        let fund = classify(Found(&etf(Some("Equity"), Some(0.03))), Found(&profile(Some("Financial Services"))));
+        assert_eq!((fund.asset_class, fund.sector, fund.is_fund), (Some(AssetClass::Equity), None, Some(true)));
         assert!((fund.expense_ratio.unwrap() - 0.0003).abs() < 1e-12);
-        assert_eq!(classify(Some(&etf(Some("Fixed Income"), None)), None).asset_class, Some(AssetClass::FixedIncome));
-        assert_eq!(classify(Some(&etf(Some("Bond"), None)), None).asset_class, Some(AssetClass::FixedIncome));
-        assert_eq!(classify(Some(&etf(Some("Commodities"), None)), None).asset_class, Some(AssetClass::Commodity));
-        assert_eq!(classify(Some(&etf(Some("Real Estate"), None)), None).asset_class, Some(AssetClass::Other));
-        assert_eq!(classify(Some(&etf(None, None)), None).asset_class, None);
-        // A stock: equity, with its sector.
-        let stock = classify(None, Some(&profile(Some("Technology"))));
+        assert_eq!(classify(Found(&etf(Some("Fixed Income"), None)), Absent).asset_class, Some(AssetClass::FixedIncome));
+        assert_eq!(classify(Found(&etf(Some("Bond"), None)), Absent).asset_class, Some(AssetClass::FixedIncome));
+        assert_eq!(classify(Found(&etf(Some("Commodities"), None)), Absent).asset_class, Some(AssetClass::Commodity));
+        assert_eq!(classify(Found(&etf(Some("Real Estate"), None)), Absent).asset_class, Some(AssetClass::Other));
+        assert_eq!(classify(Found(&etf(None, None)), Absent).asset_class, None);
+        // A stock: FMP has no fund record and a profile — equity, with its sector.
+        let stock = classify(Absent, Found(&profile(Some("Technology"))));
         assert_eq!(
             stock,
-            Classification { asset_class: Some(AssetClass::Equity), sector: Some("Technology".into()), is_fund: false, expense_ratio: None }
+            Classification {
+                asset_class: Some(AssetClass::Equity),
+                sector: Some("Technology".into()),
+                is_fund: Some(false),
+                expense_ratio: None,
+            }
         );
-        assert_eq!(classify(None, Some(&profile(Some("  ")))).sector, None);
-        assert_eq!(classify(None, None), Classification::default());
+        assert_eq!(classify(Absent, Found(&profile(Some("  ")))).sector, None);
+        // A failed fund lookup cannot tell a bond fund from a stock: unknown, never equity.
+        assert_eq!(classify(Failed, Found(&profile(Some("Technology")))), Classification::default());
+        assert_eq!(classify(Absent, Failed), Classification::default());
+        assert_eq!(classify(Absent, Absent), Classification::default());
+        assert_eq!(Classification::default().is_fund, None);
     }
 
     #[test]
@@ -1525,10 +1621,10 @@ mod tests {
     #[test]
     fn the_prompt_prints_the_metrics_and_health_sections() {
         let build = build_metrics(&[], &[], Ok(HashMap::new()));
-        let m = metrics_movement_from(&build, "Current", "Rebalanced", "Trailing 365 days".to_string());
+        let m = metrics_movement_from(&build, "Current", "Rebalanced", REQUESTED.1);
         let mut s = String::new();
         push_metrics(&mut s, &m);
-        assert!(s.contains("## Metrics (app-computed)\nWindow: Trailing 365 days\n"), "{s}");
+        assert!(s.contains("## Metrics (app-computed)\nWindow: Trailing 365 days of daily closes to November 11, 2026\n"), "{s}");
         assert!(s.contains("(No holdings to measure.)"), "{s}");
         let h = health_movement_from(&HealthInput::default(), &HealthInput::default(), "Current", "Rebalanced");
         let mut s = String::new();
