@@ -72,6 +72,7 @@ pub use history_service::{HistoryService, HistoryResult, IntervalsResult, Candle
 pub mod portfolio_analytics_service;
 //
 // [wp-anchor] WP3 staged-analysis
+pub mod staged_analysis;
 //
 // [wp-anchor] WP4 report-metrics
 //
