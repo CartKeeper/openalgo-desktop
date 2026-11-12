@@ -39,6 +39,7 @@ pub mod backtest;
 pub mod chart_preferences;
 //
 // [wp-anchor] WP2 analytics
+pub mod analytics;
 //
 // [wp-anchor] WP3 staged-analysis
 //

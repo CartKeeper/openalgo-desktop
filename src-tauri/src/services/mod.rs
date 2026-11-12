@@ -69,6 +69,7 @@ pub use analyzer_service::{AnalyzerService, AnalyzerStatus};
 pub use options_service::{OptionsService, OptionChainResult, OptionGreeks, OptionSymbolResult, SyntheticFutureResult};
 pub use history_service::{HistoryService, HistoryResult, IntervalsResult, CandleData};
 // [wp-anchor] WP2 analytics
+pub mod portfolio_analytics_service;
 //
 // [wp-anchor] WP3 staged-analysis
 //
