@@ -81,4 +81,5 @@ pub mod american_pricing;
 pub mod indicator_catalog;
 //
 // [wp-anchor] WP7 symbol-metadata
+pub mod symbol_metadata_service;
 //

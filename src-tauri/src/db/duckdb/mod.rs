@@ -2,6 +2,7 @@
 
 pub mod models;
 mod migrations;
+mod symbol_metadata;
 
 use crate::error::Result;
 use duckdb::Connection;
