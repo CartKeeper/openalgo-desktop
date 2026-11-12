@@ -7,10 +7,16 @@
 //! date). The math that `quant_service` already has is reused; nothing here
 //! does I/O.
 
+use std::collections::{BTreeSet, HashMap};
+
 use chrono::{Datelike, NaiveDate};
+use futures_util::{stream, StreamExt};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::Serialize;
 
+use crate::error::{AppError, Result};
+use crate::providers::fmp::FmpClient;
+use crate::providers::types::DailyClose;
 use crate::services::quant_service::{
     annualized_return, annualized_volatility, calmar_ratio, compute_returns, conditional_var,
     max_drawdown, sharpe_ratio, sortino_ratio, value_at_risk,
@@ -253,6 +259,128 @@ pub fn monte_carlo(
     })
 }
 
+// ---------------------------------------------------------------------------
+// The hypothetical series: today's positions held through the window
+// ---------------------------------------------------------------------------
+
+/// A portfolio's daily values over the window, built from its positions and
+/// each symbol's closes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeriesBuild {
+    pub dates: Vec<NaiveDate>,
+    pub values: Vec<f64>,
+    /// Positions with no closes at all, left out of `values` (once each, in
+    /// position order), so the report can name them.
+    pub skipped: Vec<String>,
+}
+
+/// Value the positions day by day at their closes. The date axis is the union
+/// of the symbols' dates; a symbol without a close on a day keeps its last one
+/// (forward fill). The axis opens on the first day every priced symbol has a
+/// close, since a holding entering later would read as a jump in value.
+pub fn hypothetical_series(
+    positions: &[(String, f64)],
+    closes: &HashMap<String, Vec<(NaiveDate, f64)>>,
+) -> SeriesBuild {
+    let mut skipped: Vec<String> = Vec::new();
+    let mut held: Vec<(f64, Vec<(NaiveDate, f64)>)> = Vec::new();
+    for (symbol, qty) in positions {
+        if *qty == 0.0 {
+            continue;
+        }
+        match closes.get(symbol).filter(|c| !c.is_empty()) {
+            Some(c) => {
+                let mut c = c.clone();
+                c.sort_by_key(|(d, _)| *d);
+                held.push((*qty, c));
+            }
+            None if skipped.contains(symbol) => {}
+            None => skipped.push(symbol.clone()),
+        }
+    }
+    let Some(start) = held.iter().map(|(_, c)| c[0].0).max() else {
+        return SeriesBuild { dates: Vec::new(), values: Vec::new(), skipped };
+    };
+    let dates: Vec<NaiveDate> = held
+        .iter()
+        .flat_map(|(_, c)| c.iter().map(|(d, _)| *d))
+        .filter(|d| *d >= start)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut values = vec![0.0; dates.len()];
+    for (qty, c) in &held {
+        let (mut i, mut last) = (0, c[0].1);
+        for (k, date) in dates.iter().enumerate() {
+            while i < c.len() && c[i].0 <= *date {
+                last = c[i].1;
+                i += 1;
+            }
+            values[k] += qty * last;
+        }
+    }
+    SeriesBuild { dates, values, skipped }
+}
+
+/// FMP's daily rows as dated closes, ascending. A row with an unreadable date
+/// or a non-positive close is dropped.
+pub fn closes_from_daily(rows: Vec<DailyClose>) -> Vec<(NaiveDate, f64)> {
+    let mut out: Vec<(NaiveDate, f64)> = rows
+        .into_iter()
+        .filter(|r| r.close > 0.0)
+        .filter_map(|r| NaiveDate::parse_from_str(&r.date, "%Y-%m-%d").ok().map(|d| (d, r.close)))
+        .collect();
+    out.sort_by_key(|(d, _)| *d);
+    out
+}
+
+/// Symbols fetched at once; the FMP client paces the per-minute budget itself.
+const FETCH_CONCURRENCY: usize = 8;
+
+/// Daily closes for every symbol from `from` to `to` inclusive. A symbol whose
+/// fetch fails or returns nothing is simply absent from the map; when every
+/// symbol fails, the provider itself is unavailable and the result is `Err`.
+pub async fn fetch_closes(
+    fmp: &FmpClient,
+    symbols: &[String],
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Result<HashMap<String, Vec<(NaiveDate, f64)>>> {
+    let (from, to) = (from.format("%Y-%m-%d").to_string(), to.format("%Y-%m-%d").to_string());
+    let results: Vec<_> = stream::iter(symbols.iter().cloned())
+        .map(|symbol| {
+            let (from, to) = (from.clone(), to.clone());
+            async move {
+                let fetched = fmp.get_daily_closes(&symbol, &from, &to).await;
+                (symbol, fetched)
+            }
+        })
+        .buffer_unordered(FETCH_CONCURRENCY)
+        .collect()
+        .await;
+    let mut out = HashMap::new();
+    let (mut failures, mut last_error) = (0usize, String::new());
+    for (symbol, fetched) in results {
+        match fetched {
+            Ok(rows) => {
+                let points = closes_from_daily(rows);
+                if !points.is_empty() {
+                    out.insert(symbol, points);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("comparison report: daily closes for {} failed: {}", symbol, e);
+                failures += 1;
+                last_error = e.to_string();
+            }
+        }
+    }
+    if !symbols.is_empty() && failures == symbols.len() {
+        return Err(AppError::Provider(format!("Price history could not be fetched: {last_error}")));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,5 +493,53 @@ mod tests {
         let mc = monte_carlo(&returns, 500, 252, 20261112, -0.20, 0.10).unwrap();
         assert_eq!(mc.bust_probability, 0.0);
         assert_eq!(mc.goal_probability, 1.0);
+    }
+
+    fn closes(rows: &[(&str, &[(usize, f64)])]) -> HashMap<String, Vec<(NaiveDate, f64)>> {
+        rows.iter()
+            .map(|(symbol, points)| (symbol.to_string(), points.iter().map(|(d, c)| (day(*d), *c)).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn hypothetical_series_forward_fills_a_missing_day() {
+        // BBB has no close on day 1 (a holiday on its exchange); its day-0 close carries over.
+        let positions = [("AAA".to_string(), 1.0), ("BBB".to_string(), 2.0)];
+        let closes = closes(&[("AAA", &[(0, 10.0), (1, 11.0), (2, 12.0)]), ("BBB", &[(0, 20.0), (2, 22.0)])]);
+        let built = hypothetical_series(&positions, &closes);
+        assert_eq!(built.dates, days(3));
+        assert_eq!(built.values, vec![50.0, 51.0, 56.0]);
+        assert!(built.skipped.is_empty());
+    }
+
+    #[test]
+    fn unpriced_symbol_is_noted() {
+        let positions = [("AAA".to_string(), 1.0), ("ZZZ".to_string(), 3.0)];
+        let closes = closes(&[("AAA", &[(0, 10.0), (1, 11.0)])]);
+        let built = hypothetical_series(&positions, &closes);
+        assert_eq!(built.skipped, vec!["ZZZ".to_string()]);
+        assert_eq!(built.values, vec![10.0, 11.0]);
+    }
+
+    #[test]
+    fn the_series_starts_when_every_priced_holding_has_a_close() {
+        // BBB only started trading on day 2: measuring from day 0 would show a
+        // jump when it appears, so the window starts on day 2.
+        let positions = [("AAA".to_string(), 1.0), ("BBB".to_string(), 1.0)];
+        let closes = closes(&[("AAA", &[(0, 10.0), (1, 11.0), (2, 12.0), (3, 13.0)]), ("BBB", &[(2, 5.0), (3, 6.0)])]);
+        let built = hypothetical_series(&positions, &closes);
+        assert_eq!(built.dates, vec![day(2), day(3)]);
+        assert_eq!(built.values, vec![17.0, 19.0]);
+    }
+
+    #[test]
+    fn daily_closes_parse_dates_and_drop_bad_rows() {
+        let rows = vec![
+            DailyClose { date: "2026-03-03".to_string(), close: 11.0, volume: None },
+            DailyClose { date: "2026-03-02".to_string(), close: 10.0, volume: Some(1) },
+            DailyClose { date: "not a date".to_string(), close: 12.0, volume: None },
+            DailyClose { date: "2026-03-04".to_string(), close: 0.0, volume: None },
+        ];
+        assert_eq!(closes_from_daily(rows), vec![(day(0), 10.0), (day(1), 11.0)]);
     }
 }
