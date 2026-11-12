@@ -4,6 +4,7 @@ import {
   ClipboardCheck,
   Copy,
   FileText,
+  ListChecks,
   Loader2,
   Send,
   Sparkles,
@@ -23,6 +24,14 @@ import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { renderMarkdown, formatToolName } from '@/lib/markdown'
 import { parseActionsFromMarkdown } from '@/lib/parseActions'
+import {
+  applyProgress,
+  initialStages,
+  onStagedProgress,
+  runStagedAnalysis,
+  type StageRow,
+} from '@/api/stagedAnalysis'
+import { StagedProgress } from '@/components/clients/StagedProgress'
 import { ActionReviewModal } from '@/components/trading/ActionReviewModal'
 import { applyScenarioRecommendations } from '@/lib/applyScenarioRecommendations'
 import { formatRecommendationsAsCsv } from '@/lib/csvRecommendations'
@@ -94,6 +103,9 @@ export default function AnalyzeWithClaudeDialog({
   const [conversationHistory, setConversationHistory] = useState<ConversationEntry[]>([])
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  // The staged "Run full analysis": its stage list while it runs (or after it failed).
+  const [stages, setStages] = useState<StageRow[] | null>(null)
+  const [isRunningFull, setIsRunningFull] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [isGeneratingBrief, setIsGeneratingBrief] = useState(false)
   const [isConfigured, setIsConfigured] = useState<boolean | null>(null)
@@ -110,6 +122,7 @@ export default function AnalyzeWithClaudeDialog({
       setMessages([])
       setConversationHistory([])
       setInputValue('')
+      setStages(null)
       // Flush any in-flight review so the items don't bleed into other
       // ActionReviewModal hosts (briefing, copilot, reports) on next navigation.
       if (useActionQueueStore.getState().isReviewOpen) {
@@ -129,7 +142,7 @@ export default function AnalyzeWithClaudeDialog({
 
   const sendMessage = async (text: string) => {
     const trimmed = text.trim()
-    if (!trimmed || isLoading) return
+    if (!trimmed || isLoading || isRunningFull) return
 
     // Build the message with scenario context baked in
     const isFirstMessage = messages.length === 0
@@ -184,6 +197,47 @@ export default function AnalyzeWithClaudeDialog({
       toast.error(`Copilot error: ${msg}`)
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  /**
+   * The staged pipeline (dossier → analysts → bull/bear → research manager →
+   * risk panel → portfolio manager → app checks → report). The input text, if
+   * any, is the focus handed to the portfolio manager. The report lands in the
+   * chat exactly as a chat answer does, so Review Recommendations appears when
+   * it carries trades, and a follow-up question sees it in the history.
+   */
+  const runFullAnalysis = async () => {
+    if (isLoading || isRunningFull) return
+    const focus = inputValue.trim()
+    const request = focus || 'Run a full analysis of this scenario.'
+    const prompt = `I'm looking at a sandbox scenario called "${scenarioName}" (scenario_id: ${scenarioId}). ${request}`
+
+    setMessages((prev) => [...prev, { role: 'user', content: request }])
+    setInputValue('')
+    setStages(initialStages())
+    setIsRunningFull(true)
+
+    let unlisten: (() => void) | undefined
+    try {
+      unlisten = await onStagedProgress(scenarioId, (progress) => {
+        setStages((prev) => (prev ? applyProgress(prev, progress) : prev))
+      })
+      const response = await runStagedAnalysis(scenarioId, focus || undefined)
+      setMessages((prev) => [...prev, { role: 'assistant', content: response.response_text }])
+      setConversationHistory((prev) => [
+        ...prev,
+        { role: 'user', content: prompt },
+        { role: 'assistant', content: response.response_text },
+      ])
+      setStages(null)
+    } catch (err) {
+      // The stage list stays up so the failed stage is visible until the next run.
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error(`Full analysis failed: ${msg}`)
+    } finally {
+      unlisten?.()
+      setIsRunningFull(false)
     }
   }
 
@@ -490,22 +544,37 @@ export default function AnalyzeWithClaudeDialog({
                   </Button>
                 )}
               </div>
+              {stages && <StagedProgress stages={stages} />}
               <div className="flex gap-2">
                 <Input
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder="Ask about this scenario..."
-                  disabled={isLoading}
+                  disabled={isLoading || isRunningFull}
                   className="flex-1"
                 />
                 <Button
                   size="icon"
                   onClick={() => sendMessage(inputValue)}
-                  disabled={isLoading || !inputValue.trim()}
+                  disabled={isLoading || isRunningFull || !inputValue.trim()}
                   className="h-10 w-10 shrink-0"
                 >
                   <Send className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={runFullAnalysis}
+                  disabled={isLoading || isRunningFull}
+                  className="h-10 shrink-0 gap-2"
+                  title="Dossier, four analysts, bull and bear, research manager, risk panel, portfolio manager, then the app's checks. Several minutes."
+                >
+                  {isRunningFull ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <ListChecks className="h-4 w-4" />
+                  )}
+                  {isRunningFull ? 'Running…' : 'Run full analysis'}
                 </Button>
               </div>
             </div>
@@ -514,7 +583,9 @@ export default function AnalyzeWithClaudeDialog({
       </DialogContent>
     </Dialog>
     {/* Mounted per-dialog-instance (like BriefingPage/CopilotPage/ViewReport)
-        so scenario-mode props are local to this flow. */}
+        so scenario-mode props are local to this flow. Scenario Detail's
+        Allocation card ("Review plan" in AllocationCard.tsx) depends on this
+        modal staying mounted unconditionally; it opens it via setItemsAndOpen. */}
     <ActionReviewModal
       onApply={handleApplyToScenario}
       cloneNameRequired={isBaseline}
