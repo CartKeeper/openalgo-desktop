@@ -63,13 +63,17 @@ pub async fn compute_indicators(
                 AppError::Validation("Each indicator must have a 'name' field".to_string())
             })?;
 
-        let params = indicator_spec
+        let params: std::collections::HashMap<String, f64> = indicator_spec
             .get("params")
-            .cloned()
-            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| v.as_f64().map(|f| (k.clone(), f)))
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        let result = compute_indicator(&ohlcv_data, name, &params)
-            .map_err(|e| AppError::Validation(e))?;
+        let result = compute_indicator(&ohlcv_data, name, &params)?;
         results.push(result);
     }
 
