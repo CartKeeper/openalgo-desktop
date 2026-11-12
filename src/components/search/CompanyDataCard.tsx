@@ -197,7 +197,7 @@ export function CompanyDataCard({ query }: CompanyDataCardProps) {
         <div className="flex flex-wrap items-center gap-4">
           <Button
             variant="secondary"
-            className="h-10 px-4"
+            className="h-10 px-4 has-[>svg]:px-4"
             onClick={download}
             disabled={downloading}
             aria-busy={downloading}

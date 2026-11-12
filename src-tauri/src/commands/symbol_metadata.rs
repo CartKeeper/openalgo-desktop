@@ -47,14 +47,19 @@ pub async fn symbol_metadata_refresh(
 }
 
 /// Row count, pinned commit/data date and last refresh time.
+///
+/// `async` on purpose: Tauri runs non-async commands on the main thread, and a
+/// read that waits on the DuckDB mutex while a download is loading would
+/// freeze the window.
 #[tauri::command]
-pub fn symbol_metadata_status(state: State<'_, AppState>) -> Result<MetadataStatus> {
+pub async fn symbol_metadata_status(state: State<'_, AppState>) -> Result<MetadataStatus> {
     symbol_metadata_service::status(state.duckdb.as_ref())
 }
 
 /// Case-insensitive search by symbol prefix or name; limit default 25, max 200.
+/// `async` for the same reason as `symbol_metadata_status`.
 #[tauri::command]
-pub fn symbol_metadata_search(
+pub async fn symbol_metadata_search(
     state: State<'_, AppState>,
     query: String,
     limit: Option<u32>,
@@ -105,6 +110,29 @@ mod tests {
         ];
         db.replace_symbol_metadata(&rows, "FinanceDatabase", "2026-11-08", &[]).unwrap();
         (dir, db)
+    }
+
+    /// Tauri runs a non-`async` command on the main thread. A read that waits
+    /// on the DuckDB mutex while a download is loading would freeze the window,
+    /// so both reads must return a Future, like every other DuckDB command.
+    fn assert_async_command_1<F, A, Fut>(_: F)
+    where
+        F: FnOnce(A) -> Fut,
+        Fut: std::future::Future,
+    {
+    }
+
+    fn assert_async_command_4<F, A, B, C, D, Fut>(_: F)
+    where
+        F: FnOnce(A, B, C, D) -> Fut,
+        Fut: std::future::Future,
+    {
+    }
+
+    #[test]
+    fn read_commands_are_async_so_they_never_run_on_the_main_thread() {
+        assert_async_command_1(symbol_metadata_status);
+        assert_async_command_4(symbol_metadata_search);
     }
 
     #[test]

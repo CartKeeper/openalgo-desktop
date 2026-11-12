@@ -87,6 +87,18 @@ describe('CompanyDataCard status and download', () => {
     expect(screen.getByText('Data: FinanceDatabase (MIT)')).toBeInTheDocument()
   })
 
+  it('the Download button is a 40 px medium button with 16 px side padding beside its icon', async () => {
+    backend({ symbol_metadata_status: () => downloadedStatus })
+    render(<CompanyDataCard query="" />)
+    await screen.findByTestId('company-data-status')
+
+    const button = screen.getByRole('button', { name: /Download symbol metadata/ })
+    expect(button.className).toMatch(/\bh-10\b/)
+    // The base Button sets `has-[>svg]:px-3` (12 px) whenever an icon is present;
+    // CLAUDE.md's medium button is 16 px, so the icon variant must be overridden too.
+    expect(button.className).toMatch(/has-\[>svg\]:px-4/)
+  })
+
   it('says "Not downloaded yet" before the first download', async () => {
     backend({ symbol_metadata_status: () => emptyStatus })
     render(<CompanyDataCard query="" />)

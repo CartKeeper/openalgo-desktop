@@ -4,13 +4,40 @@
 use super::DuckDb;
 use crate::error::Result;
 use crate::services::symbol_metadata_service::SymbolMetadataRow;
-use std::collections::{HashMap, HashSet};
+use duckdb::ToSql;
+use std::collections::HashMap;
 
-const UPSERT_SQL: &str = "INSERT INTO symbol_metadata
+/// Session-scoped scratch table the Appender fills. A TEMP table lives in
+/// memory for this connection only and is never part of the user's database
+/// file; it is created once per connection and its scratch rows are cleared
+/// before each load (DuckDB keeps temp tables across transactions).
+///
+/// Why stage at all: binding rows through SQL is pathological at this volume.
+/// 50,000 single-row `INSERT … ON CONFLICT` statements in one transaction ran
+/// 30+ minutes and exhausted 25 GiB (each statement appends a full chunk to
+/// transaction-local storage); 500-row VALUES batches still took ~46 s
+/// (every bound value is evaluated one expression at a time). The Appender
+/// writes vectors directly, and the two set-based statements below finish the
+/// load in a few seconds.
+const STAGE_TABLE: &str = "symbol_metadata_stage";
+
+const CREATE_STAGE_SQL: &str = "CREATE TEMP TABLE IF NOT EXISTS symbol_metadata_stage (
+    symbol VARCHAR, exchange VARCHAR, name VARCHAR, sector VARCHAR, industry VARCHAR,
+    industry_group VARCHAR, country VARCHAR, market_cap DOUBLE, size_bucket VARCHAR,
+    isin VARCHAR, cusip VARCHAR, figi VARCHAR, website VARCHAR, summary VARCHAR,
+    asset_type VARCHAR, delisted BOOLEAN)";
+
+const CLEAR_STAGE_SQL: &str = "DELETE FROM symbol_metadata_stage";
+
+// `updated_at` takes the table default on insert and is refreshed on update.
+const UPSERT_FROM_STAGE_SQL: &str = "INSERT INTO symbol_metadata
    (symbol, exchange, name, sector, industry, industry_group, country, market_cap,
     size_bucket, isin, cusip, figi, website, summary, asset_type, delisted,
-    source, source_as_of, updated_at)
- VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    source, source_as_of)
+ SELECT symbol, exchange, name, sector, industry, industry_group, country, market_cap,
+        size_bucket, isin, cusip, figi, website, summary, asset_type, delisted,
+        CAST(? AS VARCHAR), CAST(? AS VARCHAR)
+ FROM symbol_metadata_stage
  ON CONFLICT (symbol, exchange) DO UPDATE SET
    name = excluded.name,
    sector = excluded.sector,
@@ -30,6 +57,13 @@ const UPSERT_SQL: &str = "INSERT INTO symbol_metadata
    source_as_of = excluded.source_as_of,
    updated_at = now()";
 
+/// Rows of this source whose key is absent from the new set.
+const DELETE_STALE_SQL: &str = "DELETE FROM symbol_metadata
+ WHERE source = ?
+   AND NOT EXISTS (
+     SELECT 1 FROM symbol_metadata_stage s
+     WHERE s.symbol = symbol_metadata.symbol AND s.exchange = symbol_metadata.exchange)";
+
 const SELECT_COLUMNS: &str = "symbol, exchange, name, sector, industry, industry_group, country, \
      market_cap, size_bucket, isin, cusip, figi, website, summary, \
      COALESCE(asset_type, 'equity'), COALESCE(delisted, FALSE)";
@@ -39,10 +73,12 @@ impl DuckDb {
     /// the `meta` key/value pairs alongside (so a refresh and its record commit
     /// together). Returns the number of distinct (symbol, exchange) keys loaded.
     ///
-    /// Rows are upserted (`ON CONFLICT DO UPDATE`) and only keys of this source
-    /// that are absent from `rows` are deleted: DuckDB rejects deleting and
-    /// re-inserting the same primary key inside one transaction. Rows from any
-    /// other `source` are left alone. On error the transaction rolls back.
+    /// Rows are staged through the Appender, upserted in one set-based
+    /// `INSERT … SELECT … ON CONFLICT DO UPDATE`, and only keys of this source
+    /// that are absent from `rows` are deleted (one set-based `DELETE`): DuckDB
+    /// rejects deleting and re-inserting the same primary key inside one
+    /// transaction. Rows from any other `source` are left alone. On error the
+    /// transaction rolls back.
     pub fn replace_symbol_metadata(
         &self,
         rows: &[SymbolMetadataRow],
@@ -50,7 +86,8 @@ impl DuckDb {
         source_as_of: &str,
         meta: &[(&str, &str)],
     ) -> Result<usize> {
-        // Last occurrence of a (symbol, exchange) key wins. A dual listing has a
+        // Last occurrence of a (symbol, exchange) key wins (ON CONFLICT cannot
+        // update the same row twice in one statement). A dual listing has a
         // different exchange and keeps both rows.
         let mut deduped: Vec<&SymbolMetadataRow> = Vec::with_capacity(rows.len());
         let mut position: HashMap<(&str, &str), usize> = HashMap::with_capacity(rows.len());
@@ -68,49 +105,40 @@ impl DuckDb {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
 
-        let existing: HashSet<(String, String)> = {
-            let mut stmt =
-                tx.prepare("SELECT symbol, exchange FROM symbol_metadata WHERE source = ?")?;
-            let keys = stmt
-                .query_map([source], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-                .collect::<std::result::Result<HashSet<_>, _>>()?;
-            keys
-        };
+        tx.execute_batch(CREATE_STAGE_SQL)?;
+        tx.execute(CLEAR_STAGE_SQL, [])?;
+        {
+            let mut appender = tx.appender_to_catalog_and_db(STAGE_TABLE, "temp", "main")?;
+            let mut values: Vec<&dyn ToSql> = Vec::with_capacity(16);
+            for row in &deduped {
+                values.clear();
+                values.extend_from_slice(&[
+                    &row.symbol,
+                    &row.exchange,
+                    &row.name,
+                    &row.sector,
+                    &row.industry,
+                    &row.industry_group,
+                    &row.country,
+                    &row.market_cap,
+                    &row.size_bucket,
+                    &row.isin,
+                    &row.cusip,
+                    &row.figi,
+                    &row.website,
+                    &row.summary,
+                    &row.asset_type,
+                    &row.delisted,
+                ]);
+                appender.append_row(values.as_slice())?;
+            }
+            appender.flush()?;
+        }
+
+        tx.execute(UPSERT_FROM_STAGE_SQL, duckdb::params![source, source_as_of])?;
+        tx.execute(DELETE_STALE_SQL, [source])?;
 
         {
-            let mut upsert = tx.prepare(UPSERT_SQL)?;
-            for row in &deduped {
-                upsert.execute(duckdb::params![
-                    row.symbol,
-                    row.exchange,
-                    row.name,
-                    row.sector,
-                    row.industry,
-                    row.industry_group,
-                    row.country,
-                    row.market_cap,
-                    row.size_bucket,
-                    row.isin,
-                    row.cusip,
-                    row.figi,
-                    row.website,
-                    row.summary,
-                    row.asset_type,
-                    row.delisted,
-                    source,
-                    source_as_of,
-                ])?;
-            }
-
-            let mut delete = tx.prepare(
-                "DELETE FROM symbol_metadata WHERE symbol = ? AND exchange = ? AND source = ?",
-            )?;
-            for (symbol, exchange) in &existing {
-                if !position.contains_key(&(symbol.as_str(), exchange.as_str())) {
-                    delete.execute(duckdb::params![symbol, exchange, source])?;
-                }
-            }
-
             let mut put = tx.prepare(
                 "INSERT INTO symbol_metadata_meta (meta_key, meta_value) VALUES (?, ?)
                  ON CONFLICT (meta_key) DO UPDATE SET meta_value = excluded.meta_value",
@@ -419,6 +447,67 @@ mod tests {
         let with = db.search_symbol_metadata("a", 10, true).unwrap();
         assert_eq!(symbols(&with), ["A", "AOLD"]);
         assert!(with[1].delisted);
+    }
+
+    fn bulk_rows(count: usize) -> Vec<SymbolMetadataRow> {
+        (0..count)
+            .map(|i| {
+                let mut r = row(
+                    &format!("S{i}"),
+                    if i % 2 == 0 { "NYSE" } else { "NASDAQ" },
+                    "Some Company Name, Inc.",
+                );
+                r.summary = Some("x".repeat(1_000));
+                r
+            })
+            .collect()
+    }
+
+    #[test]
+    fn replace_handles_a_thousand_rows_then_a_shrink() {
+        let (_dir, db) = temp_db();
+        let rows = bulk_rows(1_203);
+        assert_eq!(db.replace_symbol_metadata(&rows, "FinanceDatabase", "2026-11-08", &[]).unwrap(), 1_203);
+        assert_eq!(db.symbol_metadata_count().unwrap(), 1_203);
+        assert_eq!(db.search_symbol_metadata("S0", 5, false).unwrap()[0].symbol, "S0");
+        assert_eq!(db.search_symbol_metadata("S499", 5, false).unwrap()[0].symbol, "S499");
+        assert_eq!(db.search_symbol_metadata("S500", 5, false).unwrap()[0].symbol, "S500");
+        assert_eq!(db.search_symbol_metadata("S1202", 5, false).unwrap()[0].symbol, "S1202");
+        // Shrink to 500 rows: the 703 stale keys are removed, the rest updated in place.
+        let rows = bulk_rows(500);
+        assert_eq!(db.replace_symbol_metadata(&rows, "FinanceDatabase", "2026-11-08", &[]).unwrap(), 500);
+        assert_eq!(db.symbol_metadata_count().unwrap(), 500);
+        assert!(db.search_symbol_metadata("S1202", 5, true).unwrap().is_empty());
+    }
+
+    /// A refresh loads ~16k rows (35–50k with OTC). Bound one row per
+    /// statement, 50,000 rows ran 30+ minutes and exhausted 25 GiB (each
+    /// statement appends a full chunk to transaction-local storage). This keeps
+    /// the load inside a budget a user would call "a short wait".
+    #[test]
+    fn loading_fifty_thousand_rows_stays_within_the_time_budget() {
+        let (_dir, db) = temp_db();
+        let rows = bulk_rows(50_000);
+        let budget = std::time::Duration::from_secs(60);
+
+        let started = std::time::Instant::now();
+        assert_eq!(db.replace_symbol_metadata(&rows, "FinanceDatabase", "2026-11-08", &[]).unwrap(), 50_000);
+        let first = started.elapsed();
+        eprintln!("PERF first load of 50k rows: {first:?}");
+        assert!(first < budget, "first load took {first:?}");
+
+        let started = std::time::Instant::now();
+        assert_eq!(db.replace_symbol_metadata(&rows, "FinanceDatabase", "2026-11-08", &[]).unwrap(), 50_000);
+        let second = started.elapsed();
+        eprintln!("PERF second load (50k upserts over existing keys): {second:?}");
+        assert!(second < budget, "second load took {second:?}");
+
+        assert_eq!(db.symbol_metadata_count().unwrap(), 50_000);
+        let started = std::time::Instant::now();
+        let found = db.search_symbol_metadata("some company", 25, false).unwrap();
+        eprintln!("PERF name-contains search over 50k rows: {:?} ({} rows)", started.elapsed(), found.len());
+        assert_eq!(found.len(), 25);
+        assert_eq!(db.search_symbol_metadata("S49999", 5, false).unwrap()[0].symbol, "S49999");
     }
 
     #[test]
