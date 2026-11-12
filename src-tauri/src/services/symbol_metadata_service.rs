@@ -1,15 +1,25 @@
 //! Symbol metadata from FinanceDatabase (MIT).
 //!
-//! Pure parsing and exchange mapping for the FinanceDatabase equity and ETF
-//! CSV files pinned at `FD_COMMIT`. See `docs/third-party/FinanceDatabase.md`.
+//! Parsing and exchange mapping for the FinanceDatabase equity and ETF CSV
+//! files pinned at `FD_COMMIT`, plus the download → parse → transactional
+//! DuckDB load behind the Search page's "Download symbol metadata" button.
+//! See `docs/third-party/FinanceDatabase.md` for attribution.
 
+use crate::db::duckdb::DuckDb;
 use crate::error::{AppError, Result};
+use async_trait::async_trait;
+use futures_util::stream::{self, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 /// FinanceDatabase commit every download is pinned to.
 pub const FD_COMMIT: &str = "1ac8809da480";
 /// Date of the pinned commit's data.
 pub const FD_DATA_DATE: &str = "2026-11-08";
+/// Raw-file base for the FinanceDatabase repository.
+pub const FD_RAW_BASE: &str = "https://raw.githubusercontent.com/JerBouma/FinanceDatabase";
+/// Value of the `source` column for rows loaded by this service.
+pub const SOURCE_NAME: &str = "FinanceDatabase";
 /// Equity files (`database/equities/{code}.csv`) for the US exchanges.
 pub const EQUITY_FILES: [&str; 8] = ["NYQ", "NMS", "NGM", "NCM", "ASE", "PCX", "BTS", "OQB"];
 /// ETF files (`database/etfs/{code}.csv`) for the US exchanges.
@@ -18,6 +28,166 @@ pub const ETF_FILES: [&str; 6] = ["PCX", "BTS", "NGM", "NMS", "NYQ", "NCM"];
 pub const OTC_FILE: &str = "PNK";
 /// `summary` is stored truncated to this many characters.
 pub const SUMMARY_MAX_CHARS: usize = 2_000;
+/// Per-file download timeout.
+pub const FILE_TIMEOUT_SECS: u64 = 120;
+/// Files downloaded at the same time.
+pub const CONCURRENT_DOWNLOADS: usize = 4;
+
+/// `symbol_metadata_meta` keys written with every successful refresh.
+pub const META_LAST_REFRESH: &str = "symbol_metadata_last_refresh";
+pub const META_INCLUDE_OTC: &str = "symbol_metadata_include_otc";
+pub const META_SOURCE_COMMIT: &str = "symbol_metadata_source_commit";
+pub const META_SOURCE_AS_OF: &str = "symbol_metadata_source_as_of";
+
+/// Which FinanceDatabase folder a file comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileKind {
+    Equities,
+    Etfs,
+}
+
+impl FileKind {
+    fn folder(self) -> &'static str {
+        match self {
+            FileKind::Equities => "equities",
+            FileKind::Etfs => "etfs",
+        }
+    }
+}
+
+/// One file of a refresh.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedFile {
+    pub kind: FileKind,
+    pub code: &'static str,
+    pub url: String,
+}
+
+/// Raw URL of one FinanceDatabase file at the pinned commit.
+pub fn file_url(kind: FileKind, code: &str) -> String {
+    format!("{FD_RAW_BASE}/{FD_COMMIT}/database/{}/{code}.csv", kind.folder())
+}
+
+/// The files a refresh downloads: 8 equity + 6 ETF files, plus OTC last when asked.
+pub fn planned_files(include_otc: bool) -> Vec<PlannedFile> {
+    let mut files: Vec<PlannedFile> = EQUITY_FILES
+        .iter()
+        .map(|&code| PlannedFile {
+            kind: FileKind::Equities,
+            code,
+            url: file_url(FileKind::Equities, code),
+        })
+        .chain(ETF_FILES.iter().map(|&code| PlannedFile {
+            kind: FileKind::Etfs,
+            code,
+            url: file_url(FileKind::Etfs, code),
+        }))
+        .collect();
+    if include_otc {
+        files.push(PlannedFile {
+            kind: FileKind::Equities,
+            code: OTC_FILE,
+            url: file_url(FileKind::Equities, OTC_FILE),
+        });
+    }
+    files
+}
+
+/// Fetches one URL as text. Abstracted so the load is testable without a network.
+#[async_trait]
+pub trait Fetcher: Send + Sync {
+    async fn get_text(&self, url: &str) -> Result<String>;
+}
+
+/// `Fetcher` over the app's shared `reqwest::Client`, 120 s per file.
+pub struct HttpFetcher<'a>(pub &'a reqwest::Client);
+
+#[async_trait]
+impl Fetcher for HttpFetcher<'_> {
+    async fn get_text(&self, url: &str) -> Result<String> {
+        let response = self
+            .0
+            .get(url)
+            .timeout(Duration::from_secs(FILE_TIMEOUT_SECS))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(response.text().await?)
+    }
+}
+
+/// What the Search page's status line shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataStatus {
+    /// Rows in `symbol_metadata` (listed and delisted).
+    pub rows: i64,
+    /// FinanceDatabase commit the loaded data came from (`FD_COMMIT` until a load exists).
+    pub source_commit: String,
+    /// Data date of the loaded commit, `YYYY-MM-DD`.
+    pub source_as_of: String,
+    /// UTC ISO-8601 time of the last successful refresh; `None` before the first.
+    pub last_refresh: Option<String>,
+    /// Whether the last refresh included the OTC pink-sheet file.
+    pub include_otc: bool,
+}
+
+/// Download every planned file, parse them all, then load them in ONE DuckDB
+/// transaction together with the refresh record. Any failed download or parse
+/// returns `Err` before anything is written, so the previous data stays.
+pub async fn refresh(db: &DuckDb, fetcher: &dyn Fetcher, include_otc: bool) -> Result<MetadataStatus> {
+    let files = planned_files(include_otc);
+    let texts: Vec<String> = stream::iter(files.iter().map(|file| fetcher.get_text(&file.url)))
+        .buffered(CONCURRENT_DOWNLOADS)
+        .try_collect()
+        .await?;
+
+    let mut rows = Vec::new();
+    for (file, text) in files.iter().zip(texts.iter()) {
+        let parsed = match file.kind {
+            FileKind::Equities => parse_equities(text)?,
+            FileKind::Etfs => parse_etfs(text)?,
+        };
+        tracing::debug!("FinanceDatabase {:?}/{}: {} rows", file.kind, file.code, parsed.len());
+        rows.extend(parsed);
+    }
+
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let include_otc_value = include_otc.to_string();
+    let meta = [
+        (META_LAST_REFRESH, now.as_str()),
+        (META_INCLUDE_OTC, include_otc_value.as_str()),
+        (META_SOURCE_COMMIT, FD_COMMIT),
+        (META_SOURCE_AS_OF, FD_DATA_DATE),
+    ];
+    let loaded = db.replace_symbol_metadata(&rows, SOURCE_NAME, FD_DATA_DATE, &meta)?;
+    tracing::info!(
+        "Symbol metadata refreshed: {} rows from {} FinanceDatabase files (commit {})",
+        loaded,
+        files.len(),
+        FD_COMMIT
+    );
+
+    status(db)
+}
+
+/// Current state of the loaded metadata, from the row count and the refresh record.
+pub fn status(db: &DuckDb) -> Result<MetadataStatus> {
+    let rows = db.symbol_metadata_count()?;
+    let meta = db.get_symbol_metadata_meta()?;
+    Ok(MetadataStatus {
+        rows,
+        source_commit: meta
+            .get(META_SOURCE_COMMIT)
+            .cloned()
+            .unwrap_or_else(|| FD_COMMIT.to_string()),
+        source_as_of: meta
+            .get(META_SOURCE_AS_OF)
+            .cloned()
+            .unwrap_or_else(|| FD_DATA_DATE.to_string()),
+        last_refresh: meta.get(META_LAST_REFRESH).cloned(),
+        include_otc: meta.get(META_INCLUDE_OTC).map(|v| v == "true").unwrap_or(false),
+    })
+}
 
 /// Map a FinanceDatabase exchange code to the app's exchange name.
 /// Codes outside the US set return `None` and their rows are skipped.
@@ -370,5 +540,197 @@ mod tests {
         assert_eq!(aaa.size_bucket, None);
         assert_eq!(aaa.asset_type, "etf");
         assert!(!aaa.delisted);
+    }
+
+    // ------------------------------------------------------------------
+    // Download + transactional load
+    // ------------------------------------------------------------------
+
+    use crate::db::duckdb::DuckDb;
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+
+    fn temp_db() -> (tempfile::TempDir, DuckDb) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = DuckDb::new(&dir.path().join("symbols.duckdb")).expect("open duckdb");
+        (dir, db)
+    }
+
+    /// Build one CSV line of `width` fields from (index, value) pairs.
+    fn csv_line(width: usize, set: &[(usize, &str)]) -> String {
+        let mut fields = vec![String::new(); width];
+        for (i, v) in set {
+            fields[*i] = (*v).to_string();
+        }
+        fields
+            .iter()
+            .map(|f| {
+                if f.contains([',', '"', '\n']) {
+                    format!("\"{}\"", f.replace('"', "\"\""))
+                } else {
+                    f.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// An equities file for exchange `code`: two mapped rows (symbols unique per
+    /// file) and one row on an unmapped exchange.
+    fn equity_file(code: &str) -> String {
+        format!(
+            "{EQUITIES_HEADER}\n{}\n{}\n{}\n",
+            csv_line(22, &[(0, &format!("{code}1")), (1, "One Corp"), (7, code), (21, "False")]),
+            csv_line(22, &[(0, &format!("{code}2")), (1, "Two Corp"), (7, code), (21, "True")]),
+            csv_line(22, &[(0, "LSEONLY"), (1, "UK Plc"), (7, "LSE"), (21, "False")]),
+        )
+    }
+
+    /// An ETFs file for exchange `code`: two mapped rows with symbols unique per file.
+    fn etf_file(code: &str) -> String {
+        format!(
+            "{ETFS_HEADER}\n{}\n{}\n",
+            csv_line(11, &[(0, &format!("{code}E1")), (1, "One ETF"), (7, code), (10, "False")]),
+            csv_line(11, &[(0, &format!("{code}E2")), (1, "Two ETF"), (7, code), (10, "False")]),
+        )
+    }
+
+    /// Serves the templated fixtures for every pinned URL; optionally fails on
+    /// the n-th call, whichever file that is (downloads run concurrently).
+    struct FakeFetcher {
+        fail_at_call: Option<usize>,
+        calls: Mutex<usize>,
+    }
+
+    impl FakeFetcher {
+        fn ok() -> Self {
+            Self { fail_at_call: None, calls: Mutex::new(0) }
+        }
+        fn failing_at(call: usize) -> Self {
+            Self { fail_at_call: Some(call), calls: Mutex::new(0) }
+        }
+        fn calls(&self) -> usize {
+            *self.calls.lock().unwrap()
+        }
+    }
+
+    #[async_trait]
+    impl Fetcher for FakeFetcher {
+        async fn get_text(&self, url: &str) -> Result<String> {
+            let call = {
+                let mut c = self.calls.lock().unwrap();
+                *c += 1;
+                *c
+            };
+            if self.fail_at_call == Some(call) {
+                return Err(AppError::Provider(format!("simulated network drop while fetching {url}")));
+            }
+            let prefix = format!(
+                "https://raw.githubusercontent.com/JerBouma/FinanceDatabase/{FD_COMMIT}/database/"
+            );
+            assert!(url.starts_with(&prefix), "unexpected URL {url}");
+            let code = url.rsplit('/').next().unwrap_or_default().trim_end_matches(".csv");
+            Ok(if url.contains("/etfs/") { etf_file(code) } else { equity_file(code) })
+        }
+    }
+
+    #[test]
+    fn file_url_points_at_the_pinned_commit() {
+        assert_eq!(
+            file_url(FileKind::Equities, "NYQ"),
+            "https://raw.githubusercontent.com/JerBouma/FinanceDatabase/1ac8809da480/database/equities/NYQ.csv"
+        );
+        assert_eq!(
+            file_url(FileKind::Etfs, "PCX"),
+            "https://raw.githubusercontent.com/JerBouma/FinanceDatabase/1ac8809da480/database/etfs/PCX.csv"
+        );
+    }
+
+    #[test]
+    fn planned_files_cover_the_us_files_and_add_otc_only_on_request() {
+        let without = planned_files(false);
+        assert_eq!(without.len(), 14);
+        assert_eq!(without.iter().filter(|f| f.kind == FileKind::Equities).count(), 8);
+        assert_eq!(without.iter().filter(|f| f.kind == FileKind::Etfs).count(), 6);
+        assert!(without.iter().all(|f| f.code != OTC_FILE));
+
+        let with = planned_files(true);
+        assert_eq!(with.len(), 15);
+        let otc = with.last().unwrap();
+        assert_eq!((otc.kind, otc.code), (FileKind::Equities, OTC_FILE));
+        assert!(otc.url.ends_with("/database/equities/PNK.csv"));
+    }
+
+    #[test]
+    fn status_before_any_refresh_reports_nothing_downloaded() {
+        let (_dir, db) = temp_db();
+        let s = status(&db).unwrap();
+        assert_eq!(s.rows, 0);
+        assert_eq!(s.last_refresh, None);
+        assert!(!s.include_otc);
+        assert_eq!(s.source_commit, FD_COMMIT);
+        assert_eq!(s.source_as_of, FD_DATA_DATE);
+    }
+
+    #[tokio::test]
+    async fn refresh_loads_two_rows_per_file_and_status_reports_them() {
+        let (_dir, db) = temp_db();
+        let fetcher = FakeFetcher::ok();
+
+        let s = refresh(&db, &fetcher, false).await.expect("refresh succeeds");
+
+        assert_eq!(fetcher.calls(), 14);
+        assert_eq!(s.rows, 2 * 14);
+        assert_eq!(db.symbol_metadata_count().unwrap(), 28);
+        assert_eq!(s.source_commit, FD_COMMIT);
+        assert_eq!(s.source_as_of, FD_DATA_DATE);
+        assert!(!s.include_otc);
+        let last = s.last_refresh.clone().expect("last_refresh recorded");
+        let parsed = chrono::DateTime::parse_from_rfc3339(&last).expect("UTC ISO-8601");
+        assert_eq!(parsed.offset().local_minus_utc(), 0, "stored in UTC: {last}");
+        assert_eq!(status(&db).unwrap(), s, "status() re-reads the same picture");
+
+        let nyq = db.search_symbol_metadata("NYQ1", 5, false).unwrap();
+        assert_eq!(nyq[0].exchange, "NYSE");
+        assert_eq!(nyq[0].asset_type, "equity");
+        let etf = db.search_symbol_metadata("PCXE1", 5, false).unwrap();
+        assert_eq!(etf[0].exchange, "ARCA");
+        assert_eq!(etf[0].asset_type, "etf");
+    }
+
+    #[tokio::test]
+    async fn refresh_with_otc_adds_the_pink_sheet_file() {
+        let (_dir, db) = temp_db();
+        let fetcher = FakeFetcher::ok();
+        let s = refresh(&db, &fetcher, true).await.expect("refresh succeeds");
+        assert_eq!(fetcher.calls(), 15);
+        assert_eq!(s.rows, 2 * 15);
+        assert!(s.include_otc);
+        assert_eq!(db.search_symbol_metadata("PNK1", 5, false).unwrap()[0].exchange, "OTC");
+    }
+
+    #[tokio::test]
+    async fn a_failed_file_aborts_the_load_and_keeps_the_previous_data() {
+        let (_dir, db) = temp_db();
+        let before = refresh(&db, &FakeFetcher::ok(), false).await.expect("first refresh");
+        assert_eq!(before.rows, 28);
+
+        let err = refresh(&db, &FakeFetcher::failing_at(5), true)
+            .await
+            .expect_err("a failed file fails the refresh");
+        assert!(err.to_string().contains("simulated network drop"), "{err}");
+
+        assert_eq!(db.symbol_metadata_count().unwrap(), 28, "nothing written");
+        let after = status(&db).unwrap();
+        assert_eq!(after, before, "status still shows the previous refresh (include_otc stays false)");
+    }
+
+    #[tokio::test]
+    async fn refreshing_twice_over_the_same_symbols_keeps_one_row_per_key() {
+        let (_dir, db) = temp_db();
+        refresh(&db, &FakeFetcher::ok(), false).await.expect("first");
+        let s = refresh(&db, &FakeFetcher::ok(), false).await.expect("second");
+        assert_eq!(s.rows, 28);
+        assert_eq!(db.symbol_metadata_count().unwrap(), 28);
     }
 }
