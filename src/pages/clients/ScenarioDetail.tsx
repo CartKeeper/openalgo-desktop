@@ -37,6 +37,7 @@ import type { Client } from '@/types/clients'
 import { isShortSellingAllowed } from '@/types/clients'
 import type { ClientScenario, ScenarioPosition } from '@/types/client-scenarios'
 import { HelpButton } from '@/components/HelpButton'
+import { AllocationCard } from '@/components/clients/AllocationCard'
 import { downloadGoldmanBriefPdf } from '@/components/reports/goldman/generator'
 import type { GoldmanBrief } from '@/components/reports/goldman/types'
 import AddTradeDialog from './AddTradeDialog'
@@ -772,6 +773,16 @@ export default function ScenarioDetail() {
           )}
         </CardContent>
       </Card>
+
+      {/* Allocation targets — drift against the client's targets and a whole-share
+          rebalance plan (WP2). "Review plan" opens the ActionReviewModal that
+          AnalyzeWithClaudeDialog hosts on this page in scenario mode (applies to this
+          scenario, or to a new clone when this is the baseline). */}
+      <AllocationCard
+        clientId={clientId}
+        scenarioId={scId}
+        symbols={enrichedPositions.map((p) => p.symbol)}
+      />
 
       {/* Removed Positions (positions that were closed by AI trades) */}
       {(() => {
