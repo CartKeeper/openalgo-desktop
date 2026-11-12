@@ -79,4 +79,5 @@ pub use history_service::{HistoryService, HistoryResult, IntervalsResult, Candle
 // [wp-anchor] WP6 talib-indicators
 //
 // [wp-anchor] WP7 symbol-metadata
+pub mod symbol_metadata_service;
 //
