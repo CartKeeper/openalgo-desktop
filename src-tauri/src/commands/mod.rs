@@ -36,8 +36,10 @@ pub mod market_status;
 pub mod broker_watchlist;
 pub mod backtest;
 // [wp-anchor] WP1 chart-tools
+pub mod chart_preferences;
 //
 // [wp-anchor] WP2 analytics
+pub mod analytics;
 //
 // [wp-anchor] WP3 staged-analysis
 //
@@ -46,6 +48,7 @@ pub mod backtest;
 // [wp-anchor] WP6 talib-indicators
 //
 // [wp-anchor] WP7 symbol-metadata
+pub mod symbol_metadata;
 //
 // [wp-anchor] WP8 flow
 //

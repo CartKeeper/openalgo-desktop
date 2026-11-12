@@ -37,6 +37,7 @@ import type { Client } from '@/types/clients'
 import { isShortSellingAllowed } from '@/types/clients'
 import type { ClientScenario, ScenarioPosition } from '@/types/client-scenarios'
 import { HelpButton } from '@/components/HelpButton'
+import { AllocationCard } from '@/components/clients/AllocationCard'
 import { downloadGoldmanBriefPdf } from '@/components/reports/goldman/generator'
 import type { GoldmanBrief } from '@/components/reports/goldman/types'
 import AddTradeDialog from './AddTradeDialog'
@@ -773,6 +774,16 @@ export default function ScenarioDetail() {
         </CardContent>
       </Card>
 
+      {/* Allocation targets — drift against the client's targets and a whole-share
+          rebalance plan (WP2). "Review plan" opens the ActionReviewModal that
+          AnalyzeWithClaudeDialog hosts on this page in scenario mode (applies to this
+          scenario, or to a new clone when this is the baseline). */}
+      <AllocationCard
+        clientId={clientId}
+        scenarioId={scId}
+        symbols={enrichedPositions.map((p) => p.symbol)}
+      />
+
       {/* Removed Positions (positions that were closed by AI trades) */}
       {(() => {
         const removed = [...diffMap.entries()].filter(([, d]) => d.type === 'removed')
@@ -986,6 +997,26 @@ export default function ScenarioDetail() {
             title: 'Analyze with Claude',
             description:
               'Ask Claude AI to review this portfolio and suggest changes. Claude will create a cloned scenario with its recommended trades applied, so your original stays untouched.',
+          },
+          {
+            title: 'Allocation targets',
+            description:
+              "Target weights for this client, per symbol (VOO 40%) or per sector (Technology 30%), each with a tolerance band (±2% by default). Targets are saved per client and measured against this scenario's positions and cash. Per scope they cannot add up to more than 100%; Save tells you the sum when they do.",
+          },
+          {
+            title: 'Drift and bands',
+            description:
+              'Drift is the actual weight minus the target. Inside the band a row is "In band"; above it "Over", below it "Under". The untargeted line is everything no target covers, cash included. Sector targets need the FMP key so each holding\'s sector can be looked up; ETFs count as the "ETF" sector.',
+          },
+          {
+            title: 'Build rebalance plan',
+            description:
+              'Whole-share trades that bring each saved target back to its weight: sells first, then buys paid from the cash on hand plus the sale proceeds. Cash never goes below zero and nothing is sold beyond what is held. Prices are as of the plan time; a gap smaller than one share produces no line, and targets the plan cannot act on are listed as unresolved.',
+          },
+          {
+            title: 'Review plan',
+            description:
+              'Opens the same review used for Claude\'s recommendations. On the baseline scenario it creates a named clone and applies the trades there ("Create Clone & Apply"), so the baseline stays untouched; on any other scenario it applies them here ("Apply to Scenario").',
           },
         ]}
       />

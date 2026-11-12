@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "OpenAlgo Desktop - Algorithmic Trading Platform"
 authors = ["OpenAlgo"]
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.89"
 
 [lib]
 name = "openalgo_desktop_lib"
@@ -77,13 +77,18 @@ urlencoding = "2.1"
 
 # UUID generation
 uuid = { version = "1.8", features = ["v4"] }
-ta = "0.5"
 statrs = "0.17"
 # [wp-anchor] WP5 deps
+# American option pricing (binomial lattice); the facade's `pricing` feature pulls
+# only optionstratlib-core/-math/-pricing. Requires rustc 1.89 (edition 2024).
+optionstratlib = { version = "0.24.3", default-features = false, features = ["pricing"] }
+rust_decimal = "1"
 #
 # [wp-anchor] WP6 deps
+ta-lib = "0.8"
 #
 # [wp-anchor] WP7 deps
+csv = "1"
 #
 # [wp-anchor] WP8 deps
 # Flow (carried from upstream OpenAlgo Desktop): in-process calls to the app's
@@ -107,9 +112,39 @@ tokio = { version = "1", features = ["full", "test-util"] }
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 
+# The binomial lattice (WP5) does its arithmetic in rust_decimal; unoptimized it
+# costs ~35 ms per 200-step tree (3× the optimized cost), which makes the Options
+# page's binomial chain unusable under `tauri dev`. Keep only the pricing crates
+# optimized in dev/test builds; the app crate stays debuggable.
+[profile.dev.package.rust_decimal]
+opt-level = 3
+
+[profile.dev.package.positive]
+opt-level = 3
+
+[profile.dev.package.optionstratlib-core]
+opt-level = 3
+
+[profile.dev.package.optionstratlib-pricing]
+opt-level = 3
+
 [profile.release]
 panic = "abort"
 codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+# Same four crates at full speed in release builds too: the app-wide "s" trades
+# speed for size, and the lattice is the one hot loop that must not pay for it.
+[profile.release.package.rust_decimal]
+opt-level = 3
+
+[profile.release.package.positive]
+opt-level = 3
+
+[profile.release.package.optionstratlib-core]
+opt-level = 3
+
+[profile.release.package.optionstratlib-pricing]
+opt-level = 3

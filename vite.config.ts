@@ -61,6 +61,14 @@ export default defineConfig({
             if (id.includes('react-syntax-highlighter') || id.includes('prismjs') || id.includes('refractor')) {
               return 'vendor-syntax'
             }
+            // Chart tools (drawing library + 1,800 indicators) - only the Historify chart page
+            if (
+              id.includes('lightweight-charts-indicators') ||
+              id.includes('lightweight-charts-drawing') ||
+              id.includes('oakscriptjs')
+            ) {
+              return 'vendor-chart-tools'
+            }
             // Charts - only needed on chart pages
             if (id.includes('recharts') || id.includes('d3-') || id.includes('lightweight-charts')) {
               return 'vendor-charts'

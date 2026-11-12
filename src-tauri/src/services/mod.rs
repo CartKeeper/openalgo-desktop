@@ -69,14 +69,20 @@ pub use analyzer_service::{AnalyzerService, AnalyzerStatus};
 pub use options_service::{OptionsService, OptionChainResult, OptionGreeks, OptionSymbolResult, SyntheticFutureResult};
 pub use history_service::{HistoryService, HistoryResult, IntervalsResult, CandleData};
 // [wp-anchor] WP2 analytics
+pub mod portfolio_analytics_service;
 //
 // [wp-anchor] WP3 staged-analysis
 //
 // [wp-anchor] WP4 report-metrics
+pub mod report_metrics;
+pub mod portfolio_health;
 //
 // [wp-anchor] WP5 american-options
+pub mod american_pricing;
 //
 // [wp-anchor] WP6 talib-indicators
+pub mod indicator_catalog;
 //
 // [wp-anchor] WP7 symbol-metadata
+pub mod symbol_metadata_service;
 //

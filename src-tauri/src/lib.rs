@@ -17,6 +17,7 @@ pub mod services;
 pub mod importers;
 // [wp-anchor] modules: each WP adds its top-level `mod` line under its own marker.
 // [wp-anchor] WP2 analytics
+pub mod analytics;
 //
 // [wp-anchor] WP8 flow
 pub mod clock;
@@ -417,16 +418,28 @@ pub fn run() {
             commands::backtest::list_backtest_runs,
             commands::backtest::get_backtest_run,
             // [wp-anchor] WP1 chart-tools
+            commands::chart_preferences::chart_get_preference,
+            commands::chart_preferences::chart_save_preference,
             //
             // [wp-anchor] WP2 analytics
+            commands::analytics::analytics_client_lots,
+            commands::analytics::analytics_client_performance,
+            commands::analytics::analytics_list_targets,
+            commands::analytics::analytics_save_targets,
+            commands::analytics::analytics_scenario_drift,
+            commands::analytics::analytics_rebalance_plan,
             //
             // [wp-anchor] WP3 staged-analysis
             //
             // [wp-anchor] WP5 american-options
             //
             // [wp-anchor] WP6 talib-indicators
+            commands::indicators::indicator_catalog,
             //
             // [wp-anchor] WP7 symbol-metadata
+            commands::symbol_metadata::symbol_metadata_refresh,
+            commands::symbol_metadata::symbol_metadata_status,
+            commands::symbol_metadata::symbol_metadata_search,
             //
             // [wp-anchor] WP8 flow
             //
