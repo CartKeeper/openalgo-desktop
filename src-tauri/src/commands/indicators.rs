@@ -1,22 +1,41 @@
 //! Technical indicator computation commands
 //!
-//! Computes technical indicators for a given symbol using OHLCV data
-//! from DuckDB (primary) or Yahoo Finance (fallback).
+//! Computes TA-Lib indicators for a given symbol using OHLCV data
+//! from DuckDB (primary) or Yahoo Finance (fallback), and exposes the
+//! indicator catalog the Analysis tab picks from.
+
+use std::collections::HashMap;
+
+use serde::Deserialize;
+use tauri::State;
 
 use crate::error::AppError;
 use crate::providers::yahoo::YahooClient;
+use crate::services::indicator_catalog::{catalog, IndicatorSpec};
 use crate::services::indicators_service::{compute_indicator, IndicatorResult, OhlcvData};
 use crate::state::AppState;
-use tauri::State;
+
+/// One indicator to compute: a catalog name (case-insensitive) and optional
+/// numeric parameters keyed by the catalog's parameter names. Missing
+/// parameters take the catalog defaults.
+#[derive(Debug, Clone, Deserialize)]
+pub struct IndicatorRequest {
+    pub name: String,
+    #[serde(default)]
+    pub params: Option<HashMap<String, f64>>,
+}
+
+/// The indicator catalog: every indicator and candlestick pattern the app can
+/// compute, with groups, parameters (defaults and ranges) and output names.
+#[tauri::command]
+pub fn indicator_catalog() -> Result<Vec<IndicatorSpec>, AppError> {
+    Ok(catalog().to_vec())
+}
 
 /// Compute one or more technical indicators for a symbol.
 ///
-/// Each entry in `indicators` should be a JSON object:
-/// ```json
-/// { "name": "SMA", "params": { "period": 20 } }
-/// ```
-///
-/// Supported indicators: SMA, EMA, RSI, MACD, BOLLINGER, VWAP.
+/// Each entry in `indicators` is `{ "name": "SMA", "params": { "period": 20 } }`
+/// (`params` optional); any catalog name is accepted, see [`indicator_catalog`].
 ///
 /// Data source priority:
 /// 1. DuckDB historical data (if available for the symbol/exchange/timeframe)
@@ -27,7 +46,7 @@ pub async fn compute_indicators(
     symbol: String,
     exchange: String,
     timeframe: String,
-    indicators: Vec<serde_json::Value>,
+    indicators: Vec<IndicatorRequest>,
 ) -> Result<Vec<IndicatorResult>, AppError> {
     // Attempt to load OHLCV data from DuckDB first
     let ohlcv_data = load_ohlcv_from_duckdb(&state, &symbol, &exchange, &timeframe)
@@ -55,26 +74,9 @@ pub async fn compute_indicators(
 
     // Compute each requested indicator
     let mut results = Vec::with_capacity(indicators.len());
-    for indicator_spec in &indicators {
-        let name = indicator_spec
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                AppError::Validation("Each indicator must have a 'name' field".to_string())
-            })?;
-
-        let params: std::collections::HashMap<String, f64> = indicator_spec
-            .get("params")
-            .and_then(|v| v.as_object())
-            .map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| v.as_f64().map(|f| (k.clone(), f)))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let result = compute_indicator(&ohlcv_data, name, &params)?;
-        results.push(result);
+    for request in &indicators {
+        let params = request.params.clone().unwrap_or_default();
+        results.push(compute_indicator(&ohlcv_data, &request.name, &params)?);
     }
 
     Ok(results)
@@ -187,4 +189,37 @@ async fn load_ohlcv_from_yahoo(
         .collect();
 
     Ok(ohlcv)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::indicator_catalog::catalog;
+
+    #[test]
+    fn indicator_catalog_command_returns_the_whole_catalog() {
+        let specs = indicator_catalog().expect("the catalog command cannot fail");
+        assert_eq!(specs.len(), catalog().len());
+        assert_eq!(specs[0].name, catalog()[0].name);
+        assert!(specs.iter().any(|s| s.name == "ADX" && s.group == "Momentum"));
+    }
+
+    #[test]
+    fn indicator_requests_accept_the_old_named_fields_and_a_bare_name() {
+        let legacy: IndicatorRequest =
+            serde_json::from_str(r#"{ "name": "MACD", "params": { "fast": 12, "slow": 26, "signal": 9 } }"#)
+                .unwrap();
+        assert_eq!(legacy.name, "MACD");
+        let params = legacy.params.expect("params present");
+        assert_eq!(params.get("fast"), Some(&12.0));
+        assert_eq!(params.len(), 3);
+
+        let bare: IndicatorRequest = serde_json::from_str(r#"{ "name": "VWAP" }"#).unwrap();
+        assert_eq!(bare.name, "VWAP");
+        assert!(bare.params.is_none());
+
+        let typed: IndicatorRequest =
+            serde_json::from_str(r#"{ "name": "CDLMORNINGSTAR", "params": { "penetration": 0.3 } }"#).unwrap();
+        assert_eq!(typed.params.unwrap().get("penetration"), Some(&0.3));
+    }
 }

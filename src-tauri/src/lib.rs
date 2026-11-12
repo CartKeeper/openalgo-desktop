@@ -409,6 +409,7 @@ pub fn run() {
             // [wp-anchor] WP5 american-options
             //
             // [wp-anchor] WP6 talib-indicators
+            commands::indicators::indicator_catalog,
             //
             // [wp-anchor] WP7 symbol-metadata
             //
