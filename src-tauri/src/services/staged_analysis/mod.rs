@@ -7,6 +7,7 @@
 //! ACTIONS_JSON block the app has already validated.
 
 pub mod dossier;
+pub mod render;
 pub mod schemas;
 pub mod stages;
 pub mod validate;
