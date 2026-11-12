@@ -27,8 +27,8 @@ pub struct HealthHolding {
     pub value: f64,
     pub asset_class: Option<AssetClass>,
     pub sector: Option<String>,
-    /// An exchange-traded fund, so an expense ratio is expected of it.
-    pub is_etf: bool,
+    /// An ETF or mutual fund, so an expense ratio is expected of it.
+    pub is_fund: bool,
     /// Annual expense ratio as a fraction (0.0003 = 0.03%); funds only.
     pub expense_ratio: Option<f64>,
 }
@@ -194,7 +194,7 @@ fn fee_ratio(trade_fees: Option<(f64, f64)>) -> Verdict {
 /// one on record is left out and named.
 fn fund_expenses(held: &[&HealthHolding]) -> Verdict {
     let threshold = format!("at most {} weighted by fund value", pct2(FUND_EXPENSE_MAX));
-    let funds: Vec<&HealthHolding> = held.iter().copied().filter(|h| h.is_etf).collect();
+    let funds: Vec<&HealthHolding> = held.iter().copied().filter(|h| h.is_fund).collect();
     if funds.is_empty() {
         return Verdict::na("No funds held", threshold, None);
     }
@@ -326,13 +326,13 @@ mod tests {
             value,
             asset_class: class,
             sector: sector.map(str::to_string),
-            is_etf: false,
+            is_fund: false,
             expense_ratio: None,
         }
     }
 
     fn etf(symbol: &str, value: f64, expense_ratio: Option<f64>) -> HealthHolding {
-        HealthHolding { is_etf: true, expense_ratio, ..holding(symbol, value, Some(AssetClass::Equity), None) }
+        HealthHolding { is_fund: true, expense_ratio, ..holding(symbol, value, Some(AssetClass::Equity), None) }
     }
 
     fn input(holdings: Vec<HealthHolding>) -> HealthInput {

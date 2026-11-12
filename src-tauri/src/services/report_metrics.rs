@@ -12,7 +12,6 @@ use std::collections::{BTreeSet, HashMap};
 use chrono::{Datelike, NaiveDate};
 use futures_util::{stream, StreamExt};
 use rand::{rngs::StdRng, Rng, SeedableRng};
-use serde::Serialize;
 
 use crate::error::{AppError, Result};
 use crate::providers::fmp::FmpClient;
@@ -93,7 +92,7 @@ pub fn metric_rows(dates: &[NaiveDate], values: &[f64]) -> Vec<MetricRow> {
 
 /// One calendar year of the monthly-returns grid: `months[0]` is January.
 /// A month is `None` when the window holds no return inside it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MonthlyRow {
     pub year: i32,
     pub months: [Option<f64>; 12],
@@ -150,7 +149,7 @@ pub fn monthly_returns(dates: &[NaiveDate], values: &[f64]) -> Vec<MonthlyRow> {
 
 /// A peak-to-recovery drawdown episode. `end` is `None` while the series has
 /// not climbed back to the peak; `days` then counts to the window's last date.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DrawdownPeriod {
     pub start: NaiveDate,
     pub trough: NaiveDate,
@@ -200,7 +199,7 @@ pub fn drawdown_periods(dates: &[NaiveDate], values: &[f64], top: usize) -> Vec<
 }
 
 /// Terminal-return percentiles and odds from bootstrapped paths.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MonteCarlo {
     pub p5: f64,
     pub p50: f64,

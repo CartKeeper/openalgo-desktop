@@ -807,6 +807,8 @@ pub enum GoldmanMovement {
     Narrative(NarrativeMovement),
     Changes(ChangesMovement),
     Measures(MeasuresMovement),
+    Metrics(MetricsMovement),
+    Health(HealthMovement),
 }
 
 /// Every difference between two portfolios. The app builds the rows; only
@@ -861,6 +863,118 @@ pub struct MeasureRow {
     pub label: String,
     pub original: String,
     pub recommended: String,
+}
+
+/// Trailing-window metrics of both portfolios, computed by the app: a table
+/// of figures, a monthly-returns grid, drawdown episodes and Monte Carlo odds
+/// per side. Claude writes only `tempo` and `intro`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsMovement {
+    pub numeral: String,
+    pub tempo: String,
+    pub title_main: String,
+    pub title_accent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intro: Option<String>,
+    pub original_label: String,
+    pub recommended_label: String,
+    /// The window the figures cover, e.g. "Trailing 365 days of daily closes, November 12, 2025 to November 11, 2026".
+    pub window: String,
+    /// Metric | original | recommended, as text ("12.3%", "1.23", "n/a").
+    pub rows: Vec<MeasureRow>,
+    /// One grid per side with enough history.
+    pub monthly: Vec<MonthlyTable>,
+    /// One table per side with enough history.
+    pub drawdowns: Vec<DrawdownTable>,
+    /// One line per side with a Monte Carlo result.
+    pub monte_carlo: Vec<MonteCarloLine>,
+    /// Each side's window and what was left out, or why there are no figures.
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MonthlyTable {
+    /// The portfolio's name.
+    pub label: String,
+    pub years: Vec<MonthlyYear>,
+}
+
+/// One calendar year of monthly returns as fractions; `months[0]` is January
+/// and `None` is a month outside the window.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MonthlyYear {
+    pub year: i32,
+    pub months: [Option<f64>; 12],
+    pub ytd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DrawdownTable {
+    pub label: String,
+    pub rows: Vec<DrawdownRow>,
+}
+
+/// A peak-to-recovery episode. Dates are "YYYY-MM-DD"; `end` is `None` while
+/// the portfolio has not climbed back to the peak.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DrawdownRow {
+    pub start: String,
+    pub trough: String,
+    pub end: Option<String>,
+    /// Trough over peak minus one: -0.20 for a 20% fall.
+    pub depth_pct: f64,
+    pub days: i64,
+}
+
+/// Bootstrapped one-year outcomes for one portfolio; returns, thresholds and
+/// odds are fractions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MonteCarloLine {
+    pub label: String,
+    pub paths: usize,
+    pub horizon_days: usize,
+    pub p5: f64,
+    pub p50: f64,
+    pub p95: f64,
+    pub bust_threshold: f64,
+    pub bust_probability: f64,
+    pub goal_threshold: f64,
+    pub goal_probability: f64,
+}
+
+/// The health checklist for both portfolios, computed by the app. Claude
+/// writes only `tempo` and `intro`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthMovement {
+    pub numeral: String,
+    pub tempo: String,
+    pub title_main: String,
+    pub title_accent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intro: Option<String>,
+    pub original_label: String,
+    pub recommended_label: String,
+    pub rows: Vec<HealthCompareRow>,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HealthCompareRow {
+    pub key: String,
+    pub title: String,
+    pub original: HealthCell,
+    pub recommended: HealthCell,
+    /// The rule's threshold in words.
+    pub threshold: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HealthCell {
+    /// "pass", "warn", "fail" or "na".
+    pub status: String,
+    pub value_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
