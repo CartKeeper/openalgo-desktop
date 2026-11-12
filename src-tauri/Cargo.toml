@@ -82,6 +82,7 @@ statrs = "0.17"
 # [wp-anchor] WP5 deps
 #
 # [wp-anchor] WP6 deps
+ta-lib = "0.8"
 #
 # [wp-anchor] WP7 deps
 #

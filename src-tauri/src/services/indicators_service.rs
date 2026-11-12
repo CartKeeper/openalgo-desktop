@@ -402,4 +402,19 @@ mod tests {
         let result = compute_indicator(&data, "SMA", &params);
         assert!(result.is_err());
     }
+
+    /// Smoke test for the official TA-Lib crate: the batch API's documented shape.
+    /// SMA(3) over 11..=20 produces its first value at input index 2 (the lookback)
+    /// and eight values in total; the first is (11 + 12 + 13) / 3 = 12.
+    #[test]
+    fn test_talib_crate_sma_smoke() {
+        let close: Vec<f64> = (11..=20).map(|v| v as f64).collect();
+        let mut out = vec![0.0; close.len()];
+        let range = ta_lib::Core::new()
+            .sma(0, close.len() - 1, &close, 3, &mut out)
+            .expect("TA-Lib SMA succeeds on a plain series");
+        assert_eq!(out[0], 12.0);
+        assert_eq!(range.beg_idx, 2);
+        assert_eq!(range.count, 8);
+    }
 }
