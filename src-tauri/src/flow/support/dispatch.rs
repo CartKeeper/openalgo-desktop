@@ -15,6 +15,7 @@ use axum::http::{Method, Request};
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
 use std::time::Duration;
+use tower::ServiceExt;
 
 /// The header the internal-trust layer reads.
 pub const INTERNAL_TOKEN_HEADER: &str = "x-openalgo-internal-token";
@@ -87,11 +88,34 @@ pub fn post_request(
 }
 
 /// Hand `req` to the app's `/api/v1` router and read the answer within
-/// `timeout`. Task A4 implements this over `AppState::api_router`; until
-/// then no request is sent and every call answers [`Transport::NotSent`],
-/// so nothing is placed by a path that is not wired yet.
-pub async fn run(_app: &Arc<AppState>, _req: Request<Body>, _timeout: Duration) -> Result<Raw, Transport> {
-    Err(Transport::NotSent)
+/// `timeout`. The call runs as a task the app owns, so a node future that
+/// is dropped (the run was stopped) never cuts an order off mid-flight:
+/// the handler finishes, and only the answer is lost.
+pub async fn run(app: &Arc<AppState>, req: Request<Body>, timeout: Duration) -> Result<Raw, Transport> {
+    let router = app.api_router();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.spawn(async move {
+        let answer = match router.oneshot(req).await {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                match axum::body::to_bytes(resp.into_body(), MAX_REPLY_BYTES).await {
+                    Ok(b) => Some(Raw::new(status, String::from_utf8_lossy(&b).into_owned())),
+                    Err(e) => {
+                        tracing::error!("Flow could not read an API reply: {}", e);
+                        None
+                    }
+                }
+            }
+            // `Router`'s error type is `Infallible`.
+            Err(never) => match never {},
+        };
+        let _ = tx.send(answer);
+    });
+    match tokio::time::timeout(timeout, rx).await {
+        Ok(Ok(Some(raw))) => Ok(raw),
+        Ok(_) => Err(Transport::NoReply),
+        Err(_) => Err(Transport::Timeout),
+    }
 }
 
 /// The SDK's `_handle_response` as a bare value (used by tests and the

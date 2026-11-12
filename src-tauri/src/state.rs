@@ -125,6 +125,10 @@ pub struct AppStateInner {
     /// The root `Arc` ([`AppState::root`]), held weakly so it can be found
     /// again from any handle while something keeps it alive.
     me: Mutex<Weak<AppState>>,
+
+    /// The app's `/api/v1` router for in-process calls, built on first use
+    /// ([`AppState::api_router`]).
+    api_router: std::sync::OnceLock<axum::Router>,
 }
 
 /// Application state shared across all commands: a handle, cheap to clone.
@@ -136,6 +140,18 @@ impl Deref for AppState {
 
     fn deref(&self) -> &AppStateInner {
         &self.0
+    }
+}
+
+/// A handle that does not keep the state alive: what lives inside the
+/// state and points back at it (the in-process API router) holds this.
+#[derive(Clone)]
+pub struct WeakAppState(Weak<AppStateInner>);
+
+impl WeakAppState {
+    /// The state, while it lives.
+    pub fn upgrade(&self) -> Option<AppState> {
+        self.0.upgrade().map(AppState)
     }
 }
 
@@ -225,6 +241,7 @@ impl AppState {
             order_updates: events::channel(),
             app_handle: opts.app_handle,
             me: Mutex::new(Weak::new()),
+            api_router: std::sync::OnceLock::new(),
         })))
     }
 
@@ -240,6 +257,21 @@ impl AppState {
         let root = Arc::new(self.clone());
         *me = Arc::downgrade(&root);
         root
+    }
+
+    /// A handle that does not keep this state alive.
+    pub fn downgrade(&self) -> WeakAppState {
+        WeakAppState(Arc::downgrade(&self.0))
+    }
+
+    /// The app's `/api/v1` router, built once on first use: what Flow's
+    /// nodes call in process (`flow::support::dispatch`). It has a rate
+    /// limiter of its own, so Flow has its own share of the limit and never
+    /// spends an SDK client's (as upstream gives it).
+    pub fn api_router(&self) -> axum::Router {
+        self.api_router
+            .get_or_init(|| crate::webhook::server::router(self.clone()))
+            .clone()
     }
 
     /// Now, by the app's clock.

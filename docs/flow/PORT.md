@@ -237,6 +237,47 @@ an_exchange_without_hours_uses_the_default}` and
   support::json`: the web's package recorded them on an IST host) and the
   goldens replay (`goldens/replay::replay`).
 
+## Task A4: nodes call this app's `/api/v1` handlers in process
+
+- `webhook::server::router(state) -> axum::Router` is the one router
+  (extracted from `WebhookServer::start`); `AppState::api_router()` builds
+  it once per state for Flow. Each router has its own `RateLimiterState`,
+  so Flow has its own share of the `/api/v1` limit and never spends an
+  SDK client's (upstream gives Flow its own caller address for the same
+  reason). The limiter, analyzer routing and Gate B are untouched.
+- `flow::support::dispatch::run` hands the request to the router with
+  `tower::ServiceExt::oneshot` inside a task the app owns, and reads the
+  answer within `CALL_TIMEOUT` (120 s, the SDK's); a dropped node future
+  never cuts an order off mid-flight. `Raw`/`Transport` are upstream's
+  `mcp::dispatch` types.
+- The credential is the per-process internal token, in the header
+  `x-openalgo-internal-token`. The router's innermost layer
+  (`internal_trust`) checks it in constant time and writes it into the
+  JSON body as `apikey`, where every `/api/v1` request schema reads the
+  key (a header-only scheme would fail JSON extraction before any check);
+  a wrong token is refused 403; a request without the header passes
+  untouched. `WebhookState::validate_api_key` accepts the token, and
+  `service_key` hands the services `None` for it — the trust a Tauri
+  command has (the services re-check any `Some(key)` against the
+  `api_keys` table, which the token is not in). A trader never needs an
+  API key for a workflow.
+- `WebhookState` holds a `WeakAppState` (the router lives inside the
+  state, so a strong handle would be a cycle) and an `Option<AppHandle>`
+  for its frontend events (none for a headless state).
+- `with_broker_cause`: this app's handlers answer a broker-less call with
+  "Broker not connected" inside the service's error, or the key sentence;
+  either becomes upstream's no-broker-session sentence at the node when no
+  broker is logged in (Review Focus 5).
+- `nodes::internal` (upstream's internal service entry): a scoped close is
+  `/api/v1/openposition` then the opposite `/api/v1/placeorder` through
+  the same router (the position service's own sentences for a flat
+  symbol); absolute-strike legs answer 400 "Legs with an absolute strike
+  are not available in this app: use an offset (ATM, ITM1, OTM1, ...)
+  instead." (this app's options service sizes legs by offset only).
+- Tests: `contract/client/app.rs` (funds through the handlers, a sandbox
+  order with its id, the token gate, the no-broker cause) and
+  `nodes/internal.rs` (the strike refusal, a flat and a held scoped close).
+
 ### `indicators_lib` in this app
 
 - `discovery.rs`, `scan.rs` and `outcome.rs` (the Agent's tools) are

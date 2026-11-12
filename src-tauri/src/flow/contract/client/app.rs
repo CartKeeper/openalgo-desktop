@@ -175,6 +175,96 @@ mod tests {
         assert_eq!(out["code"], 200);
     }
 
+    use crate::brokers::BrokerRegistry;
+    use crate::flow::contract::client::ApiCall;
+    use crate::state::testing::{build, TestCtx};
+    use std::sync::Arc;
+
+    /// The harness with analyzer mode set, and the run's client over it.
+    fn harness(analyzer: bool) -> (TestCtx, AppFlowClient) {
+        let t = build(BrokerRegistry::new(), chrono::Utc::now());
+        t.ctx.sqlite.set_analyze_mode(analyzer).unwrap();
+        let client = AppFlowClient::new(
+            Arc::downgrade(&t.ctx),
+            Secret::new(t.ctx.internal_token.clone()),
+        );
+        (t, client)
+    }
+
+    /// Task A4: a node's call reaches this app's own `/api/v1` handlers in
+    /// process and reads the web client's dict.
+    #[tokio::test]
+    async fn funds_are_read_through_the_apps_own_handlers() {
+        let (_t, client) = harness(true);
+        let out = client.api(ApiCall::new("funds", "funds", json!({}))).await;
+        assert_eq!(out["status"], "success", "{}", out);
+        assert!(out["data"]["availablecash"].is_number(), "{}", out);
+    }
+
+    /// An order goes through `/api/v1/placeorder`: analyzer mode routes it
+    /// to the sandbox and the node reads its order id.
+    #[tokio::test]
+    async fn an_order_placed_through_the_handlers_lands_in_the_sandbox() {
+        let (t, client) = harness(true);
+        let payload = json!({
+            "strategy": "flow_workflow", "symbol": "AAPL", "exchange": "NASDAQ",
+            "action": "BUY", "quantity": 1, "pricetype": "MARKET", "product": "CNC",
+            "price": 0, "trigger_price": 0, "disclosed_quantity": 0
+        });
+        let out = client
+            .api(ApiCall::new("place_order", "placeorder", payload))
+            .await;
+        assert_eq!(out["status"], "success", "{}", out);
+        assert!(
+            out["orderid"].as_str().is_some_and(|id| !id.is_empty()),
+            "{}",
+            out
+        );
+        let orders = t.ctx.sqlite.get_sandbox_orders().unwrap();
+        assert_eq!(orders.len(), 1);
+        assert_eq!(orders[0].symbol, "AAPL");
+    }
+
+    /// The bypass is gated on the per-process token: a request with
+    /// neither the header nor a key is refused by the router, and a client
+    /// with the wrong token is refused (403), so nothing but the app's own
+    /// runs use it.
+    #[tokio::test]
+    async fn the_internal_trust_is_gated_on_the_token() {
+        let (t, _client) = harness(true);
+        let bare = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/funds")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+        let resp = tower::ServiceExt::oneshot(t.ctx.api_router(), bare)
+            .await
+            .unwrap();
+        assert!(resp.status().is_client_error(), "{}", resp.status());
+        let wrong = AppFlowClient::new(Arc::downgrade(&t.ctx), Secret::new("not-the-token"));
+        let out = wrong.api(ApiCall::new("funds", "funds", json!({}))).await;
+        assert_eq!(out["status"], "error", "{}", out);
+        assert_eq!(out["code"], 403, "{}", out);
+    }
+
+    /// Review Focus 5: with no broker logged in and analyzer mode off, a
+    /// broker-backed call fails with the no-broker sentence, never a key
+    /// complaint.
+    #[tokio::test]
+    async fn a_broker_call_without_a_broker_names_the_cause() {
+        let (_t, client) = harness(false);
+        let out = client
+            .api(ApiCall::new(
+                "quotes",
+                "quotes",
+                json!({"symbol": "AAPL", "exchange": "NASDAQ"}),
+            ))
+            .await;
+        assert_eq!(out["status"], "error", "{}", out);
+        assert_eq!(out["error"], crate::flow::support::NO_BROKER_SESSION, "{}", out);
+    }
+
     #[test]
     fn the_alert_text_is_stamped_in_market_time() {
         // 2026-10-30 13:30:05Z is 09:30:05 in New York.
