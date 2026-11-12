@@ -136,7 +136,14 @@ pub struct MetadataStatus {
 /// returns `Err` before anything is written, so the previous data stays.
 pub async fn refresh(db: &DuckDb, fetcher: &dyn Fetcher, include_otc: bool) -> Result<MetadataStatus> {
     let files = planned_files(include_otc);
-    let texts: Vec<String> = stream::iter(files.iter().map(|file| fetcher.get_text(&file.url)))
+    // A plain loop, not `iter().map(|file| ...)`: a closure returning a future
+    // that borrows its argument cannot be proven general enough for Tauri's
+    // async command wrapper ("implementation of `FnOnce` is not general enough").
+    let mut downloads = Vec::with_capacity(files.len());
+    for file in &files {
+        downloads.push(fetcher.get_text(&file.url));
+    }
+    let texts: Vec<String> = stream::iter(downloads)
         .buffered(CONCURRENT_DOWNLOADS)
         .try_collect()
         .await?;

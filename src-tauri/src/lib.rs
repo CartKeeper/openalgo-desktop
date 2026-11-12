@@ -411,6 +411,9 @@ pub fn run() {
             // [wp-anchor] WP6 talib-indicators
             //
             // [wp-anchor] WP7 symbol-metadata
+            commands::symbol_metadata::symbol_metadata_refresh,
+            commands::symbol_metadata::symbol_metadata_status,
+            commands::symbol_metadata::symbol_metadata_search,
             //
             // [wp-anchor] WP8 flow
             //
