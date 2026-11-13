@@ -11,20 +11,20 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::future::Future;
 
-use chrono::{Duration, Utc};
+use chrono::{Duration, NaiveDate, Utc};
 use chrono_tz::America::New_York;
 use futures_util::{stream, StreamExt};
 use tracing::warn;
 
-use crate::analytics::series::redact_api_key;
 use crate::error::Result;
 use crate::providers::fmp::FmpClient;
 use crate::providers::fred::FredClient;
-use crate::providers::types::FredObservation;
+use crate::providers::types::{DailyClose, FredObservation};
 use crate::providers::yahoo::YahooClient;
+use crate::providers::ProviderError;
 use crate::services::client_brief_service::live_quotes_with_names;
-use crate::services::ride_report::load_daily_bars;
 use crate::state::AppState;
 
 /// Holdings (largest first) that get the per-holding provider calls; the rest are one line each.
@@ -401,6 +401,41 @@ fn holding_line(h: &HoldingDossier, with_headlines: bool) -> String {
     line
 }
 
+/// `text` with the value of every `apikey=` (FMP) or `api_key=` (FRED) query
+/// parameter replaced by `***`, matched without regard to case. Provider
+/// errors can carry the request URL, so each one passes through this before it
+/// reaches a log line or a progress event.
+pub(crate) fn redact_secrets(text: &str) -> String {
+    ["apikey=", "api_key="].iter().fold(text.to_string(), |acc, needle| mask_param(&acc, needle))
+}
+
+/// `text` with the value after each occurrence of `needle` (lowercase) masked.
+fn mask_param(text: &str, needle: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    while let Some(found) = lower[cursor..].find(needle) {
+        let value_start = cursor + found + needle.len();
+        out.push_str(&text[cursor..value_start]);
+        out.push_str("***");
+        cursor = text[value_start..]
+            .find(|c: char| matches!(c, '&' | ')' | '"' | '\'' | ']') || c.is_whitespace())
+            .map_or(text.len(), |offset| value_start + offset);
+    }
+    out.push_str(&text[cursor..]);
+    out
+}
+
+/// Days of FRED history requested. CPI is monthly and published about six
+/// weeks after the month starts, so a year-over-year reading needs 13 monthly
+/// observations reaching back roughly 15 months; 500 days covers that.
+const MACRO_HISTORY_DAYS: i64 = 500;
+
+/// The first day of FRED history requested.
+pub(crate) fn macro_start(today: NaiveDate) -> NaiveDate {
+    today - Duration::days(MACRO_HISTORY_DAYS)
+}
+
 /// One macro line from a FRED series, or `None` when it has no usable observations.
 fn macro_line(label: &str, kind: MacroKind, observations: &[FredObservation]) -> Option<String> {
     let known: Vec<&FredObservation> = observations.iter().filter(|o| o.value.is_some()).collect();
@@ -436,9 +471,15 @@ struct HoldingDetail {
     failed: Vec<&'static str>,
 }
 
+/// Log a provider failure with any key masked.
+fn log_failure(source: &str, symbol: &str, err: impl std::fmt::Display) {
+    warn!("dossier: {} failed for {}: {}", source, symbol, redact_secrets(&err.to_string()));
+}
+
 impl HoldingDetail {
+    /// Log a provider failure (key masked) and record its source as missing for this holding.
     fn note_failure(&mut self, source: &'static str, symbol: &str, err: impl std::fmt::Display) {
-        warn!("dossier: {} failed for {}: {}", source, symbol, redact_api_key(&err.to_string()));
+        log_failure(source, symbol, err);
         self.failed.push(source);
     }
 }
@@ -502,13 +543,46 @@ async fn fetch_detail(fmp: Option<&FmpClient>, yahoo: &YahooClient, symbol: &str
             Err(e) => detail.note_failure("FMP headlines", symbol, e),
         }
     }
-    let (_source, bars) = load_daily_bars(fmp, yahoo, symbol, from, to, "2y").await;
-    if bars.is_empty() {
-        detail.failed.push("Price history (FMP and Yahoo)");
-    } else {
-        detail.closes = bars.into_iter().map(|b| b.close).collect();
-    }
+    let fmp_closes = fmp.map(|fmp| fmp.get_daily_closes(symbol, from, to));
+    let yahoo_closes = yahoo.get_historical(symbol, "1d", "2y");
+    let closes = closes_with_fallback(fmp_closes, yahoo_closes, symbol, &mut detail).await;
+    detail.closes = closes;
     detail
+}
+
+/// One Yahoo daily bar: (date, open, high, low, close, volume).
+type YahooBar = (String, f64, f64, f64, f64, i64);
+
+const PRICE_HISTORY: &str = "Price history (FMP and Yahoo)";
+
+/// Daily closes, oldest first: FMP when it answers with bars, else Yahoo (the
+/// same chain as `ride_report::load_daily_bars`, whose failure log is not
+/// redacted). Failures are logged with any key masked; only a failure of both
+/// is recorded on `detail`.
+async fn closes_with_fallback<F, Y>(fmp: Option<F>, yahoo: Y, symbol: &str, detail: &mut HoldingDetail) -> Vec<f64>
+where
+    F: Future<Output = std::result::Result<Vec<DailyClose>, ProviderError>>,
+    Y: Future<Output = std::result::Result<Vec<YahooBar>, ProviderError>>,
+{
+    if let Some(fmp) = fmp {
+        match fmp.await {
+            Ok(bars) if !bars.is_empty() => return bars.into_iter().map(|b| b.close).collect(),
+            Ok(_) => {}
+            // Yahoo is tried next, so this alone is not missing data.
+            Err(e) => log_failure("FMP price history", symbol, e),
+        }
+    }
+    match yahoo.await {
+        Ok(bars) if !bars.is_empty() => bars.into_iter().map(|b| b.4).collect(),
+        Ok(_) => {
+            detail.failed.push(PRICE_HISTORY);
+            Vec::new()
+        }
+        Err(e) => {
+            detail.note_failure(PRICE_HISTORY, symbol, e);
+            Vec::new()
+        }
+    }
 }
 
 fn apply_detail(h: &mut HoldingDossier, detail: HoldingDetail) {
@@ -650,7 +724,7 @@ pub async fn build(state: &AppState, scenario_id: i64) -> Result<Dossier> {
                     .collect()
             }
             Err(e) => {
-                warn!("dossier: sector performance failed: {}", redact_api_key(&e.to_string()));
+                warn!("dossier: sector performance failed: {}", redact_secrets(&e.to_string()));
                 missing.push("Sector performance (FMP)".to_string());
             }
         }
@@ -660,15 +734,15 @@ pub async fn build(state: &AppState, scenario_id: i64) -> Result<Dossier> {
     match fred_client(state) {
         None => missing.push("FRED macro data (no API key configured)".to_string()),
         Some(fred) => {
-            let start = (today - Duration::days(CLOSE_HISTORY_DAYS)).format("%Y-%m-%d").to_string();
+            let start = macro_start(today).format("%Y-%m-%d").to_string();
             for (series, label, kind) in MACRO_SERIES {
                 match fred.get_series(series, Some(&start), None).await {
                     Ok(observations) => match macro_line(label, kind, &observations) {
                         Some(line) => macro_lines.push(line),
-                        None => missing.push(format!("FRED {series} (no observations)")),
+                        None => missing.push(format!("FRED {series} (not enough observations)")),
                     },
                     Err(e) => {
-                        warn!("dossier: FRED {} failed: {}", series, redact_api_key(&e.to_string()));
+                        warn!("dossier: FRED {} failed: {}", series, redact_secrets(&e.to_string()));
                         missing.push(format!("FRED {series}"));
                     }
                 }
@@ -851,6 +925,114 @@ mod tests {
         assert_eq!(pct_from_high(&closes, 252), Some(0.0));
         let dipped: Vec<f64> = closes.iter().map(|c| if *c == 300.0 { 240.0 } else { *c }).collect();
         assert_eq!(pct_from_high(&dipped, 252), Some((240.0 - 299.0) / 299.0 * 100.0));
+    }
+
+    #[test]
+    fn secrets_are_masked_in_fmp_and_fred_urls() {
+        assert_eq!(
+            redact_secrets("https://api.stlouisfed.org/fred/series/observations?series_id=DGS10&api_key=SECRET&file_type=json"),
+            "https://api.stlouisfed.org/fred/series/observations?series_id=DGS10&api_key=***&file_type=json"
+        );
+        assert_eq!(
+            redact_secrets("error sending request for url (https://x/y?symbol=VOO&apikey=SECRET)"),
+            "error sending request for url (https://x/y?symbol=VOO&apikey=***)"
+        );
+        assert_eq!(redact_secrets("API_KEY=abc and apiKey=def"), "API_KEY=*** and apiKey=***");
+        assert_eq!(redact_secrets("nothing here"), "nothing here");
+    }
+
+    /// What `tracing` writes while a test's guard lives (this thread only).
+    #[derive(Clone, Default)]
+    struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_fmp_history_falls_back_to_yahoo_without_logging_the_key() {
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt().with_writer(move || writer.clone()).with_ansi(false).finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let mut detail = HoldingDetail::default();
+        let fmp = async {
+            Err::<Vec<DailyClose>, _>(ProviderError::ApiError(
+                "error sending request for url (https://financialmodelingprep.com/stable/historical-price-eod/light?symbol=VOO&apikey=SECRET123&from=2025-10-08)"
+                    .to_string(),
+            ))
+        };
+        let yahoo = async {
+            Ok::<Vec<YahooBar>, ProviderError>(vec![
+                ("2026-11-10".to_string(), 0.0, 0.0, 0.0, 101.0, 1),
+                ("2026-11-11".to_string(), 0.0, 0.0, 0.0, 102.0, 1),
+            ])
+        };
+        let closes = closes_with_fallback(Some(fmp), yahoo, "VOO", &mut detail).await;
+
+        assert_eq!(closes, vec![101.0, 102.0]);
+        assert!(detail.failed.is_empty(), "a Yahoo fallback is not missing data");
+        let logs = String::from_utf8_lossy(&captured.0.lock().unwrap()).into_owned();
+        assert!(logs.contains("apikey=***"), "{logs}");
+        assert!(!logs.contains("SECRET123"), "{logs}");
+    }
+
+    #[tokio::test]
+    async fn price_history_is_missing_only_when_both_sources_fail() {
+        let mut detail = HoldingDetail::default();
+        let fmp = async { Ok::<Vec<DailyClose>, ProviderError>(Vec::new()) };
+        let yahoo = async { Err::<Vec<YahooBar>, _>(ProviderError::Parse("no data".to_string())) };
+        assert!(closes_with_fallback(Some(fmp), yahoo, "VOO", &mut detail).await.is_empty());
+        assert_eq!(detail.failed, vec![PRICE_HISTORY]);
+    }
+
+    /// Monthly readings dated the 1st, from the first month on or after `from`
+    /// through `through`, rising 0.25 a month from 300.
+    fn monthly_cpi(from: NaiveDate, through: NaiveDate) -> Vec<FredObservation> {
+        use chrono::{Datelike, Months};
+        let mut month = NaiveDate::from_ymd_opt(from.year(), from.month(), 1).unwrap();
+        if month < from {
+            month = month.checked_add_months(Months::new(1)).unwrap();
+        }
+        let (mut out, mut value) = (Vec::new(), 300.0);
+        while month <= through {
+            out.push(FredObservation { date: month.format("%Y-%m-%d").to_string(), value: Some(value) });
+            value += 0.25;
+            month = month.checked_add_months(Months::new(1)).unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn the_macro_window_holds_a_year_of_cpi_after_the_release_lag() {
+        let today = NaiveDate::from_ymd_opt(2026, 11, 12).unwrap();
+        // CPI for a month is published about six weeks after the month starts.
+        let observations = monthly_cpi(macro_start(today), today - Duration::days(45));
+        assert!(
+            macro_line("CPI inflation", MacroKind::YearOverYear, &observations).is_some(),
+            "{} monthly readings",
+            observations.len()
+        );
+    }
+
+    #[test]
+    fn cpi_year_over_year_needs_thirteen_monthly_readings() {
+        let start = NaiveDate::from_ymd_opt(2025, 9, 1).unwrap();
+        let twelve = monthly_cpi(start, NaiveDate::from_ymd_opt(2026, 8, 1).unwrap());
+        assert_eq!(twelve.len(), 12);
+        assert_eq!(macro_line("CPI inflation", MacroKind::YearOverYear, &twelve), None);
+        let thirteen = monthly_cpi(start, NaiveDate::from_ymd_opt(2026, 9, 1).unwrap());
+        assert_eq!(
+            macro_line("CPI inflation", MacroKind::YearOverYear, &thirteen).as_deref(),
+            Some("CPI inflation: +1.0% year over year (2026-09-01)")
+        );
     }
 
     #[test]

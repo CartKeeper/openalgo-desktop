@@ -60,14 +60,13 @@ fn matching<'a>(positions: &'a [PricedPosition], symbol: &str) -> impl Iterator<
     positions.iter().filter(move |p| p.symbol.eq_ignore_ascii_case(&symbol))
 }
 
-/// The position actually held (positive quantity), if any.
-fn held<'a>(positions: &'a [PricedPosition], symbol: &str) -> Option<&'a PricedPosition> {
-    matching(positions, symbol).find(|p| p.quantity > 0.0)
-}
-
-/// Long shares held across matching rows; a short position counts as nothing held.
-fn held_quantity(positions: &[PricedPosition], symbol: &str) -> f64 {
-    matching(positions, symbol).filter(|p| p.quantity > 0.0).map(|p| p.quantity).sum()
+/// The long rows held for `symbol`, largest first (ties keep their order). A
+/// short position counts as nothing held. A scenario stores one row per
+/// symbol and exchange, so one symbol can sit in several rows.
+fn long_rows<'a>(positions: &'a [PricedPosition], symbol: &str) -> Vec<&'a PricedPosition> {
+    let mut rows: Vec<&PricedPosition> = matching(positions, symbol).filter(|p| p.quantity > 0.0).collect();
+    rows.sort_by(|a, b| b.quantity.total_cmp(&a.quantity));
+    rows
 }
 
 fn live_price(positions: &[PricedPosition], symbol: &str) -> Option<f64> {
@@ -124,21 +123,46 @@ pub fn validate_trades(
             continue;
         }
 
-        if let Some(position) = held(positions, &trade.symbol) {
-            trade.exchange = position.exchange.clone();
-        }
+        let rows = long_rows(positions, &trade.symbol);
 
         if trade.side == "SELL" {
-            let held_qty = held_quantity(positions, &trade.symbol).floor();
+            // Whole shares per row, largest row first: a sale never takes more
+            // than a row holds, so applying it can never turn a row short.
+            let held_qty: f64 = rows.iter().map(|row| row.quantity.floor()).sum();
             if held_qty < 1.0 {
                 out.dropped.push(Dropped { trade, reason: "Not held in this scenario".to_string() });
                 continue;
             }
-            if trade.quantity > held_qty {
-                trade.quantity = held_qty;
-                trade.rationale = format!("{} (reduced to the {} held)", trade.rationale.trim_end(), whole(held_qty));
+            let oversold = trade.quantity > held_qty;
+            let mut left = trade.quantity.min(held_qty);
+            let mut pieces: Vec<ProposedTrade> = Vec::new();
+            for row in rows {
+                let take = left.min(row.quantity.floor());
+                if take >= 1.0 {
+                    let mut piece = trade.clone();
+                    piece.exchange = row.exchange.clone();
+                    piece.quantity = take;
+                    pieces.push(piece);
+                    left -= take;
+                }
+                if left < 1.0 {
+                    break;
+                }
             }
-        } else if strict {
+            if oversold {
+                if let Some(last) = pieces.last_mut() {
+                    last.rationale =
+                        format!("{} (reduced to the {} held)", last.rationale.trim_end(), whole(held_qty));
+                }
+            }
+            staged.extend(pieces);
+            continue;
+        }
+
+        if let Some(row) = rows.first() {
+            trade.exchange = row.exchange.clone();
+        }
+        if strict {
             if let Some(flag) = holding_flag(&trade.symbol, quoted_name(positions, &trade.symbol)) {
                 let reason = flag_text(&trade.symbol, flag);
                 out.dropped.push(Dropped { trade, reason });
@@ -352,6 +376,40 @@ mod tests {
         );
         let exchanges: Vec<&str> = v.kept.iter().map(|t| t.exchange.as_str()).collect();
         assert_eq!(exchanges, vec!["GENERIC", "GENERIC", "NASDAQ"]);
+    }
+
+    fn held_on(symbol: &str, exchange: &str, quantity: f64) -> PricedPosition {
+        PricedPosition {
+            symbol: symbol.to_string(),
+            exchange: exchange.to_string(),
+            quantity,
+            price: Some(500.0),
+            name: None,
+        }
+    }
+
+    fn rows(v: &Validated) -> Vec<(&str, f64)> {
+        v.kept.iter().map(|t| (t.exchange.as_str(), t.quantity)).collect()
+    }
+
+    #[test]
+    fn an_oversell_across_two_rows_is_split_and_never_flips_a_row() {
+        let positions = [held_on("VOO", "GENERIC", 10.0), held_on("VOO", "NASDAQ", 5.0)];
+        let v = validate_trades(vec![trade("VOO", "SELL", 20.0, "MARKET", 0.0)], &positions, Some(0.0), None);
+        assert!(v.dropped.is_empty(), "{:?}", reasons(&v));
+        assert_eq!(rows(&v), vec![("GENERIC", 10.0), ("NASDAQ", 5.0)]);
+        assert_eq!(v.kept[0].rationale, "Because.");
+        assert_eq!(v.kept[1].rationale, "Because. (reduced to the 15 held)");
+    }
+
+    #[test]
+    fn a_sell_takes_the_largest_row_first_and_spills_into_the_next() {
+        let positions = [held_on("VOO", "NASDAQ", 5.0), held_on("VOO", "GENERIC", 10.0)];
+        let one = validate_trades(vec![trade("VOO", "SELL", 8.0, "MARKET", 0.0)], &positions, Some(0.0), None);
+        assert_eq!(rows(&one), vec![("GENERIC", 8.0)]);
+        let two = validate_trades(vec![trade("VOO", "SELL", 12.0, "MARKET", 0.0)], &positions, Some(0.0), None);
+        assert_eq!(rows(&two), vec![("GENERIC", 10.0), ("NASDAQ", 2.0)]);
+        assert!(two.kept.iter().all(|t| t.rationale == "Because."));
     }
 
     #[test]

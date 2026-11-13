@@ -19,14 +19,13 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::analytics::series::redact_api_key;
 use crate::error::{AppError, Result};
 use crate::providers::anthropic::{Message, MessageContent};
 use crate::services::client_brief_service::live_quotes_with_names;
 use crate::services::copilot_service::CopilotResponse;
 use crate::state::AppState;
 
-use dossier::Dossier;
+use dossier::{redact_secrets, Dossier};
 use render::PipelineOutput;
 use schemas::{AnalystReport, Case, Decision, ProposedTrade, ResearchPlan, RiskPanel};
 use validate::{validate_trades, PricedPosition};
@@ -154,7 +153,7 @@ impl Progress<'_> {
     }
 
     fn failed(&self, stage: &str, detail: &str) {
-        self.emit(stage, "failed", Some(redact_api_key(detail)));
+        self.emit(stage, "failed", Some(redact_secrets(detail)));
     }
 
     fn current(&self) -> &'static str {
@@ -394,6 +393,34 @@ mod tests {
         assert_eq!(positions[0].exchange, "GENERIC");
         assert_eq!(positions[0].name.as_deref(), Some("VOO Inc"));
         assert_eq!((positions[1].quantity, positions[1].price), (-3.0, None));
+    }
+
+    #[tokio::test]
+    async fn a_failed_stage_is_marked_failed_after_the_finished_ones() {
+        let events: Mutex<Vec<StageProgress>> = Mutex::new(Vec::new());
+        let sink = |p: StageProgress| events.lock().unwrap().push(p);
+        let progress = Progress { scenario_id: 12, sink: &sink, current: Mutex::new(STAGES[0]) };
+
+        let n = step(&progress, "analysts", async { Ok::<usize, AppError>(4) }, |n| Some(format!("{n} findings")))
+            .await
+            .unwrap();
+        assert_eq!(n, 4);
+        let cut_off = AppError::Provider("Claude's answer was cut off at the length limit before it finished.".to_string());
+        let err = step(&progress, "bull", async { Err::<usize, _>(cut_off) }, |_| None).await.unwrap_err();
+        assert!(err.to_string().contains("'bull'"), "{err}");
+        assert_eq!(progress.current(), "bull");
+
+        let seen: Vec<(String, String, Option<String>)> =
+            events.lock().unwrap().iter().map(|e| (e.stage.clone(), e.status.clone(), e.detail.clone())).collect();
+        let expected_start = vec![
+            ("analysts".to_string(), "running".to_string(), None),
+            ("analysts".to_string(), "done".to_string(), Some("4 findings".to_string())),
+            ("bull".to_string(), "running".to_string(), None),
+        ];
+        assert_eq!(seen[..3].to_vec(), expected_start);
+        assert_eq!((seen[3].0.as_str(), seen[3].1.as_str()), ("bull", "failed"));
+        assert!(seen[3].2.as_deref().unwrap_or_default().contains("cut off"), "{seen:?}");
+        assert_eq!(seen.len(), 4, "nothing re-marks the finished stage");
     }
 
     #[test]

@@ -24,7 +24,8 @@ pub struct PipelineOutput {
     pub validated: Validated,
 }
 
-const DISCLAIMER: &str = "_AI-generated analysis: it can be confidently wrong and is not based on the client's full financial picture. It is not financial advice._";
+/// Italic in the app's markdown (`src/lib/markdown.tsx` renders `*…*`, not `_…_`).
+const DISCLAIMER: &str = "*AI-generated analysis: it can be confidently wrong and is not based on the client's full financial picture. It is not financial advice.*";
 
 fn whole(n: f64) -> String {
     format!("{}", n as i64)
@@ -468,6 +469,14 @@ mod tests {
         }
         // Weights are shown out of 5 and clamped.
         assert!(text.contains("weight 4/5") && text.contains("weight 5/5") && !text.contains("weight 9/5"), "{text}");
+    }
+
+    #[test]
+    fn the_disclaimer_is_italic_in_the_apps_markdown() {
+        // src/lib/markdown.tsx renders *italic*; underscores would show literally.
+        let text = render_markdown(&dossier(false), &output(Vec::new(), Vec::new()));
+        assert!(text.contains("\n*AI-generated analysis:"), "{text}");
+        assert!(!text.contains("_AI-generated"), "{text}");
     }
 
     #[test]

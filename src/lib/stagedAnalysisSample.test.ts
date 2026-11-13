@@ -39,7 +39,7 @@ Lower variance at the same expected return.
 
 These trades are ready under **Review Recommendations** below; nothing is applied until you review them. This scenario is the baseline, so Review applies them to a new clone and leaves the baseline untouched.
 
-_AI-generated analysis: it can be confidently wrong and is not based on the client's full financial picture. It is not financial advice._
+*AI-generated analysis: it can be confidently wrong and is not based on the client's full financial picture. It is not financial advice.*
 
 <!-- ACTIONS_JSON
 [
