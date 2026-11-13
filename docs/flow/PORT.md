@@ -1089,3 +1089,15 @@ Live-mode confirmation on activation.
 - Recorded, not changed (outside Phase C's files): `contract/client/app.rs`
   still holds `telegram_text`, upstream's Markdown alert text, now unused
   (the send formats its own in `messaging::telegram::alert_text`).
+
+### Gates (Phase C, 2026-11-12)
+
+`git merge feat/historify-desktop-backend`: already up to date (integration
+head `69758baf`, this branch's base). On the branch head:
+
+| Gate | Result | Whose |
+| --- | --- | --- |
+| `cd src-tauri && cargo test --lib` | `test result: ok. 1398 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 50.18s` (no compiler warnings; base 1368) | passes |
+| `npx vitest run` | `Test Files  4 failed \| 119 passed (123)`, `Tests  40 failed \| 2441 passed \| 1 skipped (2482)` | the base's 40: `MobileBottomNav.test.tsx` (13) and `ui/button.test.tsx` (20) have no jsdom pragma, `ui/page-loader.test.tsx` (4) and `config/navigation.test.ts` (3 stale assertions) |
+| `npm run build` | exit 2 on the base's seven `tsc` errors (`src/api/trading.ts` 384-388, `PlaceOrderDialog.tsx:552`, `Historify.tsx:570`); `npx vite build` alone: `✓ built in 32.18s` | the base's |
+| `npm run lint` | exit 1: `Found 2 errors.` (`backtest/TradeTable.tsx:402`, `trading/ActionReviewModal.test.tsx:764`), 152 warnings, 21 infos; every file Phase C touched lints clean | the base's |
