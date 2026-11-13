@@ -45,6 +45,7 @@ import {
   DeleteWorkflowDialog,
   RegenerateWebhookDialog,
 } from '@/components/desktop/FlowConfirmDialogs'
+import { useLiveActivation } from '@/components/desktop/FlowLiveActivation'
 import { FlowWebhookReachability } from '@/components/desktop/FlowWebhookReachability'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -106,6 +107,9 @@ function WorkflowCard({ workflow }: { workflow: WorkflowListItem }) {
       showToast.error(error.message, 'flow')
     },
   })
+
+  // Desktop: in Live mode, activation asks first (FlowLiveActivation).
+  const liveActivation = useLiveActivation(() => activateMutation.mutate())
 
   const deactivateMutation = useMutation({
     mutationFn: () => deactivateWorkflow(workflow.id),
@@ -263,7 +267,7 @@ function WorkflowCard({ workflow }: { workflow: WorkflowListItem }) {
                   <DropdownMenuItem
                     onClick={(e) => {
                       e.stopPropagation()
-                      activateMutation.mutate()
+                      liveActivation.request()
                     }}
                   >
                     <Play className="mr-2 h-4 w-4" />
@@ -564,6 +568,7 @@ Chartink payload (sent as-is):
       </Dialog>
 
       {/* Desktop: confirmations the web does not ask for. */}
+      {liveActivation.dialog}
       <DeleteWorkflowDialog
         name={workflow.name}
         isActive={workflow.is_active}

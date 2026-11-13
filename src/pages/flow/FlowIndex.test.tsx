@@ -35,6 +35,20 @@ vi.mock('@/api/flow', async (importOriginal) => {
   return { ...actual, ...api }
 })
 
+// WP8 Phase C: activating in Live mode asks first (desktop/FlowLiveActivation).
+// These tests pin activation itself, so the app reads as Analyze mode, where
+// Activate stays one click; flowLiveActivation.test.tsx pins the Live path.
+vi.mock('@/api/tauri-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/tauri-client')>()
+  return {
+    ...actual,
+    settingsCommands: {
+      ...actual.settingsCommands,
+      getAnalyzeMode: async () => ({ analyze_mode: true, mode: 'analyzer' }),
+    },
+  }
+})
+
 const { default: FlowIndex } = await import('./FlowIndex')
 
 const ORB: WorkflowListItem = {

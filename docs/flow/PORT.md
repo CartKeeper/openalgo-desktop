@@ -998,3 +998,35 @@ Live-mode confirmation on activation.
   Test: a new `it` in `src/config/navigation.test.ts` (Alpaca, generic,
   Zerodha); the file's three stale assertions are the base branch's and
   were left alone.
+
+### Live-mode confirmation on activation (coordinator decision)
+
+- The carried UI activated a workflow with one click in either mode, and a
+  Flow order goes through the API order path, which skips the app's
+  per-order Live/Paper confirmation. `src/components/desktop/
+  FlowLiveActivation.tsx` (new): `useLiveActivation(activate)` reads the
+  app's own mode when Activate is chosen (`settingsCommands.getAnalyzeMode`,
+  the setting that routes orders; an API client can switch it behind the
+  header, and a mode that cannot be read counts as Live). In Live mode it
+  asks first: "Activate in Live mode?" / "This workflow will place real
+  orders on the live account without asking each time.", with Cancel and
+  Activate (40 px buttons) and a close button in the header; a 16 px
+  radius, `max-w-lg`, backdrop and Escape close it, closing in 150 ms, no
+  motion under reduced motion. In Analyze mode Activate stays one click.
+- **Hand edits**: `src/pages/flow/FlowIndex.tsx` (the card menu's Activate
+  calls the guard; its dialog renders beside the card's other
+  confirmations) and `src/pages/flow/FlowEditor.tsx` (the header's
+  Activate calls the guard and is disabled while the mode is read; its
+  dialog renders beside the Help button).
+- Test: `src/pages/flow/flowLiveActivation.test.tsx` (from the list and
+  from the editor: Live asks and the dialog's Activate activates, Cancel
+  activates nothing, an unreadable mode asks, Analyze activates at once).
+  Carried tests that pin activation itself (`FlowEditor.test.tsx`,
+  `FlowEditor.pinned.test.tsx`, `FlowEditorMenu.pinned.test.tsx`,
+  `FlowIndex.test.tsx`, `FlowIndex.pinned.test.tsx`) now read the app as
+  Analyze mode through a partial `@/api/tauri-client` mock, so Activate is
+  one click there as before; 10 of their tests would otherwise meet the
+  dialog (jsdom cannot read the mode, which counts as Live).
+- Not covered: a workflow activated in Analyze mode places live orders if
+  the app is switched to Live later, without asking again. The Flow help
+  says so.
