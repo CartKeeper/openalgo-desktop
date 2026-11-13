@@ -930,3 +930,62 @@ Live-mode confirmation on activation.
   filling between two reads sends exactly one `complete` update with the
   order's fields and runs the watching workflow once; the book is read only
   while a watch is active, and no run starts).
+
+### Task C5: Telegram alerts and settings
+
+- Storage (the coordinator's decision): this app's `settings` table is one
+  fixed-column row with no key/value API, so the plan's "settings keys" are
+  provider keys instead: the bot token under `telegram` and the chat id
+  under `telegram_chat_id` in `provider_api_keys`, both encrypted by
+  `SqliteDb::save_provider_key` with the app's `SecurityManager`. No
+  migration. The Data Providers page lists only its own providers, so these
+  rows do not appear there.
+- `messaging/telegram.rs` (new): `load`/`save` (a token is refused before
+  it is stored unless it has Telegram's shape, the bot's number, a colon
+  and a secret of 30 or more letters, digits, `_` or `-`, so nothing else
+  can reach the request URL; a chat id is a number, a group's negative, or
+  a channel's `@name`; a blank token keeps the saved one), `mask` (four
+  dots and the last four characters), `send_message` (`POST
+  https://api.telegram.org/bot<token>/sendMessage` with `{chat_id, text}`
+  as JSON, 15 s timeout; the error is Telegram's own `description`, or
+  "could not be reached" with the HTTP client's error stripped of its URL),
+  `alert_text`, `send_alert` (the node's answer in upstream's client shape)
+  and `send_test`. Checked against Telegram's Bot API and bots pages on
+  2026-11-12 (URL form, JSON bodies, `ok`/`description`/`error_code`,
+  `chat_id` as a number or `@name`, BotFather's `/newbot`).
+- Alert text: upstream's heading and 21-character rule, the message, then
+  `Time: 3:45:12 PM ET` (12-hour Eastern, CLAUDE.md), where upstream wrote
+  `*Flow Alert*` for Markdown and the host's 24-hour time. No `parse_mode`
+  is sent, so a message with `_` or `*` is never refused for its Markdown.
+- `commands/telegram.rs` (new): `telegram_get_settings`,
+  `telegram_save_settings(bot_token, chat_id)`, `telegram_send_test`,
+  registered after the 22 `flow_*` commands. They answer plain sentences
+  (`Result<_, String>`): an `AppError` reaches the page as "Internal error:
+  Validation error: ...".
+- **Hand edit** (`flow/nodes/alerts.rs`): in the app a Telegram Alert sends
+  through `messaging::telegram` (the saved settings); a context with no app
+  (the carried node tests) still asks the run's client. The app's client,
+  `AppFlowClient::telegram` in `flow/contract/client/app.rs`, is outside
+  Phase C's files and still answers only the not-set-up sentence; no run in
+  the app reaches it. Moving the send there and dropping the node's fork is
+  a clean-up for when that file is open.
+- Tests: `messaging/telegram.rs` (the token in no row of any table, read
+  back whole, shown masked; what a save refuses; the exact URL and JSON; a
+  refusal's text never names the token; the Eastern 12-hour stamp; the test
+  message), `commands/telegram.rs`, and `flow/nodes/alerts.rs` (`app_tests`:
+  not set up fails with the sentence that names the Telegram page and sends
+  nothing; set up, it sends the interpolated message to the saved chat).
+  Telegram itself is never called: a fake Bot API (`telegram::fake`) is
+  installed per test thread.
+- Frontend: `src/api/telegram.ts` (the web version's stubs, which nothing
+  imported) is replaced by the three commands (`botToken`/`chatId`
+  arguments). `src/pages/telegram/TelegramIndex.tsx`: a "Bot settings" card
+  (the Bot token as a password field that only ever shows the saved token
+  masked, the Chat ID, Save and Send test message as 40 px buttons, the
+  second secondary and enabled once both are saved), a skeleton while
+  loading, an inline error with Retry, and the Help button
+  (`telegramHelp.ts`). The web bot's sections (status, Start/Stop, users,
+  analytics, broadcast) were removed: they read the web client stub, so the
+  page always stopped at "Failed to load Telegram data" and never showed
+  them. The `/telegram/config`, `/users` and `/analytics` pages are
+  untouched (still routed, still linked from nowhere, as before).
