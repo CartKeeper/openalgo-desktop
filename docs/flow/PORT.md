@@ -1581,3 +1581,15 @@ failed.
   `?`, Ctrl+S, Escape) no longer act from inside a dialog; Delete pressed in
   Run history had deleted the canvas's selected node. Test in
   `flowRunHistory.test.tsx`.
+
+### Gates (Phase D, 2026-11-13)
+
+`git merge feat/historify-desktop-backend`: already up to date (integration
+head `b2a0a85d`, this branch's base). On the branch head:
+
+| Gate | Result | Whose |
+| --- | --- | --- |
+| `cd src-tauri && cargo test --lib` | `test result: ok. 1448 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 57.45s` (no compiler warnings; base 1398) | passes |
+| `npx vitest run` | `Test Files  4 failed \| 125 passed (129)`, `Tests  40 failed \| 2507 passed \| 1 skipped (2548)` | the base's 40: `MobileBottomNav.test.tsx` (13) and `ui/button.test.tsx` (20) have no jsdom pragma, `ui/page-loader.test.tsx` (4) and `config/navigation.test.ts` (3 stale assertions) |
+| `npm run build` | exit 2 on the base's seven `tsc` errors (`src/api/trading.ts` 384-388, `PlaceOrderDialog.tsx:552`, `Historify.tsx:570`); `npx vite build` alone: `✓ built in 30.76s` | the base's |
+| `npm run lint` | exit 1: `Found 2 errors.` (`backtest/TradeTable.tsx:402`, `trading/ActionReviewModal.test.tsx:764`), 152 warnings, 21 infos; every file Phase D touched lints clean | the base's |
