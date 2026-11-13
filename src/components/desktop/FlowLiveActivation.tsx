@@ -17,12 +17,32 @@ import { Button } from '@/components/ui/button'
  * Desktop departure from the web's Flow pages (WP8 Phase C, the
  * coordinator's live-money decision). A Flow order goes through the app's
  * API order path, which skips the per-order Live/Paper confirmation, so
- * activating a workflow while the app is in Live mode asks once first. In
- * Analyze mode activation stays one click. The mode is the app's own (the
- * setting that routes the orders), read when Activate is chosen, since an
- * API client can switch it behind the header; a mode that cannot be read is
- * treated as Live.
+ * activating a workflow while the app is in Live mode asks once first, and
+ * so does Run Now (WP8 Phase D, decision 6c), which places the workflow's
+ * orders at once. In Analyze mode both stay one click. The mode is the
+ * app's own (the setting that routes the orders), read when the button is
+ * chosen, since an API client can switch it behind the header; a mode that
+ * cannot be read is treated as Live.
  */
+
+/** What the Live-mode question says for one action. */
+interface LiveQuestion {
+  title: string
+  description: string
+  confirm: string
+}
+
+const ACTIVATION: LiveQuestion = {
+  title: 'Activate in Live mode?',
+  description: 'This workflow will place real orders on the live account without asking each time.',
+  confirm: 'Activate',
+}
+
+const RUN: LiveQuestion = {
+  title: 'Run in Live mode?',
+  description: 'This run will place real orders on the live account without asking for each order.',
+  confirm: 'Run',
+}
 
 /** CLAUDE.md's medium button: 40px high, 16px padding, at least 80px wide. */
 const BUTTON_40 =
@@ -38,14 +58,25 @@ async function tradingLive(): Promise<boolean> {
 }
 
 /** The question asked before a workflow is activated in Live mode. */
-export function LiveActivationDialog({
+export function LiveActivationDialog(props: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onConfirm: () => void
+}) {
+  return <LiveModeDialog {...props} question={ACTIVATION} />
+}
+
+/** The Live-mode question for one action (activation, or a run). */
+function LiveModeDialog({
   open,
   onOpenChange,
   onConfirm,
+  question,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   onConfirm: () => void
+  question: LiveQuestion
 }) {
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -60,7 +91,7 @@ export function LiveActivationDialog({
         >
           <AlertDialogHeader className="flex-row items-center justify-between gap-4 border-b px-6 py-4 sm:text-left">
             <AlertDialogTitle className="text-base leading-[1.4] font-semibold">
-              Activate in Live mode?
+              {question.title}
             </AlertDialogTitle>
             <DialogPrimitive.Close asChild>
               <Button
@@ -74,7 +105,7 @@ export function LiveActivationDialog({
             </DialogPrimitive.Close>
           </AlertDialogHeader>
           <AlertDialogDescription className="px-6 py-4">
-            This workflow will place real orders on the live account without asking each time.
+            {question.description}
           </AlertDialogDescription>
           <AlertDialogFooter className="border-t px-6 py-4">
             <DialogPrimitive.Close asChild>
@@ -83,7 +114,7 @@ export function LiveActivationDialog({
               </Button>
             </DialogPrimitive.Close>
             <Button className={BUTTON_40} onClick={onConfirm}>
-              Activate
+              {question.confirm}
             </Button>
           </AlertDialogFooter>
         </DialogPrimitive.Content>
@@ -93,11 +124,11 @@ export function LiveActivationDialog({
 }
 
 /**
- * Guard `activate` with the Live-mode question: `request` reads the app's
- * mode and either asks (`dialog`, to render) or activates at once;
- * `checking` while the mode is read.
+ * Guard `action` with the Live-mode `question`: `request` reads the app's
+ * mode and either asks (`dialog`, to render) or acts at once; `checking`
+ * while the mode is read.
  */
-export function useLiveActivation(activate: () => void) {
+function useLiveQuestion(action: () => void, question: LiveQuestion) {
   const [asking, setAsking] = useState(false)
   const [checking, setChecking] = useState(false)
 
@@ -108,20 +139,38 @@ export function useLiveActivation(activate: () => void) {
     if (live) {
       setAsking(true)
     } else {
-      activate()
+      action()
     }
-  }, [activate])
+  }, [action])
 
   const dialog = (
-    <LiveActivationDialog
+    <LiveModeDialog
       open={asking}
       onOpenChange={setAsking}
+      question={question}
       onConfirm={() => {
         setAsking(false)
-        activate()
+        action()
       }}
     />
   )
 
   return { request, checking, dialog }
+}
+
+/**
+ * Guard `activate` with the Live-mode question: `request` reads the app's
+ * mode and either asks (`dialog`, to render) or activates at once;
+ * `checking` while the mode is read.
+ */
+export function useLiveActivation(activate: () => void) {
+  return useLiveQuestion(activate, ACTIVATION)
+}
+
+/**
+ * Guard Run Now with the Live-mode question ("Run in Live mode?"): the
+ * same as {@link useLiveActivation}, for a run.
+ */
+export function useLiveRun(run: () => void) {
+  return useLiveQuestion(run, RUN)
 }

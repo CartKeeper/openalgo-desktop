@@ -1225,3 +1225,28 @@ send into the app's client, and writes the user guide.
   carried tests updated: `ExecutionLogPanel.pinned.test.tsx` ("shows the
   time as Eastern 12-hour time with ET") and `FlowIndex.test.tsx` ("dates
   each workflow in Eastern time").
+
+### Run Now asks first in Live mode (coordinator decision 6c)
+
+- Run Now places the workflow's orders at once, through the API order
+  path that skips the app's per-order Live/Paper confirmation, so in Live
+  mode it asks first, the way Activate does: "Run in Live mode?" / "This
+  run will place real orders on the live account without asking for each
+  order.", with Cancel and Run. The mode is read from the backend
+  (`settingsCommands.getAnalyzeMode`) when Run Now is chosen, and a mode
+  that cannot be read counts as Live; in Analyze mode Run Now stays one
+  click.
+- `src/components/desktop/FlowLiveActivation.tsx`: the dialog takes its
+  words (`LiveQuestion`), `useLiveQuestion` is the shared guard, and
+  `useLiveRun` is `useLiveActivation`'s sibling for a run (the activation
+  dialog's look, sizes and reduced-motion behaviour are unchanged).
+- **Hand edit** (`src/pages/flow/FlowEditor.tsx`): the ... menu's Run Now
+  calls the guard (disabled while the mode is read) and its dialog renders
+  beside the activation one. The run-history screen's empty state uses the
+  same guard (decision 6a, below).
+- Tests: `src/pages/flow/flowLiveRun.test.tsx` (Live asks and Run runs
+  once; Cancel runs nothing; an unreadable mode asks; the mode is read at
+  the click; Analyze runs at once). The carried
+  `FlowEditor.w6.test.tsx`, whose two Run Now tests are about the run
+  itself, reads the app as Analyze mode through a partial
+  `@/api/tauri-client` mock, as Phase C did for activation.

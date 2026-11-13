@@ -43,7 +43,7 @@ import {
 import { FlowEditorAccountControls } from '@/components/desktop/FlowEditorAccountControls'
 import { HelpButton } from '@/components/HelpButton'
 import { FlowLeaveGuard, useGuardedNavigate } from '@/components/desktop/FlowLeaveGuard'
-import { useLiveActivation } from '@/components/desktop/FlowLiveActivation'
+import { useLiveActivation, useLiveRun } from '@/components/desktop/FlowLiveActivation'
 import { edgeTypes } from '@/components/flow/edges'
 // Import Flow components
 import { nodeTypes } from '@/components/flow/nodes'
@@ -336,6 +336,9 @@ function FlowEditorContent() {
       showToast.error(error.message, 'flow')
     },
   })
+
+  // Desktop: in Live mode, Run Now asks first too (FlowLiveActivation).
+  const liveRun = useLiveRun(() => executeMutation.mutate())
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -631,6 +634,7 @@ function FlowEditorContent() {
 
       <HelpButton items={FLOW_EDITOR_HELP} pageTitle="Flow Editor" />
       {liveActivation.dialog}
+      {liveRun.dialog}
       <Dialog open={showReplaceDialog} onOpenChange={setShowReplaceDialog}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
@@ -754,8 +758,10 @@ function FlowEditorContent() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem
-                onClick={() => executeMutation.mutate()}
-                disabled={executeMutation.isPending || saveMutation.isPending}
+                onClick={() => liveRun.request()}
+                disabled={
+                  executeMutation.isPending || saveMutation.isPending || liveRun.checking
+                }
               >
                 Run Now
               </DropdownMenuItem>

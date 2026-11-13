@@ -48,6 +48,20 @@ vi.mock('@/api/auth', async (importOriginal) => {
   return { ...actual, authApi: { ...actual.authApi, logout: logoutRequest } }
 })
 
+// This app (WP8 Phase D): Run Now asks first in Live mode
+// (flowLiveRun.test.tsx); these tests are about the run itself, so the
+// app reads as Analyze mode, where Run Now is one click as on the web.
+vi.mock('@/api/tauri-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/tauri-client')>()
+  return {
+    ...actual,
+    settingsCommands: {
+      ...actual.settingsCommands,
+      getAnalyzeMode: async () => ({ analyze_mode: true, mode: 'analyzer' }),
+    },
+  }
+})
+
 const toast = vi.hoisted(() => ({
   success: vi.fn(),
   error: vi.fn(),
