@@ -1202,3 +1202,26 @@ send into the app's client, and writes the user guide.
   the app's own `/api/v1/placeorder` (BUY, 1, MARKET, CNC, `US`), and the
   Telegram alert reaches the saved chat through the app's send (a fake Bot
   API) with the quote and the sandbox's order id filled in.
+
+### Task D4: run times in Eastern 12-hour time
+
+- `src/lib/flow/listDate.ts` (carried, rewritten): every Flow time is
+  America/New_York, 12-hour with AM/PM and "ET", whatever this computer's
+  zone, built from `Intl.DateTimeFormat` parts (so no ICU's narrow space
+  before AM/PM can creep in). `listDate` (the cards' last change): `Nov 12,
+  2026, 2:35 PM ET`, where upstream showed an IST date. New beside it:
+  `runTime` for a run's start or end (`Nov 12, 2:35:02 PM ET`, a dash for
+  none) and `logTime` for a log line (`9:20:05 AM ET`). Workflow and run
+  times are stored as naive UTC and read as UTC; a log line's `time` is
+  naive Eastern already (`iso_market`) and is shown as it is, never
+  shifted; a line the editor writes itself (`failedRunLog`, with a `Z`) is
+  converted; unreadable text still shows "Invalid Date".
+- **Hand edit** (`src/components/flow/panels/ExecutionLogPanel.tsx`): the
+  panel's 24-hour `formatTime` is replaced by `logTime`. This closes the
+  first "Known deviation after Phase B" above.
+- Tests: `src/lib/flow/listDate.test.ts` (rewritten: EST and EDT dates,
+  the evening date, zones kept, midnight and noon; the run times; the log
+  times under two other computer zones; the editor's own `Z` lines);
+  carried tests updated: `ExecutionLogPanel.pinned.test.tsx` ("shows the
+  time as Eastern 12-hour time with ET") and `FlowIndex.test.tsx` ("dates
+  each workflow in Eastern time").

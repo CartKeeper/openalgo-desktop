@@ -127,14 +127,13 @@ describe('the workflow list', () => {
     await checkA11y(container)
   })
 
-  it('dates each workflow in IST, the server sending UTC', async () => {
-    // Saved at 01:30 IST on the 30th (20:00 UTC on the 29th).
+  // This app (WP8 Phase D, Task D4): Eastern time, 12-hour with ET, where
+  // upstream dated the list in IST.
+  it('dates each workflow in Eastern time, the server sending UTC', async () => {
+    // Saved at 20:00 UTC on 29 Oct 2026, 4:00 PM EDT.
     api.listWorkflows.mockResolvedValue([{ ...ORB, updated_at: '2026-10-29T20:00:00' }])
     renderIndex()
-    const oct30 = new Date(Date.UTC(2026, 9, 30, 6, 30)).toLocaleDateString(undefined, {
-      timeZone: 'Asia/Kolkata',
-    })
-    expect(await screen.findByText(oct30)).toBeInTheDocument()
+    expect(await screen.findByText('Oct 29, 2026, 4:00 PM ET')).toBeInTheDocument()
   })
 
   it('opens a workflow from its card, by click or by keyboard', async () => {

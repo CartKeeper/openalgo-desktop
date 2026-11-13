@@ -5,6 +5,8 @@ import { AlertCircle, CheckCircle2, Clock, Terminal, X, XCircle } from 'lucide-r
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { withPanelLevel } from '@/lib/desktopFlow'
+// This app (WP8 Phase D): log times in Eastern 12-hour time with ET.
+import { logTime } from '@/lib/flow/listDate'
 import { cn } from '@/lib/utils'
 
 export interface LogEntry {
@@ -55,20 +57,6 @@ export function ExecutionLogPanel({ logs, status, onClose }: ExecutionLogPanelPr
         return 'Failed'
       default:
         return 'Ready'
-    }
-  }
-
-  const formatTime = (isoString: string) => {
-    try {
-      const date = new Date(isoString)
-      return date.toLocaleTimeString('en-US', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-      })
-    } catch {
-      return isoString
     }
   }
 
@@ -141,7 +129,7 @@ export function ExecutionLogPanel({ logs, status, onClose }: ExecutionLogPanelPr
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       <span className="text-xs text-muted-foreground font-mono">
-                        {formatTime(log.time)}
+                        {logTime(log.time)}
                       </span>
                     </div>
                     <p
