@@ -1503,3 +1503,30 @@ it changes ("Departures from the web"):
 - Tests (`contract/client/app.rs`): a run's Telegram alert goes through the
   app's settings to the saved chat (a fake Bot API); without settings it
   answers the sentence that names the Telegram page and sends nothing.
+
+### Task D5: the user guide and the in-app help
+
+- `docs/flow/user-guide.md` (new): upstream's chapter 21 adapted to this
+  app: US examples (AAPL on `US`, whole shares, CNC), Eastern time
+  throughout, no built-in tunnel (the Ngrok/Public URL on Admin → Server
+  Settings, Enable API Server), Telegram only (WhatsApp, Strategy P&L and
+  the Indian-broker lookups are named as not available), and Phase D's
+  additions: the card selection, Run history, Run Now's Live-mode question,
+  the guards against triggers that re-ran themselves, the webhook's limits,
+  US venues as one market. The Delay (5 minutes), Wait Until (30 minutes),
+  HTTP Request (public addresses, no redirect, 5 MB) and run-history (500
+  runs, 30 days) limits it states were checked against the carried code.
+  Upstream's Semi-Auto, Action Center, Agent and built-in-tunnel sections
+  are left out (not in this app).
+- The app cannot open a file of this repository, so no link to the guide
+  was added (the plan's "link it from the Help content"). Instead the
+  in-app help (`src/pages/flow/flowHelp.ts`, the Help button on the three
+  Flow pages) carries its how-tos briefly: new items on the Flow page,
+  "Selecting workflows", "Run history", "Webhook limits" (with how they meet
+  the lock) and "Not available in this app"; the price-alert item says an
+  every-time level alert runs when its condition becomes true, the order
+  update item that a watch never runs on its own workflow's order and that
+  the US venues are one market; on the editor, Run Now's "Run in Live
+  mode?" question, the log's Eastern 12-hour times and a "Run history"
+  item; the shortcuts page says a card opens on a double-click or its Open
+  button. `src/pages/flow/flowHelp.test.tsx` asserts those facts.
