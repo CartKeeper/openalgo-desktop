@@ -356,6 +356,11 @@ function FlowEditorContent() {
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
         return
       }
+      // Desktop (WP8 Phase D): nor from inside a dialog (Run history,
+      // Replace from JSON): Delete there never deletes the canvas's node.
+      if (target.closest?.('[role="dialog"], [role="alertdialog"]')) {
+        return
+      }
 
       // Delete/Backspace - delete selected node or edge
       // selectedEdgeId was never consulted, and selectEdge clears selectedNodeId,

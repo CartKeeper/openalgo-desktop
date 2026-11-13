@@ -133,3 +133,37 @@ async fn a_watch_is_not_run_again_by_its_own_order_but_is_by_another_workflows()
     settle(&s).await;
     assert_eq!(run_count(&t.ctx, watcher), 2);
 }
+
+/// The review's race: the watcher's own order shows in the book while its
+/// run is still going and before the client has recorded its id, so the
+/// update is kept as the every-time watch's follow-up. By the time the
+/// follow-up would run the id is recorded, and it does not run.
+#[tokio::test]
+async fn a_follow_up_for_the_watchers_own_order_does_not_run() {
+    let t = eastern("2026-11-03T15:00:00Z").await;
+    t.ctx.sqlite.set_analyze_mode(true).unwrap();
+    let s = side(&t);
+    s.watches.attach();
+    let watch = json!({"symbol": "AAPL", "status": "complete", "trigger": "every_time"});
+    let watcher = wired(
+        &t.ctx,
+        "Buy AAPL on every AAPL fill",
+        json!([
+            {"id": "t", "type": "orderUpdateTrigger", "position": {"x": 0, "y": 0}, "data": watch.clone()},
+            buy_aapl()
+        ]),
+    );
+    s.register(watcher, "orderUpdateTrigger", &data(watch))
+        .await
+        .unwrap();
+    // Another workflow's fill claims the watch and queues its run; the
+    // watcher's own order fills before that run's reply is recorded.
+    s.on_order_update(&filled("THEIRS-1"));
+    s.on_order_update(&filled("OWN-1"));
+    t.ctx
+        .flow
+        .own_orders
+        .record(watcher, ["OWN-1".to_string()]);
+    settle(&s).await;
+    assert_eq!(run_count(&t.ctx, watcher), 1, "its own fill ran it again");
+}

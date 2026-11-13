@@ -241,6 +241,23 @@ describe('the selection', () => {
     expect(barCount()).toBeNull()
   })
 
+  // The review's finding: a key typed on a control inside the table (a
+  // checkbox, an Open button) is that control's, not the focused row's.
+  it("keys on the table's own controls act on those controls", async () => {
+    const user = userEvent.setup()
+    renderHistory()
+    await user.click(await row(FAILED))
+    const all = screen.getByRole('checkbox', { name: 'Select all runs' })
+    all.focus()
+    await user.keyboard(' ')
+    expect(barCount()).toBe('3 runs selected')
+    within(await row(RUNNING))
+      .getByRole('button', { name: `Open the run of ${RUNNING}` })
+      .focus()
+    await user.keyboard('{Enter}')
+    expect(await screen.findByText('This run has no log lines.')).toBeInTheDocument()
+  })
+
   it('Escape clears the selection first, and closes the window when nothing is selected', async () => {
     const user = userEvent.setup()
     renderHistory()

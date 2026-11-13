@@ -1530,3 +1530,54 @@ it changes ("Departures from the web"):
   mode?" question, the log's Eastern 12-hour times and a "Run history"
   item; the shortcuts page says a card opens on a double-click or its Open
   button. `src/pages/flow/flowHelp.test.tsx` asserts those facts.
+
+### Review fixes (after the whole-branch review)
+
+A fresh reviewer read the whole branch (b2a0a85d..35311e8e): "with fixes",
+no critical finding. Each fix below was first reproduced by a test that
+failed.
+
+- **Own-order follow-up** (`triggers/drive.rs`, `run_order_update`): an
+  update kept as an every-time watch's follow-up while its run went on can
+  be that run's own order, recorded only after the reply; the guard is
+  checked again when the follow-up would run. Test
+  `own_orders::a_follow_up_for_the_watchers_own_order_does_not_run`.
+- **A level alert's lost rise** (`triggers/drive.rs`, `price_monitor.rs`,
+  `Alerts::release_held`): when an every-time fire cannot be queued (one run
+  at a time) or its run does not execute, the alert forgets that its
+  condition held, so the next check where it holds runs it. Test
+  `price_poll::a_level_alert_that_becomes_true_while_its_run_is_queued_runs_after`.
+- **The tunnel's address** (`service/webhook_limits.rs`,
+  `WebhookLimits::admit_caller`): this computer's own address (loopback,
+  every sender behind a local tunnel) has no per-address window, so a
+  stranger's flood through the tunnel never holds a real alert; each
+  webhook's 100 a minute and the failure budget still apply. Test
+  `flow_webhook_tests::a_flood_through_the_tunnel_address_never_holds_a_real_alert`.
+  Help and guide reworded (the per-address limit spans all webhooks).
+- **No listed contract, no strikes** (`support/options.rs`,
+  `listed_structure`): when none of the app's chain's strikes has a listed
+  contract (every US underlying today), the strike lookup refuses with "No
+  listed option contracts for AAPL in this app's symbol list, so there are no
+  strikes to choose from. A typed strike still works." instead of listing the
+  chain service's 50-point ladder. Test
+  `options::a_chain_without_one_listed_contract_is_refused`.
+- **The list keys after a click** (`src/hooks/useListSelection.ts`,
+  `keyIsForTheList`): a key belongs to the list when typed on the list or on
+  an item's body (a card's cell, a row's cell), never on an item's own
+  control (a checkbox, an Open button) or in a dialog an item opens. A mouse
+  click on a card's content focuses its cell, where the cards' keys did
+  nothing; and in the run history Space on "Select all" and Enter on a row's
+  Open button acted on the focused row. Tests in
+  `flowCardSelection.test.tsx` and `FlowRunHistory.test.tsx`.
+- **Copy of several workflows in WebKit** (`src/lib/flow/clipboard.ts`,
+  `copyLater`, used by the cards' Copy): the clipboard write is made inside
+  the click with a `ClipboardItem` whose text is a promise, since WebKit (the
+  app's webview on a Mac) refuses a write made after the exports were read;
+  without `ClipboardItem` the text is written when ready. Test
+  `src/lib/flow/clipboard.test.ts`. Not provable without the app: the user
+  copies workflows once on the Flow page.
+- **The editor's keys under a dialog** (`src/pages/flow/FlowEditor.tsx`,
+  re-graded from minor): the editor's window shortcuts (Delete, Backspace,
+  `?`, Ctrl+S, Escape) no longer act from inside a dialog; Delete pressed in
+  Run history had deleted the canvas's selected node. Test in
+  `flowRunHistory.test.tsx`.

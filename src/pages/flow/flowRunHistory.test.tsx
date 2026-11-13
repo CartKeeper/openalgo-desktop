@@ -13,6 +13,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Workflow, WorkflowExecution, WorkflowListItem } from '@/api/flow'
+import { useFlowWorkflowStore } from '@/stores/flowWorkflowStore'
 
 const api = vi.hoisted(() => ({
   listWorkflows: vi.fn(),
@@ -167,5 +168,23 @@ describe('Run history from the editor', () => {
     await user.click(await within(history).findByRole('button', { name: 'Run Now' }))
     await waitFor(() => expect(api.executeWorkflow).toHaveBeenCalledWith(7))
     expect(await within(history).findByText('Nov 12, 2:35:02 PM ET')).toBeInTheDocument()
+  })
+})
+
+describe('the editor under Run history', () => {
+  // The review's finding (re-graded): with a canvas node selected, Delete
+  // pressed in the Run history window deleted that node.
+  it("keeps the editor's canvas keys out of the Run history window", async () => {
+    mode.getAnalyzeMode.mockResolvedValue(ANALYZE)
+    const user = userEvent.setup()
+    renderAt('/flow/editor/7')
+    await screen.findByDisplayValue('Opening range breakout')
+    useFlowWorkflowStore.getState().selectNode('node_1')
+    await user.click(screen.getByRole('button', { name: 'Workflow actions' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Run history' }))
+    const history = await screen.findByRole('dialog', { name: 'Run history' })
+    within(history).getByRole('grid').focus()
+    await user.keyboard('{Delete}{Backspace}')
+    expect(useFlowWorkflowStore.getState().nodes.map((n) => n.id)).toEqual(['node_1'])
   })
 })

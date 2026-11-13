@@ -60,7 +60,7 @@ export const FLOW_INDEX_HELP: HelpItem[] = [
   {
     title: 'Price alerts',
     description:
-      "A Price Alert asks your broker for its symbol's quote every 5 seconds while the workflow is active (a broker must be logged in) and runs the workflow when its condition is met, for example when AAPL crosses above 190. A one-time alert runs once and then deactivates its workflow; an every-time alert runs again on each new cross, one run at a time. An every-time alert on a level that can stay true (greater than, less than, inside or outside a channel) runs when the condition becomes true, and again only after a check where it was false, never every 5 seconds while it holds. An alert with an expiry deactivates its workflow when it ends.",
+      "A Price Alert asks your broker for its symbol's quote every 5 seconds while the workflow is active (a broker must be logged in) and runs the workflow when its condition is met, for example when AAPL crosses above 190. A one-time alert runs once and then deactivates its workflow; an every-time alert runs again on each new cross, one run at a time. An every-time alert on a level that can stay true (greater than, less than, inside or outside a channel, moving up or down) runs when the condition becomes true, and again only after a check where it was false, never every 5 seconds while it holds. An alert with an expiry deactivates its workflow when it ends.",
   },
   {
     title: 'Webhook alerts',
@@ -70,7 +70,7 @@ export const FLOW_INDEX_HELP: HelpItem[] = [
   {
     title: 'Webhook limits',
     description:
-      'Each webhook takes 100 alerts a minute from one address and 100 a minute in all, and 10 failed attempts (an unknown address or a wrong secret) a minute from one address; over a limit the answer is 429 "Rate limit exceeded", and the sender waits a minute. Once an address has spent its 10 failed attempts, its wrong secrets get 429 too and still count toward the 15-minute lock, while the right secret still runs the workflow. Every sender through a tunnel on this computer arrives from 127.0.0.1, so through a tunnel the 100 a minute is shared.',
+      'One address may send 100 alerts a minute across all webhooks, each webhook takes 100 a minute, and one address may make 10 failed attempts (an unknown webhook address or a wrong secret) a minute; over a limit the answer is 429 "Rate limit exceeded", and the sender waits a minute. Once an address has spent its 10 failed attempts, its wrong secrets get 429 too and still count toward the 15-minute lock, while the right secret still runs the workflow. This computer\'s own address (every sender through a tunnel arrives from 127.0.0.1) has no per-address limit, so a stranger\'s flood through the tunnel cannot hold a real alert; each webhook\'s 100 a minute still applies.',
   },
   {
     title: 'Order Update triggers',

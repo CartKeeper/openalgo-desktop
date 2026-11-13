@@ -124,10 +124,12 @@ There are 61 node types, one palette tab per family.
 
 Not available in this app, and answered as a clear node error rather than a
 crash: **WhatsApp** alerts, **Strategy P&L**, and the lookups that need an
-Indian broker. With a US broker logged in, a **Margin** node says "Margin
-needs an Indian broker's margin calculator: log in to Zerodha, Angel One or
-Fyers...", and an option node on an index such as NIFTY says "NIFTY on NFO
-needs an Indian broker: ...".
+Indian broker. With a US broker logged in, a **Margin** node stops with
+"Margin needs an Indian broker's margin calculator: log in to Zerodha, Angel
+One or Fyers...", and an option node on an index such as NIFTY stops with its
+log saying "NIFTY on NFO needs an Indian broker: ...". The leg builder lists
+no strikes for an underlying this app holds no option contracts for (every US
+underlying today) and says so; a typed strike still works.
 
 Put a Telegram Alert **after** the orders it reports: a failed alert stops the
 branch below it.
@@ -199,15 +201,16 @@ Things to know:
 - Ten wrong secrets within 10 minutes lock that workflow's webhook for 15
   minutes; **Regenerate URL & Secret** (or switching the webhook off and on)
   unlocks it.
-- Limits, as upstream's: 100 alerts a minute from one sender's address, 100 a
-  minute on one webhook, and 10 failed attempts (an unknown address or a wrong
-  secret) a minute from one sender. Over a limit the answer is HTTP 429, "Rate
-  limit exceeded. Please slow down your requests.", with Retry-After 60. Once a
-  sender has spent its 10 failures, its wrong secrets are answered 429 too
-  (and still count toward the lock), but an alert with the right secret goes
-  on. Everything that comes through a tunnel on this computer arrives from
-  127.0.0.1, so through a tunnel the 100-a-minute address limit is shared by
-  every sender.
+- Limits, as upstream's: 100 alerts a minute from one sender's address
+  across all webhooks, 100 a minute on one webhook, and 10 failed attempts (an
+  unknown webhook address or a wrong secret) a minute from one sender. Over a
+  limit the answer is HTTP 429, "Rate limit exceeded. Please slow down your
+  requests.", with Retry-After 60. Once a sender has spent its 10 failures,
+  its wrong secrets are answered 429 too (and still count toward the lock),
+  but an alert with the right secret goes on. Everything that comes through a
+  tunnel on this computer arrives from 127.0.0.1, so this computer's own
+  address has no per-address limit (a stranger's flood through the tunnel
+  cannot hold your real alerts); each webhook's 100 a minute still applies.
 - An alert that arrives while the workflow is still running is answered
   "Workflow is already running".
 

@@ -180,6 +180,21 @@ describe('selecting several', () => {
     expect(document.querySelector('[aria-live="polite"]')?.textContent).toBe('3 workflows selected')
   })
 
+  // The review's finding: a mouse click puts the focus on the card, not the
+  // grid; the list's keys must still work.
+  it('after a mouse click on a card, the list keys work', async () => {
+    const user = userEvent.setup()
+    renderIndex()
+    // A click lands on the card's content, as a pointer does.
+    await user.click(within(await card(ORB.name)).getByText(ORB.name))
+    await user.keyboard('{Meta>}a{/Meta}')
+    expect(barCount()).toBe('3 workflows selected')
+    await user.keyboard('{Escape}')
+    expect(barCount()).toBeNull()
+    await user.keyboard('{ArrowDown} ')
+    expect(barCount()).toBe('1 workflow selected')
+  })
+
   it('Cmd+A selects all and Escape clears, on the list', async () => {
     const user = userEvent.setup()
     renderIndex()

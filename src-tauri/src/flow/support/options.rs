@@ -93,7 +93,7 @@ pub async fn option_chain_structure(
 ) -> Result<Value, Reply> {
     let expiry = Some(expiry_date).filter(|e| !e.is_empty());
     match OptionsService::get_option_chain(ctx, underlying, exchange, expiry, None).await {
-        Ok(chain) => Ok(chain_structure(&chain, strike_count)),
+        Ok(chain) => listed_structure(&chain, strike_count),
         // The chain starts with the underlying's quote, which needs a broker.
         Err(_) if ctx.get_broker_session().is_none() => {
             Err(Reply::error(503, super::NO_BROKER_SESSION))
@@ -170,6 +170,32 @@ pub fn chain_structure(chain: &OptionChainResult, strike_count: Option<i64>) -> 
         "atm_strike": atm.map(|i| json!(rows[i].strike)).unwrap_or(Value::Null),
         "chain": window,
     })
+}
+
+/// The leg builder's structure of `chain`, or a refusal when none of its
+/// strikes has a listed contract: this app's chain service lists a ladder
+/// of strikes for an underlying it holds no contracts for (every US
+/// underlying today: a US broker's symbol list has no option contracts),
+/// and a strike no contract has is no strike to choose.
+pub fn listed_structure(
+    chain: &OptionChainResult,
+    strike_count: Option<i64>,
+) -> Result<Value, Reply> {
+    let structure = chain_structure(chain, strike_count);
+    let listed = structure["chain"].as_array().is_some_and(|rows| {
+        rows.iter()
+            .any(|r| !r["ce"].is_null() || !r["pe"].is_null())
+    });
+    if !listed {
+        return Err(Reply::error(
+            404,
+            format!(
+                "No listed option contracts for {} in this app's symbol list, so there are no strikes to choose from. A typed strike still works.",
+                chain.underlying
+            ),
+        ));
+    }
+    Ok(structure)
 }
 
 /// The call's and the put's label of the strike at `index` when ATM is at
@@ -295,6 +321,29 @@ mod tests {
             rows.iter().all(|r| r["ce"].is_null() && r["pe"].is_null()),
             "{out}"
         );
+    }
+
+    /// The review's finding: this app's chain lists strikes for an
+    /// underlying it has no contracts for (its 50-point ladder). With no
+    /// listed contract on any strike, the lookup refuses with a sentence
+    /// rather than offer strikes no contract has; with contracts, it lists.
+    #[test]
+    fn a_chain_without_one_listed_contract_is_refused() {
+        let ladder = (-10..=10)
+            .map(|i| entry(250.0 + 50.0 * i as f64, None, None))
+            .collect();
+        let refused = listed_structure(&chain("AAPL", 270.4, 250.0, ladder), Some(25)).unwrap_err();
+        assert_eq!(refused.status, 404);
+        assert_eq!(
+            refused.body["message"],
+            "No listed option contracts for AAPL in this app's symbol list, so there are no strikes to choose from. A typed strike still works."
+        );
+        let listed = vec![
+            entry(265.0, Some("AAPL261120C00265000"), None),
+            entry(270.0, Some("AAPL261120C00270000"), None),
+        ];
+        let ok = listed_structure(&chain("AAPL", 270.4, 270.0, listed), Some(25)).unwrap();
+        assert_eq!(ok["chain"].as_array().map(Vec::len), Some(2));
     }
 
     /// No strike above zero: an empty chain, no ATM.

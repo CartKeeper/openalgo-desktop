@@ -146,10 +146,13 @@ describe('the Flow page', () => {
       within(panel).getByText(/never runs on an order its own workflow placed/)
     ).toBeInTheDocument()
     // Decision 6e: upstream's limits, and how they meet the lock.
-    const limits = within(panel).getByText(/100 alerts a minute from one address/)
+    const limits = within(panel).getByText(/One address may send 100 alerts a minute/)
+    expect(limits.textContent).toMatch(/each webhook takes 100 a minute/)
     expect(limits.textContent).toMatch(/10 failed attempts/)
     expect(limits.textContent).toMatch(/429/)
     expect(limits.textContent).toMatch(/the right secret still runs the workflow/)
+    // The review's fix: every sender through a tunnel arrives from 127.0.0.1.
+    expect(limits.textContent).toMatch(/127\.0\.0\.1\) has no per-address limit/)
     expect(within(panel).getByText(/need an Indian broker logged in/)).toBeInTheDocument()
     // A US broker's sidebar has no Sandbox page; in analyzer mode the
     // Orderbook shows the sandbox's orders (get_order_book routes there).

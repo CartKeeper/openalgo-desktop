@@ -302,6 +302,20 @@ impl Alerts {
         Observed::Fire(Box::new(alert.clone()))
     }
 
+    /// Forget that `gen`'s condition held (its fire could not be queued, or
+    /// its run did not execute): an every-time level alert then fires at
+    /// the next check where the condition holds, so no rise is lost.
+    pub fn release_held(&self, workflow_id: i64, gen: u64) {
+        if let Some(a) = self
+            .alerts
+            .lock()
+            .get_mut(&workflow_id)
+            .filter(|a| a.gen == gen)
+        {
+            a.held = false;
+        }
+    }
+
     /// Clear the latch of `gen` (its run did not execute).
     pub fn rearm(&self, workflow_id: i64, gen: u64) {
         if let Some(a) = self

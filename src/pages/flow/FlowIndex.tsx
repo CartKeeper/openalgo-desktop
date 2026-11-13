@@ -82,6 +82,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { useListSelection } from '@/hooks/useListSelection'
+import { copyLater } from '@/lib/flow/clipboard'
 import { listDate } from '@/lib/flow/listDate'
 import { cn } from '@/lib/utils'
 import { showToast } from '@/utils/toast'
@@ -752,11 +753,17 @@ export default function FlowIndex() {
 
   const copyChosen = async () => {
     try {
-      const exports = []
-      for (const w of chosen) exports.push(await exportWorkflow(w.id))
-      const text = JSON.stringify(exports.length === 1 ? exports[0] : exports, null, 2)
-      await navigator.clipboard.writeText(text)
-      showToast.success(`${counted(exports.length, WORKFLOW_NOUN)} copied`, 'clipboard')
+      const picked = [...chosen]
+      // The clipboard write is made now, inside the click, with the text to
+      // come (lib/flow/clipboard): WebKit refuses one made after the awaits.
+      await copyLater(
+        (async () => {
+          const exports = []
+          for (const w of picked) exports.push(await exportWorkflow(w.id))
+          return JSON.stringify(exports.length === 1 ? exports[0] : exports, null, 2)
+        })()
+      )
+      showToast.success(`${counted(picked.length, WORKFLOW_NOUN)} copied`, 'clipboard')
     } catch (error) {
       showToast.error(
         error instanceof Error ? error.message : 'The workflows could not be copied',
@@ -999,11 +1006,9 @@ export default function FlowIndex() {
             aria-activedescendant={
               selection.focusedId === null ? undefined : `flow-card-${selection.focusedId}`
             }
-            onKeyDown={(e) => {
-              // Keys meant for the list only: never a key typed in a card's
-              // controls or in a dialog the cards open.
-              if (e.target === e.currentTarget) selection.onKeyDown(e)
-            }}
+            // Keys meant for the list only: never a key typed in a card's
+            // controls or in a dialog a card opens (useListSelection).
+            onKeyDown={selection.onKeyDown}
             className="grid gap-4 rounded-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:grid-cols-2 lg:grid-cols-3"
           >
             {workflows.map((workflow) => {

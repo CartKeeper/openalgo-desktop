@@ -190,3 +190,29 @@ async fn an_every_time_channel_alert_runs_when_the_price_comes_inside() {
     }
     assert_eq!(counts, vec![1, 1, 1, 2]);
 }
+
+/// The review's case: an every-time level alert that becomes true again
+/// while its first run is still queued cannot queue a second run (one run
+/// at a time), and that rise must not be lost: the next check where the
+/// condition still holds runs it.
+#[tokio::test]
+async fn a_level_alert_that_becomes_true_while_its_run_is_queued_runs_after() {
+    let t = eastern("2026-11-03T15:00:00Z").await;
+    let s = side(&t);
+    let id = alert(
+        &t,
+        &s,
+        json!({"symbol": "AAPL", "exchange": "US", "condition": "greater_than", "price": 100, "trigger": "every_time"}),
+    )
+    .await;
+    let client = quotes(&[101.0, 99.0, 101.0, 102.0]);
+    // Three checks before the first run has started: it fires at 101, is
+    // false at 99, and becomes true at 101 while the first run is queued.
+    for _ in 0..3 {
+        s.check_alerts(&client).await;
+    }
+    settle(&s).await;
+    assert_eq!(run_count(&t.ctx, id), 1);
+    poll(&s, &client).await;
+    assert_eq!(run_count(&t.ctx, id), 2, "the second rise never ran");
+}

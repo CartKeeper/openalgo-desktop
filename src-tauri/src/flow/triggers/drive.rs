@@ -242,6 +242,9 @@ impl TriggerSide {
     /// (`_trigger_workflow`).
     pub fn queue_price_run(self: &Arc<Self>, alert: Alert, price: f64) {
         if !self.alerts.claim_pending(alert.workflow_id) {
+            // Not queued (one run at a time): this rise has not run, so the
+            // next check where the condition holds may fire it (WP8 Phase D).
+            self.alerts.release_held(alert.workflow_id, alert.gen);
             return;
         }
         let me = self.clone();
@@ -252,6 +255,9 @@ impl TriggerSide {
             };
             let fired = me.run_price_alert(&alert, price).await;
             let id = alert.workflow_id;
+            if !fired.executed() {
+                me.alerts.release_held(id, alert.gen);
+            }
             if alert.one_shot() {
                 if fired.executed() {
                     if me.alerts.retire(id, alert.gen) {
@@ -341,6 +347,21 @@ impl TriggerSide {
     }
 
     async fn run_order_update(&self, id: i64, gen: u64, u: &OrderUpdate) -> Fired {
+        // Checked again here (WP8 Phase D): an update kept as an every-time
+        // watch's follow-up while its run went on may be that run's own
+        // order, whose id the run's client recorded only after the reply.
+        if self
+            .app()
+            .is_some_and(|app| app.flow.own_orders.placed(id, &u.orderid))
+        {
+            tracing::info!(
+                "Order-update watch of workflow {} skipped order {} ({}): its own run placed it",
+                id,
+                u.orderid,
+                u.order_status
+            );
+            return Fired::Skipped;
+        }
         if !self.watches.is_current(id, gen) {
             tracing::info!(
                 "Dropping queued order-update run for workflow {}: the watch was removed or replaced before this run claimed it.",

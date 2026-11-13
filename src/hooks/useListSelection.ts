@@ -62,8 +62,24 @@ export interface ListSelection {
   /** A right-click on the item, before its menu opens. */
   contextSelect: (id: string) => void
   focus: (id: string) => void
-  /** Keys on the list. */
+  /** Keys on the list (only those that belong to it: `keyIsForTheList`). */
   onKeyDown: (e: KeyboardEvent) => void
+}
+
+/**
+ * Whether a key belongs to the list: typed on the list itself, or on a
+ * part of an item that is not a control of its own (a card's body, a
+ * row's cell). A key typed in an item's checkbox or button is that
+ * control's, and one from a dialog an item opens (a React child rendered
+ * elsewhere in the page, whose events still bubble to the list) is the
+ * dialog's.
+ */
+export function keyIsForTheList(e: KeyboardEvent): boolean {
+  const target = e.target as Element | null
+  const list = e.currentTarget as Element | null
+  if (!target || !list || target === list) return true
+  if (typeof list.contains !== 'function' || !list.contains(target)) return false
+  return target.closest('input, button, select, textarea, a, [role="menuitem"]') === null
 }
 
 /** The ids from `a` to `b` in `ids`, inclusive, either direction. */
@@ -183,6 +199,7 @@ export function useListSelection(ids: string[], options: ListSelectionOptions): 
 
   const onKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      if (!keyIsForTheList(e)) return
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
         e.preventDefault()
         selectAll()

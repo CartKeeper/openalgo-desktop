@@ -4,7 +4,9 @@
 //! of `server/routes/flow/triggers.rs`.
 //!
 //! - 100 requests a minute per caller address, before anything is looked
-//!   up or read;
+//!   up or read, except this computer's own address: every sender behind a
+//!   local tunnel arrives from 127.0.0.1, and upstream exempted its tunnel's
+//!   traffic;
 //! - 100 a minute per token, once the token names a workflow (an invented
 //!   token never gets a window of its own: it is a failed authentication);
 //! - 10 failed authentications a minute per caller: an unknown token or a
@@ -92,6 +94,15 @@ impl Default for WebhookLimits {
     }
 }
 
+/// Whether `ip` is this computer's own (loopback, or loopback mapped into
+/// IPv6).
+fn this_computer(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v) => v.is_loopback(),
+        IpAddr::V6(v) => v.is_loopback() || v.to_ipv4_mapped().is_some_and(|m| m.is_loopback()),
+    }
+}
+
 /// Drop the hits older than the window.
 fn trim(q: &mut VecDeque<Instant>, now: Instant) {
     while q
@@ -153,7 +164,16 @@ impl WebhookLimits {
     }
 
     /// One request from `ip`; `false` when it is over its 100 a minute.
+    /// This computer's own address has no per-address window: every sender
+    /// behind a local tunnel (ngrok forwarding to 127.0.0.1) arrives from
+    /// it, so one window there would let a stranger's flood hold every real
+    /// alert (upstream exempted its built-in tunnel's traffic; this app
+    /// cannot tell a tunnel's from a local program's). Each webhook's own
+    /// window and the failure budget still apply.
     pub fn admit_caller(&self, ip: IpAddr, now: Instant) -> bool {
+        if this_computer(ip) {
+            return true;
+        }
         self.hit(Key::Caller(ip), REQUESTS_PER_MINUTE, now)
     }
 

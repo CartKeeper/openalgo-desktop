@@ -1222,6 +1222,26 @@ mod flow_webhook_tests {
         assert_eq!(runs(&t, id).len(), 1);
     }
 
+    /// Through a tunnel every sender arrives from 127.0.0.1 (the review's
+    /// finding): a stranger's flood from there never holds a real alert,
+    /// since this computer's own address gets no per-address window; each
+    /// webhook keeps its own 100 a minute.
+    #[tokio::test]
+    async fn a_flood_through_the_tunnel_address_never_holds_a_real_alert() {
+        let t = harness();
+        let (id, token, secret) = hooked(&t, None);
+        let other = switched_off(&t, "Other");
+        for n in 0..101 {
+            let call = post_json(&format!("/flow/webhook/{other}"), json!({}));
+            let (status, _) = answer(&t, from([127, 0, 0, 1], call)).await;
+            assert!(status == 403 || status == 429, "call {n}: {status}");
+        }
+        let alert = post_json(&format!("/flow/webhook/{token}"), json!({"secret": secret}));
+        let (status, body) = answer(&t, from([127, 0, 0, 1], alert)).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(runs(&t, id).len(), 1);
+    }
+
     /// No line logged while a caller is limited carries the token.
     #[tokio::test]
     async fn no_line_logged_while_limiting_carries_the_token() {
