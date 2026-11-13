@@ -404,11 +404,11 @@ async fn a_monitor_run_logs_its_result() {
         panic!("the alert should fire at 812");
     };
     s.queue_price_run(*fired, 812.0);
-    wait_for(
-        &logs,
-        &format!("Workflow {} execution result: success", alert),
-    )
-    .await;
+    // The run is awaited, not the log for five seconds (WP8 Phase C: it
+    // failed once under full-suite load; `support::every_line_stays_on`).
+    settle(&s).await;
+    let result = format!("Workflow {} execution result: success", alert);
+    assert!(logs.has(&result), "never logged {:?}: {:?}", result, logs.0.lock());
     s.on_order_update(&crate::events::OrderUpdate {
         orderid: "3001".into(),
         symbol: "SBIN".into(),
@@ -416,11 +416,9 @@ async fn a_monitor_run_logs_its_result() {
         order_status: "complete".into(),
         ..Default::default()
     });
-    wait_for(
-        &logs,
-        &format!("Workflow {} execution result: success", watch),
-    )
-    .await;
+    settle(&s).await;
+    let result = format!("Workflow {} execution result: success", watch);
+    assert!(logs.has(&result), "never logged {:?}: {:?}", result, logs.0.lock());
 }
 
 /// T-042: retiring a one-shot alert that was replaced leaves the new one
