@@ -1101,3 +1101,29 @@ head `69758baf`, this branch's base). On the branch head:
 | `npx vitest run` | `Test Files  4 failed \| 119 passed (123)`, `Tests  40 failed \| 2441 passed \| 1 skipped (2482)` | the base's 40: `MobileBottomNav.test.tsx` (13) and `ui/button.test.tsx` (20) have no jsdom pragma, `ui/page-loader.test.tsx` (4) and `config/navigation.test.ts` (3 stale assertions) |
 | `npm run build` | exit 2 on the base's seven `tsc` errors (`src/api/trading.ts` 384-388, `PlaceOrderDialog.tsx:552`, `Historify.tsx:570`); `npx vite build` alone: `✓ built in 32.18s` | the base's |
 | `npm run lint` | exit 1: `Found 2 errors.` (`backtest/TradeTable.tsx:402`, `trading/ActionReviewModal.test.tsx:764`), 152 warnings, 21 infos; every file Phase C touched lints clean | the base's |
+
+## Phase D — parity and extras (`wp8d-flow-parity`)
+
+Phase D finishes the parity table, gives the editor's lookups US meaning,
+proves the import and export round trips, shows every Flow time in Eastern
+12-hour time, adds a run-history screen and the selection system on the
+Flow cards, closes two ways a trigger could re-run itself, rate-limits the
+public webhook, matches the US venues as one market, moves the Telegram
+send into the app's client, and writes the user guide.
+
+### Task D1: the goldens' `app` hook
+
+- **Hand edit** (`flow/goldens/replay.rs`): `HOOKS` gains `app`, and a
+  golden marked `special` (the three `core` scenarios `already_running`,
+  `workflow_missing`, `no_execution_record`) is replayed by
+  `replay_with_app`: the app's own executor on the headless harness, with
+  the store arranged as the scenario says (another run holds the claim; the
+  id names nothing stored; a trigger refuses the run's record), on a thread
+  and runtime of its own in real time (the harness starts the trigger
+  side's drivers; the goldens' clock is paused). The answer and the record
+  are compared with the web's; a run with no record made no call, logged
+  nothing and set no variable. `golden_clock` is split out of `context`.
+- Result: `core` 61 of 61 match (upstream's harness reported those three
+  "needs a hook"). Every golden that is replayed matches; the three web
+  evidence only and two not applicable here are set aside with their
+  reasons in `docs/flow/parity.md`, which is now the final table.

@@ -46,6 +46,9 @@ const HOOKS: &[&str] = &[
     "run_context",
     "feed_session",
     "feed_exception",
+    // A `special` core golden: the app's own store and executor behind the
+    // run (`replay_with_app`, WP8 Phase D).
+    "app",
 ];
 
 pub struct Golden {
@@ -308,6 +311,9 @@ pub async fn replay(g: &Golden) -> Verdict {
     if let Some(h) = missing_hook(v, &ts) {
         return Verdict::NeedsHook(h);
     }
+    if v.get("special").is_some_and(|s| !s.is_null()) {
+        return replay_with_app(v);
+    }
     let want = expected(v);
     let client = Arc::new(FakeFlowClient::new());
     for (endpoint, reply) in &script {
@@ -384,13 +390,18 @@ fn script_of(v: &Value) -> Vec<(String, Value)> {
         .collect()
 }
 
-fn context(v: &Value, client: Arc<FakeFlowClient>) -> NodeCtx {
-    let clock = v["clock"]
+/// The golden's clock: an IST wall time on the web's recording host.
+fn golden_clock(v: &Value) -> chrono::DateTime<chrono::Utc> {
+    v["clock"]
         .as_str()
         .and_then(|c| NaiveDateTime::parse_from_str(c, "%Y-%m-%dT%H:%M:%S").ok())
         .and_then(|n| Kolkata.from_local_datetime(&n).single())
         .map(|t| t.with_timezone(&chrono::Utc))
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+fn context(v: &Value, client: Arc<FakeFlowClient>) -> NodeCtx {
+    let clock = golden_clock(v);
     let name = v["workflow_name"]
         .as_str()
         .or_else(|| v.pointer("/workflow/name").and_then(Value::as_str))
@@ -572,6 +583,117 @@ fn not_runnable(wf: &Value) -> Option<Value> {
         "message": format!("Workflow cannot be executed: {}", first.message),
         "errors": errors,
     }))
+}
+
+/// The `app` hook (WP8 Phase D): a `special` core golden
+/// (`already_running`, `workflow_missing`, `no_execution_record`) is a
+/// scenario of the app's store, not of a node, so it runs through this
+/// app's own executor on the headless harness (`state::testing::build`)
+/// with the store arranged as the scenario says, and its answer and record
+/// are compared with the web's. On its own thread and runtime, in real
+/// time: the harness starts the trigger side, whose drivers sleep, and the
+/// goldens' clock is paused.
+fn replay_with_app(v: &Value) -> Verdict {
+    let v = v.clone();
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .map_err(|e| format!("no runtime for the app replay: {e}"))
+            .map(|rt| rt.block_on(run_with_app(&v)))
+    })
+    .join()
+    .unwrap_or_else(|_| Err("the app replay panicked".to_string()))
+    .unwrap_or_else(|e| Verdict::Failed(vec![e]))
+}
+
+async fn run_with_app(v: &Value) -> Verdict {
+    use crate::flow::executor::{execute, RunRequest};
+    use crate::flow::store::{executions, workflows};
+    let t = crate::state::testing::build(crate::brokers::BrokerRegistry::new(), golden_clock(v));
+    let app = t.ctx.clone();
+    let wf = &v["workflow"];
+    let created = app.sqlite.conn().and_then(|conn| {
+        workflows::create(
+            &conn,
+            &app.security,
+            &workflows::NewWorkflow {
+                name: wf["name"].as_str().unwrap_or(""),
+                description: None,
+                nodes: &wf["nodes"],
+                edges: &wf["edges"],
+            },
+            app.now(),
+        )
+    });
+    let id = match created {
+        Ok(w) => w.id,
+        Err(e) => return Verdict::Failed(vec![format!("the workflow could not be stored: {e}")]),
+    };
+    // The scenario: another run holds the workflow, the id names nothing
+    // stored, or the store refuses the run's record.
+    let mut held = None;
+    let target = match v["special"].as_str() {
+        Some("already_running") => {
+            held = app.flow.try_claim(id);
+            id
+        }
+        Some("workflow_missing") => id + 1,
+        Some("no_execution_record") => {
+            let refused = app.sqlite.conn().and_then(|conn| {
+                Ok(conn.execute_batch(
+                    "CREATE TRIGGER golden_no_record BEFORE INSERT ON flow_workflow_executions
+                     BEGIN SELECT RAISE(ABORT, 'golden: no record'); END;",
+                )?)
+            });
+            if let Err(e) = refused {
+                return Verdict::Failed(vec![format!("the store could not be arranged: {e}")]);
+            }
+            id
+        }
+        other => return Verdict::Failed(vec![format!("no arrangement for special {other:?}")]),
+    };
+    let api_key =
+        (v["api_key"] != false).then(|| crate::security::Secret::new(app.internal_token.clone()));
+    let result = execute(
+        &app,
+        target,
+        RunRequest {
+            api_key,
+            ..Default::default()
+        },
+    )
+    .await;
+    drop(held);
+    let runs = match app
+        .sqlite
+        .conn()
+        .and_then(|conn| executions::list(&conn, id, 20))
+    {
+        Ok(r) => r,
+        Err(e) => return Verdict::Failed(vec![format!("the run history could not be read: {e}")]),
+    };
+    let want = expected(v);
+    let mut diffs = Vec::new();
+    diff(&want["result"], &result, "result", &mut diffs);
+    let record = runs
+        .first()
+        .map(|e| json!({"status": e.status, "error": e.error}))
+        .unwrap_or(Value::Null);
+    diff(&want["record"], &record, "record", &mut diffs);
+    // A run writes its record before its first node, so a run with no
+    // record made no call, logged nothing and set no variable.
+    if runs.is_empty() {
+        diff(&want["calls"], &json!([]), "calls", &mut diffs);
+        diff_logs(&want["logs"], &[], &mut diffs);
+        diff(&want["vars_out"], &json!({}), "vars_out", &mut diffs);
+    }
+    if diffs.is_empty() {
+        Verdict::Matched
+    } else {
+        Verdict::Failed(diffs)
+    }
 }
 
 async fn run_workflow(
