@@ -185,3 +185,19 @@ describe('activating from the editor', () => {
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   })
 })
+
+describe('the Live-mode question', () => {
+  it('keeps to the type scale and stays still under reduced motion (CLAUDE.md)', async () => {
+    mode.getAnalyzeMode.mockResolvedValue(LIVE)
+    renderAt('/flow')
+    await activateFromTheList()
+    const dialog = await screen.findByRole('alertdialog')
+    const title = within(dialog).getByRole('heading', { name: 'Activate in Live mode?' })
+    // Heading: 16px, weight 600; 18px (text-lg) is not on the scale.
+    expect(title.className).toMatch(/(^|\s)text-base(\s|$)/)
+    expect(title.className).not.toMatch(/(^|\s)text-lg(\s|$)/)
+    const overlay = document.querySelector('[data-slot="alert-dialog-overlay"]')
+    expect(overlay?.className).toMatch(/motion-reduce:animate-none/)
+    expect(dialog.className).toMatch(/motion-reduce:animate-none/)
+  })
+})

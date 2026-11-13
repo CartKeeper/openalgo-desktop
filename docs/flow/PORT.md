@@ -1057,3 +1057,35 @@ Live-mode confirmation on activation.
   127.0.0.1 address and no `localhost` anywhere in the panel, Enable API
   Server, the lock, the order-book poll, the Telegram page, the Live-mode
   question).
+
+### Review fixes (after the whole-branch review)
+
+- **Order-book poller, another account** (`triggers/order_poll.rs`): the
+  book's source was the mode and the broker only, so signing in with
+  another account on the same broker (Alpaca's paper keys, then its live
+  keys: both `alpaca`) made the new account's last orders, filled and
+  cancelled, "new" at the next read, and a watch on one of them would have
+  run its workflow. The source is now the mode, the broker and the account
+  (the session's user id; Alpaca's is the account number), read before the
+  fetch; a read made while the session changed is dropped. A same-account
+  sign-in again (after the daily auto-logout) keeps the book. Test
+  `another_account_on_the_same_broker_is_a_new_baseline`. Status words, for
+  the record: `done for day` reads as `complete` and `replaced` as
+  `cancelled` (Alpaca's own mapping already turns them into `COMPLETE` and
+  `CANCELLED`).
+- **The request span stays tower-http's** (`webhook/server.rs`): Task C3's
+  redacting span was created under this crate's log target, which the app's
+  default filter (`openalgo_desktop=debug`) turns on, so every log line
+  inside every request gained a `request{method=… uri=…}` prefix (a
+  strategy webhook's id is in its path). It now uses tower-http's target,
+  off by default as before Phase C; turned on, it shows the redacted URI.
+  Test `the_apps_default_log_filter_leaves_the_request_span_off`.
+- **The Live-mode question** (`desktop/FlowLiveActivation.tsx`): its title
+  inherited the shared dialog's 18 px, off CLAUDE.md's type scale, and the
+  shared content's overlay faded under reduced motion. The dialog is now
+  built from the alert-dialog's parts: a 16 px, weight 600 title and an
+  overlay and content that stay still under reduced motion. Test in
+  `flowLiveActivation.test.tsx`.
+- Recorded, not changed (outside Phase C's files): `contract/client/app.rs`
+  still holds `telegram_text`, upstream's Markdown alert text, now unused
+  (the send formats its own in `messaging::telegram::alert_text`).

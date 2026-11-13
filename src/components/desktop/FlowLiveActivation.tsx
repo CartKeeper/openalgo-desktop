@@ -4,10 +4,11 @@ import { useCallback, useState } from 'react'
 import { settingsCommands } from '@/api/tauri-client'
 import {
   AlertDialog,
-  AlertDialogContent,
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
+  AlertDialogOverlay,
+  AlertDialogPortal,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
@@ -48,37 +49,45 @@ export function LiveActivationDialog({
 }) {
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent
-        role="alertdialog"
-        className="gap-0 rounded-[16px] p-0 data-[state=closed]:duration-150 motion-reduce:animate-none sm:max-w-lg"
-      >
-        <AlertDialogHeader className="flex-row items-center justify-between gap-4 border-b px-6 py-4 sm:text-left">
-          <AlertDialogTitle>Activate in Live mode?</AlertDialogTitle>
-          <DialogPrimitive.Close asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-8 shrink-0 transition-colors duration-150 active:scale-[0.97] focus-visible:ring-2 focus-visible:ring-offset-2"
-              aria-label="Close"
-            >
-              <X className="h-4 w-4" aria-hidden="true" />
+      {/* The shared AlertDialogContent's overlay fades even under reduced
+          motion, so the dialog is built from its parts here. */}
+      <AlertDialogPortal>
+        <AlertDialogOverlay className="data-[state=closed]:duration-150 motion-reduce:animate-none" />
+        <DialogPrimitive.Content
+          data-slot="alert-dialog-content"
+          role="alertdialog"
+          className="bg-background data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] rounded-[16px] border shadow-lg duration-200 data-[state=closed]:duration-150 motion-reduce:animate-none sm:max-w-lg"
+        >
+          <AlertDialogHeader className="flex-row items-center justify-between gap-4 border-b px-6 py-4 sm:text-left">
+            <AlertDialogTitle className="text-base leading-[1.4] font-semibold">
+              Activate in Live mode?
+            </AlertDialogTitle>
+            <DialogPrimitive.Close asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 shrink-0 transition-colors duration-150 active:scale-[0.97] focus-visible:ring-2 focus-visible:ring-offset-2"
+                aria-label="Close"
+              >
+                <X className="h-4 w-4" aria-hidden="true" />
+              </Button>
+            </DialogPrimitive.Close>
+          </AlertDialogHeader>
+          <AlertDialogDescription className="px-6 py-4">
+            This workflow will place real orders on the live account without asking each time.
+          </AlertDialogDescription>
+          <AlertDialogFooter className="border-t px-6 py-4">
+            <DialogPrimitive.Close asChild>
+              <Button variant="outline" className={BUTTON_40}>
+                Cancel
+              </Button>
+            </DialogPrimitive.Close>
+            <Button className={BUTTON_40} onClick={onConfirm}>
+              Activate
             </Button>
-          </DialogPrimitive.Close>
-        </AlertDialogHeader>
-        <AlertDialogDescription className="px-6 py-4">
-          This workflow will place real orders on the live account without asking each time.
-        </AlertDialogDescription>
-        <AlertDialogFooter className="border-t px-6 py-4">
-          <DialogPrimitive.Close asChild>
-            <Button variant="outline" className={BUTTON_40}>
-              Cancel
-            </Button>
-          </DialogPrimitive.Close>
-          <Button className={BUTTON_40} onClick={onConfirm}>
-            Activate
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogContent>
+          </AlertDialogFooter>
+        </DialogPrimitive.Content>
+      </AlertDialogPortal>
     </AlertDialog>
   )
 }
