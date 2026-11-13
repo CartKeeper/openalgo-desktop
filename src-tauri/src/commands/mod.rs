@@ -42,6 +42,7 @@ pub mod chart_preferences;
 pub mod analytics;
 //
 // [wp-anchor] WP3 staged-analysis
+pub mod staged_analysis;
 //
 // [wp-anchor] WP5 american-options
 //

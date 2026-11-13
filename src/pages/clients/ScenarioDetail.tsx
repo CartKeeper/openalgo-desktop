@@ -996,7 +996,7 @@ export default function ScenarioDetail() {
           {
             title: 'Analyze with Claude',
             description:
-              'Ask Claude AI to review this portfolio and suggest changes. Claude will create a cloned scenario with its recommended trades applied, so your original stays untouched.',
+              'Chat with Claude about this portfolio, or click Run full analysis for a staged review (analysts, a bull/bear debate, a risk panel and a portfolio manager) that takes several minutes. Suggested trades wait under Review Recommendations; on a baseline scenario, Review applies them to a new clone so your original stays untouched.',
           },
           {
             title: 'Allocation targets',

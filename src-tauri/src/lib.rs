@@ -430,6 +430,7 @@ pub fn run() {
             commands::analytics::analytics_rebalance_plan,
             //
             // [wp-anchor] WP3 staged-analysis
+            commands::staged_analysis::staged_run_analysis,
             //
             // [wp-anchor] WP5 american-options
             //
