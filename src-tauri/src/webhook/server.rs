@@ -929,8 +929,10 @@ mod flow_webhook_tests {
         assert_eq!(second.0, 409, "{}", second.1);
         assert_eq!(second.1["status"], "error", "{}", second.1);
         assert_eq!(second.1["message"], "Workflow is already running", "{}", second.1);
-        assert_eq!(runs(&t, id).len(), 1, "one run, still waiting");
-        t.ctx.flow.stop_all(std::time::Duration::from_secs(5)).await;
+        // The first run writes its record on its own task; stopped, it
+        // writes it before the task ends, and `stop_all` waits for that.
+        t.ctx.flow.stop_all(std::time::Duration::from_secs(60)).await;
+        assert_eq!(runs(&t, id).len(), 1, "the second alert started no run");
     }
 
     /// Every way a caller can put a credential in the request (the token in
