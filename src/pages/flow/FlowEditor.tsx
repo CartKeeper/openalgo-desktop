@@ -71,6 +71,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { FLOW_STARTED_IN_BACKGROUND, failedRunLog, startedInBackgroundLog } from '@/lib/desktopFlow'
+import { saveTextFile } from '@/lib/exportFile'
 import { DEFAULT_NODE_DATA } from '@/lib/flow/constants'
 import { cn } from '@/lib/utils'
 import { useFlowWorkflowStore } from '@/stores/flowWorkflowStore'
@@ -514,18 +515,13 @@ function FlowEditorContent() {
   const handleExport = useCallback(async () => {
     try {
       const exportData = await exportWorkflow(Number(id))
-      const blob = new Blob([JSON.stringify(exportData, null, 2)], {
-        type: 'application/json',
-      })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${exportData.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.json`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
-      showToast.success('Workflow exported', 'flow')
+      // Desktop (this app): through the backend, as every export here is
+      // (src/lib/exportFile.ts): <a download> does nothing in Tauri's macOS
+      // webview. The file goes to Downloads and the toast says where.
+      await saveTextFile(
+        `${exportData.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.json`,
+        JSON.stringify(exportData, null, 2)
+      )
     } catch (error) {
       showToast.error(error instanceof Error ? error.message : 'Export failed', 'flow')
     }

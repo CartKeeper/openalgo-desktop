@@ -43,6 +43,12 @@ const toast = vi.hoisted(() => ({
 }))
 vi.mock('@/utils/toast', () => ({ showToast: toast }))
 
+// Desktop (this app): exports are saved by the backend (src/lib/exportFile.ts).
+const saveFile = vi.hoisted(() =>
+  vi.fn(async (_name: string, _contents: string) => '/Downloads/flow.json')
+)
+vi.mock('@/lib/exportFile', () => ({ saveTextFile: saveFile }))
+
 const { default: FlowEditor } = await import('./FlowEditor')
 
 function stored(overrides: Partial<Workflow> = {}): Workflow {
@@ -437,26 +443,20 @@ describe('export and replace (IE-05, IE-16, V-153)', () => {
       exported_at: '2026-10-30T09:00:00',
     }
     api.exportWorkflow.mockResolvedValue(exported)
-    const createObjectURL = vi.fn((_blob: Blob) => 'blob:flow-export')
-    const revokeObjectURL = vi.fn()
-    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL, revokeObjectURL }))
-    const clicked: HTMLAnchorElement[] = []
-    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
-      this: HTMLAnchorElement
-    ) {
-      clicked.push(this)
-    })
+    // Desktop (this app): <a download> does nothing in Tauri's macOS webview,
+    // so the file goes through the backend (src/lib/exportFile.ts), which saves
+    // it to Downloads and says where. No anchor is clicked.
+    saveFile.mockClear()
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click')
     renderEditor()
     await openMenuItem('Export Workflow')
-    await waitFor(() => expect(clicked).toHaveLength(1))
-    expect(clicked[0].download).toBe('opening_range__2.json')
-    expect(clicked[0].href).toBe('blob:flow-export')
-    const blob = createObjectURL.mock.calls[0][0]
-    expect(blob.type).toBe('application/json')
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:flow-export')
-    expect(toast.success).toHaveBeenCalledWith('Workflow exported', 'flow')
+    await waitFor(() => expect(saveFile).toHaveBeenCalledTimes(1))
+    expect(saveFile).toHaveBeenCalledWith(
+      'opening_range__2.json',
+      JSON.stringify(exported, null, 2)
+    )
+    expect(click).not.toHaveBeenCalled()
     click.mockRestore()
-    vi.unstubAllGlobals()
   })
 
   it.each([

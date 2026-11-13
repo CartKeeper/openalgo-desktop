@@ -50,6 +50,12 @@ const toast = vi.hoisted(() => ({
 }))
 vi.mock('@/utils/toast', () => ({ showToast: toast }))
 
+// Desktop (this app): exports are saved by the backend (src/lib/exportFile.ts).
+const saveFile = vi.hoisted(() =>
+  vi.fn(async (_name: string, _contents: string) => '/Downloads/flow.json')
+)
+vi.mock('@/lib/exportFile', () => ({ saveTextFile: saveFile }))
+
 const { default: FlowEditor } = await import('./FlowEditor')
 
 const PLACEHOLDER = '{ "name": "...", "nodes": [...], "edges": [...] }'
@@ -141,15 +147,6 @@ function iconOf(element: Element | null) {
   return element?.getAttribute('class') ?? ''
 }
 
-/** jsdom has no Blob.text(); FileReader reads the same bytes. */
-function readBlob(blob: Blob) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result as string)
-    reader.onerror = () => reject(reader.error)
-    reader.readAsText(blob)
-  })
-}
 
 /** A chosen file; jsdom has no File.text(), which the Tauri webview has. */
 function jsonFile(text: string) {
@@ -351,18 +348,6 @@ describe('F-167 IE-05 Export Workflow', () => {
     exported_at: '2026-10-30T09:00:00',
   }
 
-  function captureDownload() {
-    const createObjectURL = vi.fn((_blob: Blob) => 'blob:flow-export')
-    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() }))
-    const clicked: HTMLAnchorElement[] = []
-    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
-      this: HTMLAnchorElement
-    ) {
-      clicked.push(this)
-    })
-    return { createObjectURL, clicked }
-  }
-
   async function exportNow() {
     const user = userEvent.setup()
     await loaded()
@@ -370,31 +355,30 @@ describe('F-167 IE-05 Export Workflow', () => {
     await user.click(await screen.findByRole('menuitem', { name: 'Export Workflow' }))
   }
 
+  // Desktop (this app): the file is saved by the backend (src/lib/exportFile.ts,
+  // which reports where), because <a download> does nothing in the macOS webview.
   it('writes the stored workflow as JSON indented by two spaces', async () => {
     api.exportWorkflow.mockResolvedValue(exported)
-    const { createObjectURL, clicked } = captureDownload()
+    saveFile.mockClear()
     renderEditor()
     await exportNow()
-    await waitFor(() => expect(clicked).toHaveLength(1))
+    await waitFor(() => expect(saveFile).toHaveBeenCalledTimes(1))
     expect(api.exportWorkflow).toHaveBeenCalledWith(7)
-    const blob = createObjectURL.mock.calls[0][0]
-    expect(await readBlob(blob)).toBe(JSON.stringify(exported, null, 2))
-    expect(toast.success).toHaveBeenCalledWith('Workflow exported', 'flow')
+    expect(saveFile.mock.calls[0][1]).toBe(JSON.stringify(exported, null, 2))
   })
 
-  it('shows the reason when the export fails, and downloads nothing', async () => {
+  it('shows the reason when the export fails, and saves nothing', async () => {
     api.exportWorkflow.mockRejectedValue(new Error('Workflow not found'))
-    const { clicked } = captureDownload()
+    saveFile.mockClear()
     renderEditor()
     await exportNow()
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Workflow not found', 'flow'))
-    expect(clicked).toHaveLength(0)
+    expect(saveFile).not.toHaveBeenCalled()
     expect(toast.success).not.toHaveBeenCalled()
   })
 
   it('says Export failed when the failure carries no message', async () => {
     api.exportWorkflow.mockRejectedValue('offline')
-    captureDownload()
     renderEditor()
     await exportNow()
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Export failed', 'flow'))
