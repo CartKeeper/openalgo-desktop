@@ -131,6 +131,11 @@ variables set (the crate's one ignored test).
 - `nodes/timing.rs::is_within_market_hours`: the live-clock branch
   (`MarketStatusService::get_clock`); the regular-session fallback and
   the override rules are tested.
+- A run's quotes: the goldens and the US round trip
+  (`service/tests/round_trips.rs`, Task D3) script the quote (no broker in
+  tests); the round trip's order goes through the app's real
+  `/api/v1/placeorder` to the sandbox and its alert through the app's
+  Telegram send to a fake Bot API.
 
 ## Per-family lines (Phase D, Task D1)
 

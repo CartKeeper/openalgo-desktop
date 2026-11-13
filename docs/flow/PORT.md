@@ -1178,3 +1178,27 @@ send into the app's client, and writes the user guide.
   `commands/flow.rs` (lot sizes on any US label; the index lookup from the
   cache), `contract/client/app.rs` (margin and index lookups with a US
   broker; every index contract call; what the gate lets through).
+
+### Task D3: web and US round trips
+
+- Fixtures (`tests/fixtures/flow/`): `web-8.6-nifty-custom-iron-fly.json`
+  carried byte for byte from upstream's `e2e/flow/fixtures/`, and this
+  app's `us-schedule-quote-order.json` (Schedule daily 9:35 AM ET held to
+  the session, Get Quote AAPL, Price Condition ltp > 100, Place Order 1
+  share MARKET CNC, Telegram Alert with the quote and the order id), on
+  exchange `US`, the app's default since Phase B, where the plan named
+  NASDAQ.
+- Tests (`flow/service/tests/round_trips.rs`): the iron fly passes the
+  validator unchanged and imports as "NIFTY Custom Iron Fly (imported)",
+  inactive, with the Eastern-time note; run with a US broker logged in it
+  stops at the options node, whose expiry lookup the app answers with
+  "NIFTY on NFO needs an Indian broker: ..." (Task D2), a line the run's
+  log keeps, before the node's own failure, the web's "Could not resolve
+  expiry for current_week". The US workflow imports with the Eastern-time
+  note and exports its nodes, edges and description byte for byte (keys
+  sorted), named "AAPL morning buy (imported)"; and its graph runs end to
+  end in analyzer mode on the harness: the quote is scripted (no broker in
+  tests), the condition passes, one AAPL share goes to the sandbox through
+  the app's own `/api/v1/placeorder` (BUY, 1, MARKET, CNC, `US`), and the
+  Telegram alert reaches the saved chat through the app's send (a fake Bot
+  API) with the quote and the sandbox's order id filled in.

@@ -1,0 +1,60 @@
+{
+  "name": "AAPL morning buy",
+  "description": "Every weekday at 9:35 AM ET: quote AAPL, buy 1 share at market if it trades above 100, then send a Telegram alert",
+  "nodes": [
+    {
+      "id": "node_1",
+      "type": "start",
+      "position": { "x": 100, "y": 50 },
+      "data": {
+        "scheduleType": "daily",
+        "time": "09:35",
+        "days": [0, 1, 2, 3, 4],
+        "marketHoursOnly": true,
+        "marketHoursStart": "09:30",
+        "marketHoursEnd": "16:00",
+        "marketHoursExchange": "US"
+      }
+    },
+    {
+      "id": "node_2",
+      "type": "getQuote",
+      "position": { "x": 100, "y": 200 },
+      "data": { "symbol": "AAPL", "exchange": "US", "outputVariable": "quote" }
+    },
+    {
+      "id": "node_3",
+      "type": "priceCondition",
+      "position": { "x": 100, "y": 350 },
+      "data": { "symbol": "AAPL", "exchange": "US", "field": "ltp", "operator": ">", "value": 100 }
+    },
+    {
+      "id": "node_4",
+      "type": "placeOrder",
+      "position": { "x": 100, "y": 500 },
+      "data": {
+        "symbol": "AAPL",
+        "exchange": "US",
+        "action": "BUY",
+        "quantity": 1,
+        "priceType": "MARKET",
+        "product": "CNC",
+        "price": 0,
+        "triggerPrice": 0,
+        "outputVariable": "order"
+      }
+    },
+    {
+      "id": "node_5",
+      "type": "telegramAlert",
+      "position": { "x": 100, "y": 650 },
+      "data": { "message": "Bought 1 AAPL share at about {{quote.data.ltp}} (order {{order.orderid}})" }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "node_1", "target": "node_2" },
+    { "id": "e2", "source": "node_2", "target": "node_3" },
+    { "id": "e3", "source": "node_3", "sourceHandle": "true", "target": "node_4" },
+    { "id": "e4", "source": "node_4", "target": "node_5" }
+  ]
+}
