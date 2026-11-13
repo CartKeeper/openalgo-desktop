@@ -115,7 +115,11 @@ describe('the Flow page', () => {
       'Import',
       'Activate and Deactivate',
       'Webhook',
-      'Not connected yet',
+      'Schedules',
+      'Price alerts',
+      'Webhook alerts',
+      'Order Update triggers',
+      'Telegram alerts',
       'Test in analyzer mode first',
     ]) {
       expect(within(panel).getByText(title)).toBeInTheDocument()
@@ -124,10 +128,23 @@ describe('the Flow page', () => {
     // Orderbook shows the sandbox's orders (get_order_book routes there).
     expect(within(panel).getByText(/the Orderbook shows the sandbox's orders/)).toBeInTheDocument()
     expect(within(panel).queryByText(/Sandbox page/)).not.toBeInTheDocument()
-    // What this version does not connect yet is said, not promised.
+    // WP8 Phase C connected the triggers and Telegram: each says how it
+    // behaves here, in Eastern 12-hour time.
+    expect(within(panel).queryByText('Not connected yet')).not.toBeInTheDocument()
+    expect(within(panel).getByText(/10:01:02 AM ET, then 10:02:02 AM ET/)).toBeInTheDocument()
+    expect(within(panel).getByText(/skipped and leaves nothing in the run history/)).toBeInTheDocument()
+    expect(within(panel).getByText(/every 5 seconds while the workflow is active/)).toBeInTheDocument()
+    // The listener is IPv4 127.0.0.1 only: `localhost` can resolve to ::1.
+    const webhook = within(panel).getByText(/http:\/\/127\.0\.0\.1:5000\/flow\/webhook\/<token>/)
+    expect(webhook.textContent).toMatch(/Enable API Server is on \(Admin → Server Settings/)
+    expect(webhook.textContent).toMatch(/lock the webhook for 15 minutes/)
+    expect(panel.textContent).not.toMatch(/localhost/)
+    expect(within(panel).getByText(/reads the order book every 5 seconds/)).toBeInTheDocument()
     expect(
-      within(panel).getByText(/Webhook alerts, Order Update triggers and Telegram alerts/)
+      within(panel).getByText(/to the chat set up on the Telegram page \(profile menu → Telegram Bot\)/)
     ).toBeInTheDocument()
+    // Activation in Live mode asks first (desktop/FlowLiveActivation).
+    expect(within(panel).getByText(/In Live mode it asks first/)).toBeInTheDocument()
     // Flow orders reach OrderService with no acknowledged mode, so the app's
     // per-order Live/Paper check (Gate B) does not apply: the help says so.
     expect(within(panel).getByText(/no confirmation per order/)).toBeInTheDocument()
@@ -154,6 +171,7 @@ describe('the Flow editor', () => {
     }
     expect(within(panel).getByText(/America\/New_York/)).toBeInTheDocument()
     expect(within(panel).getByText(/AAPL on NASDAQ/)).toBeInTheDocument()
+    expect(within(panel).getByText(/In Live mode it asks first/)).toBeInTheDocument()
     // The new nodes' US defaults, as the editor gives them (WP8 follow-up).
     expect(
       within(panel).getByText(/A new node starts on the US exchange, product CNC/)

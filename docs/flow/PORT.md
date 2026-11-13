@@ -1030,3 +1030,30 @@ Live-mode confirmation on activation.
 - Not covered: a workflow activated in Analyze mode places live orders if
   the app is switched to Live later, without asking again. The Flow help
   says so.
+
+### Help: the triggers, Telegram and the Live-mode question (coordinator decision)
+
+- `src/pages/flow/flowHelp.ts`: Phase B's "Not connected yet" item is
+  replaced by five items, each checked against this branch's code:
+  Schedules (America/New_York; every 1 minute at 2 s past each minute,
+  10:01:02 AM ET then 10:02:02 AM ET; Market hours only skips a run outside
+  the session without a history entry; a one-time schedule deactivates its
+  workflow; a fire missed while the app was closed runs only within a
+  minute), Price alerts (the broker's quote every 5 s, a broker logged in;
+  one-time and every-time; expiry), Webhook alerts
+  (`http://127.0.0.1:5000/flow/webhook/<token>`, never `localhost`; the
+  secret in the JSON or with Secret in URL; `/AAPL` for the symbol;
+  `{{webhook.symbol}}`; Enable API Server on Admin -> Server Settings,
+  applied after a restart; active and signed in; the 15-minute lock after
+  ten wrong secrets, Regenerate URL & Secret; already running), Order
+  Update triggers (the order book every 5 s, the sandbox's in analyzer
+  mode, up to 5 s late, orders already there do not fire) and Telegram
+  alerts (the Telegram page from the profile menu; the not-set-up
+  sentence). The two Activate items say that Live mode asks first, and that
+  a workflow activated in analyzer mode trades live if the app is switched
+  to Live later.
+- `src/pages/flow/flowHelp.test.tsx`: the "Not connected yet" assertion is
+  replaced by assertions on those facts (the Eastern 12-hour times, the
+  127.0.0.1 address and no `localhost` anywhere in the panel, Enable API
+  Server, the lock, the order-book poll, the Telegram page, the Live-mode
+  question).

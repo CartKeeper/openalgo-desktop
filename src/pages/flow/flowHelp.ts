@@ -5,9 +5,10 @@
  * Phase B, docs/flow/PORT.md); Phase D's docs/flow/user-guide.md is the long
  * form.
  *
- * Phase B connects Run Now, the editor and the workflow store. The public
- * webhook route, the order-update poller and Telegram arrive with Phase C,
- * which updates the "Not connected yet" item below when it lands.
+ * Phase B connected Run Now, the editor and the workflow store; Phase C the
+ * triggers (schedules, price alerts, the public webhook, order updates from
+ * an order-book poller), Telegram alerts and the Live-mode question on
+ * Activate. Times are America/New_York, 12-hour.
  */
 
 import type { HelpItem } from '@/components/HelpButton'
@@ -31,7 +32,7 @@ export const FLOW_INDEX_HELP: HelpItem[] = [
   {
     title: 'Activate and Deactivate',
     description:
-      "Activate checks the whole workflow (symbols, quantities, wiring) and names the first problem; then its trigger starts watching. Deactivate stops the trigger. A card's menu also has Edit and Delete; Delete asks first, because the run history and the webhook address go with it.",
+      "Activate checks the whole workflow (symbols, quantities, wiring) and names the first problem; then its trigger starts watching. In Live mode it asks first, because a workflow's orders are not confirmed one by one; in analyzer mode it does not ask, and a workflow activated there places real orders if the app is switched to Live later. Deactivate stops the trigger. A card's menu also has Edit and Delete; Delete asks first, because the run history and the webhook address go with it.",
   },
   {
     title: 'Webhook',
@@ -39,9 +40,29 @@ export const FLOW_INDEX_HELP: HelpItem[] = [
       "A card's Webhook entry shows the workflow's webhook address and secret. The address is this computer's own until you enter a public address as the Ngrok/Public URL on Admin → Server Settings; the dialog says so.",
   },
   {
-    title: 'Not connected yet',
+    title: 'Schedules',
     description:
-      'Webhook alerts, Order Update triggers and Telegram alerts are not connected in this version: a webhook address does not receive alerts yet, an Order Update trigger does not fire, and a Telegram Alert node stops with "Telegram is not set up".',
+      "A Start node's schedule runs every few seconds, minutes or hours, daily, weekly or once, on America/New_York time whatever this computer's time zone: every 1 minute runs at 2 seconds past each minute (10:01:02 AM ET, then 10:02:02 AM ET). With Market hours only on, a run that falls outside the session (9:30 AM to 4:00 PM ET, or the broker's own hours when it can tell) is skipped and leaves nothing in the run history. A one-time schedule deactivates its workflow after it runs. A run that fell due while the app was closed runs only if the app opens within a minute of it.",
+  },
+  {
+    title: 'Price alerts',
+    description:
+      "A Price Alert asks your broker for its symbol's quote every 5 seconds while the workflow is active (a broker must be logged in) and runs the workflow when its condition is met, for example when AAPL crosses above 190. A one-time alert runs once and then deactivates its workflow; an every-time alert runs again on each new cross, one run at a time. An alert with an expiry deactivates its workflow when it ends.",
+  },
+  {
+    title: 'Webhook alerts',
+    description:
+      'With Enable Webhook on (the card\'s Webhook entry), an alert is a POST to the address shown, http://127.0.0.1:5000/flow/webhook/<token> on this computer, with JSON that carries the secret, for example {"secret": "<secret>", "symbol": "AAPL"} (or ?secret= in the address with Secret in URL). Add /AAPL to the address to set the symbol; the run reads the fields as {{webhook.symbol}} and so on. It works only while Enable API Server is on (Admin → Server Settings; a change there applies after the app restarts), the workflow is active and you are signed in. Ten alerts with a wrong secret lock the webhook for 15 minutes; Regenerate URL & Secret unlocks it. An alert while the workflow is still running is refused as already running.',
+  },
+  {
+    title: 'Order Update triggers',
+    description:
+      "An Order Update trigger runs the workflow when an order it watches (an order id, or a symbol, with a status such as complete) changes. This app reads the order book every 5 seconds while such a trigger is active (the sandbox's orders in analyzer mode), so a change is seen up to 5 seconds late, and orders already in the book when the trigger starts do not fire it. A one-time trigger runs once and then deactivates its workflow.",
+  },
+  {
+    title: 'Telegram alerts',
+    description:
+      'A Telegram Alert node sends its message, with the time in Eastern time, to the chat set up on the Telegram page (profile menu → Telegram Bot). Until a bot token and chat id are saved there, the node stops with "Telegram is not set up".',
   },
   {
     title: 'Test in analyzer mode first',
@@ -74,7 +95,7 @@ export const FLOW_EDITOR_HELP: HelpItem[] = [
   {
     title: 'Activate',
     description:
-      'Checks the whole workflow and names the first problem; then the trigger starts watching. A workflow runs one run at a time; Deactivate stops the trigger. The header shows Live or Analyze mode and switches it: in analyzer mode the orders go to the sandbox, and the Orderbook shows them.',
+      "Checks the whole workflow and names the first problem; then the trigger starts watching. In Live mode it asks first, because a workflow's orders are not confirmed one by one. A workflow runs one run at a time; Deactivate stops the trigger. The header shows Live or Analyze mode and switches it: in analyzer mode the orders go to the sandbox, and the Orderbook shows them.",
   },
   {
     title: 'Variables',
