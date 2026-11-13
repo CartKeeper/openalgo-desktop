@@ -989,3 +989,12 @@ Live-mode confirmation on activation.
   page always stopped at "Failed to load Telegram data" and never showed
   them. The `/telegram/config`, `/users` and `/analytics` pages are
   untouched (still routed, still linked from nowhere, as before).
+
+### Navigation: Telegram Bot for every region (coordinator decision)
+
+- `src/config/navigation.ts`: the profile menu's `Telegram Bot` entry
+  (`/telegram`) had `region: ['india']`; it now shows for every region, so
+  a US or generic user reaches the page a Telegram Alert node's error names.
+  Test: a new `it` in `src/config/navigation.test.ts` (Alpaca, generic,
+  Zerodha); the file's three stale assertions are the base branch's and
+  were left alone.

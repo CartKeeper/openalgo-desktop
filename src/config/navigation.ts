@@ -162,7 +162,8 @@ export const profileMenuItems: NavItem[] = [
   { href: '/profile', label: 'Profile', icon: User },
   { href: '/apikey', label: 'API Key', icon: Key },
   { href: '/providers', label: 'Data Providers', icon: Globe },
-  { href: '/telegram', label: 'Telegram Bot', icon: MessageSquare, region: ['india'] },
+  // Every region (WP8 Phase C): it sets up Flow's Telegram Alert nodes.
+  { href: '/telegram', label: 'Telegram Bot', icon: MessageSquare },
 ]
 
 // External links
