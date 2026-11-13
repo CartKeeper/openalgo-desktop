@@ -184,9 +184,11 @@ const REDACTED: &str = "[redacted]";
 /// hundred bytes).
 const FLOW_WEBHOOK_BODY_LIMIT: usize = INTERNAL_BODY_LIMIT;
 
-/// The request log's span (tower-http's own, with the URI redacted).
+/// The request log's span: tower-http's own, under its target (so the app's
+/// default log filter leaves it off, as before), with the URI redacted.
 fn request_span(req: &Request) -> tracing::Span {
     tracing::debug_span!(
+        target: "tower_http::trace::make_span",
         "request",
         method = %req.method(),
         uri = %redacted_uri(req.uri()),
@@ -933,6 +935,46 @@ mod flow_webhook_tests {
         // writes it before the task ends, and `stop_all` waits for that.
         t.ctx.flow.stop_all(std::time::Duration::from_secs(60)).await;
         assert_eq!(runs(&t, id).len(), 1, "the second alert started no run");
+    }
+
+    /// A log writer into a shared buffer.
+    struct Sink(Arc<parking_lot::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Sink {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The request log's span is tower-http's, as before Phase C: the app's
+    /// own filter (`openalgo_desktop=debug,tauri=info`, `lib.rs`) leaves it
+    /// off, so a handler's line inside a request carries no request prefix
+    /// and no URI (a strategy webhook's id is in its path).
+    #[tokio::test]
+    async fn the_apps_default_log_filter_leaves_the_request_span_off() {
+        let t = harness();
+        let buf = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let sink = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(
+                "openalgo_desktop=debug,tauri=info",
+            ))
+            .with_ansi(false)
+            .with_writer(move || Sink(sink.clone()))
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let order = json!({
+            "apikey": "k-1", "strategy": "s", "exchange": "NASDAQ", "symbol": "AAPL",
+            "action": "BUY", "quantity": 1, "pricetype": "MARKET", "product": "CNC"
+        });
+        answer(&t, post_json("/api/v1/placeorder", order)).await;
+        let text = String::from_utf8_lossy(&buf.lock()).to_string();
+        assert!(text.contains("Place order request"), "{text}");
+        assert!(!text.contains("request{"), "{text}");
     }
 
     /// Every way a caller can put a credential in the request (the token in
