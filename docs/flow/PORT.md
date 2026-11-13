@@ -1480,3 +1480,26 @@ it changes ("Departures from the web"):
   NSE, BSE and CRYPTO match only themselves; a sandbox order placed on
   NASDAQ, filled between two reads of the book, runs a workflow watching
   `US`; a NASDAQ alert fires on Alpaca's `US` quote.
+
+### The Telegram send in the app's client (coordinator decision 6g)
+
+- `AppFlowClient::telegram` (`flow/contract/client/app.rs`) sends through
+  `messaging::telegram::send_alert`: the app's saved bot token and chat id,
+  the message stamped in Eastern 12-hour time, Telegram's own refusal or
+  the not-set-up sentence as the node's error. **Hand edit**
+  (`flow/nodes/alerts.rs`): the Telegram Alert node hands its text to the
+  run's client only, as upstream's node did; Phase C's fork (the app's
+  send when the context had an app, the client otherwise) is gone, and its
+  `app_tests` run the node over an `AppFlowClient`.
+- Removed, after a grep showed no other use: the client's not-set-up stub
+  (`TELEGRAM_NOT_SET_UP` in `contract/client/app.rs`; its sentence is now
+  `messaging::telegram::NOT_SET_UP`'s own literal) and `telegram_text`
+  (upstream's Markdown alert text, unused since Phase C: the send formats
+  its own, `messaging::telegram::alert_text`) with its test. This closes the
+  last "Recorded, not changed" item of Phase C's review fixes above.
+- Kept: `webhooks::token_known` and `triggers::store::token_exists`, which
+  Phase C left unused: the webhook's limits use them now (decision 6e, the
+  per-token window is for known tokens only).
+- Tests (`contract/client/app.rs`): a run's Telegram alert goes through the
+  app's settings to the saved chat (a fake Bot API); without settings it
+  answers the sentence that names the Telegram page and sends nothing.

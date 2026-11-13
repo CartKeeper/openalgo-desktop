@@ -6,8 +6,10 @@
 //!
 //! Upstream reaches its handlers through `mcp::dispatch::run_as` with the
 //! trader's API key, and sends its alerts through its Telegram and WhatsApp
-//! services. Here the alerts are answered by WP8 Phase C (Telegram) and
-//! refused with one sentence (WhatsApp, not available in this app).
+//! services. Here a Telegram alert goes through the app's own Telegram
+//! settings and the Bot API (`crate::messaging::telegram`, WP8 Phase C; the
+//! send moved here in Phase D), and a WhatsApp alert is refused with one
+//! sentence (not available in this app).
 
 use super::{handle_response, ApiCall, FlowClient, UNKNOWN_OUTCOME};
 use crate::flow::support::dispatch::{self, Raw, Transport};
@@ -22,11 +24,6 @@ use std::time::Duration;
 /// order mid-flight: the call finishes in a task the app owns, and the node
 /// is told the outcome is unknown.
 pub const CALL_TIMEOUT: Duration = dispatch::SDK_TIMEOUT;
-
-/// What a Telegram alert answers until the Telegram settings exist (WP8
-/// Phase C, Task C5 replaces this with the real send).
-pub const TELEGRAM_NOT_SET_UP: &str =
-    "Telegram is not set up: add the bot token and chat id on the Telegram page";
 
 /// What a WhatsApp alert answers in this app.
 pub const WHATSAPP_NOT_AVAILABLE: &str = "WhatsApp alerts are not available in this app";
@@ -239,24 +236,19 @@ impl FlowClient for AppFlowClient {
         out
     }
 
-    async fn telegram(&self, _message: &str) -> Value {
-        json!({"status": "error", "error": TELEGRAM_NOT_SET_UP})
+    /// The app's Telegram settings and the Bot API: the saved chat gets the
+    /// message stamped in Eastern time, or the node reads why not (not set
+    /// up, or Telegram's own refusal).
+    async fn telegram(&self, message: &str) -> Value {
+        let Some(app) = self.app.upgrade() else {
+            return json!({"status": "error", "error": "OpenAlgo is shutting down.", "code": 503});
+        };
+        crate::messaging::telegram::send_alert(&app, message).await
     }
 
     async fn whatsapp(&self, _message: &str, _to: Option<&str>) -> Value {
         json!({"status": "error", "error": WHATSAPP_NOT_AVAILABLE})
     }
-}
-
-/// The web's Telegram alert text: a 21-character rule under "Flow Alert",
-/// stamped in market time on any machine (the web wrote the host's local
-/// time). Phase C's send uses it.
-pub fn telegram_text(now: chrono::DateTime<chrono::Utc>, message: &str) -> String {
-    let time = now
-        .with_timezone(&crate::flow::contract::time::market_tz())
-        .format("%H:%M:%S");
-    let rule = "\u{2500}".repeat(21);
-    format!("*Flow Alert*\n{}\n{}\n\nTime: {}", rule, message, time)
 }
 
 #[cfg(test)]
@@ -502,11 +494,52 @@ mod tests {
         assert_eq!(expiry["status"], "success", "{}", expiry);
     }
 
-    #[test]
-    fn the_alert_text_is_stamped_in_market_time() {
-        // 2026-10-30 13:30:05Z is 09:30:05 in New York.
-        let text = telegram_text("2026-10-30T13:30:05Z".parse().unwrap(), "hello");
-        assert!(text.starts_with("*Flow Alert*\n"));
-        assert!(text.ends_with("hello\n\nTime: 09:30:05"), "{}", text);
+    const TELEGRAM_TOKEN: &str = "123456789:AAFlowTestTokenNotARealOneWXYZ";
+
+    /// WP8 Phase D (6g): a run's Telegram alert goes through the app's own
+    /// Telegram settings and the Bot API (a fake on the test thread here).
+    #[tokio::test]
+    async fn a_telegram_alert_goes_through_the_apps_telegram_settings() {
+        let (t, client) = harness(false);
+        crate::messaging::telegram::save(
+            &t.ctx.sqlite,
+            &t.ctx.security,
+            Some(TELEGRAM_TOKEN),
+            "987654321",
+        )
+        .unwrap();
+        let http = crate::messaging::telegram::fake::FakeHttp::delivering();
+        crate::messaging::telegram::send_through_for_tests(http.clone());
+        let out = client.telegram("AAPL crossed 190").await;
+        assert_eq!(
+            out,
+            json!({"status": "success", "data": {"message": "Telegram alert sent"}})
+        );
+        let sent = http.calls();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].1["chat_id"], "987654321");
+        assert!(
+            sent[0].1["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("AAPL crossed 190")),
+            "{:?}",
+            sent[0]
+        );
+    }
+
+    /// Not set up: the sentence that names the Telegram page, and nothing
+    /// is sent.
+    #[tokio::test]
+    async fn a_telegram_alert_without_settings_names_the_telegram_page() {
+        let (_t, client) = harness(false);
+        let http = crate::messaging::telegram::fake::FakeHttp::delivering();
+        crate::messaging::telegram::send_through_for_tests(http.clone());
+        let out = client.telegram("AAPL crossed 190").await;
+        assert_eq!(out["status"], "error", "{out}");
+        assert_eq!(
+            out["error"],
+            "Telegram is not set up: add the bot token and chat id on the Telegram page"
+        );
+        assert!(http.calls().is_empty());
     }
 }
