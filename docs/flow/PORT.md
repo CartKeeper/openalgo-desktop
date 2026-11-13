@@ -856,3 +856,40 @@ Live-mode confirmation on activation.
   a node with no exchange. It cannot be reached here: the strict validator
   refuses a Price Alert without an exchange before activation, and a new
   node stores `US`.
+
+### Task C3: the public webhook
+
+- `webhook/server.rs` (this app's file): `POST /flow/webhook/:token` and
+  `POST /flow/webhook/:token/:symbol` on the app's listener, answered by the
+  carried `flow::service::webhooks::trigger` (token, switch, active, lock,
+  secret in the JSON or `?secret=` per the auth type, strict validator,
+  run). The body is read as upstream's route read it: a JSON object as the
+  payload, other JSON kept under `message`/`payload`, an urlencoded form's
+  fields, other text under `message`; a multipart body is read as text
+  (axum's `multipart` feature is not enabled in this app). The path's
+  symbol replaces the body's. `flow/service/{webhooks.rs, webhook_guard.rs}`
+  are unchanged.
+- The routes are merged after the `/api/v1` rate limiter, so they are
+  outside it: that limiter logs the path it refuses (here the token) and is
+  the SDK's budget, which an internet sender would spend. Upstream's own
+  Flow webhook limit (100 a minute per address and per token) is not
+  carried; the guards are the secret, the lockout (10 wrong secrets in 10
+  minutes lock the webhook for 15) and one run at a time per workflow.
+- Request log: tower-http's span is built by `request_span`, which shows
+  `redacted_uri`: `/flow/webhook/[redacted]` (a symbol after it kept) and
+  `secret=[redacted]` for any `secret` in the query (its key read
+  percent-decoded, as the webhook reads it). The listener's start-up log
+  lists the route with a `{token}` placeholder.
+- The address shown is `http://127.0.0.1:5000/flow/webhook/<token>` by
+  default (`public_base_url`: the webhook settings' host and port, or the
+  Ngrok/Public URL). No carried Flow code builds a `localhost` address; the
+  listener binds IPv4 127.0.0.1 only and `localhost` can resolve to `::1`,
+  so the test pins 127.0.0.1.
+- Tests (`webhook/server.rs`, `flow_webhook_tests`, through the listener's
+  router): the right secret runs the workflow and answers upstream's JSON
+  (`message`, `status`, `errors`, `execution_id`, `workflow_id`); the
+  symbol route; an unknown token 404; ten wrong secrets 401 each, then the
+  right one 403 with the lock's sentence; the same alert twice while the
+  first (waiting) run holds the workflow, 202 then 409 "Workflow is already
+  running" (Review Focus 4); neither the token nor a secret in the request
+  log, every way a caller can send them.
