@@ -11,8 +11,10 @@
 //!
 //! The first read of a book is its baseline and reports nothing, so turning
 //! a watch on never fires for orders already done; a new source (analyzer
-//! mode switched, another broker) is a new baseline. With no watch the
-//! poller reads nothing. A change is seen at most [`POLL_INTERVAL`] late,
+//! mode switched, another broker, or another account on the same broker:
+//! Alpaca's paper keys, then its live keys) is a new baseline, so another
+//! account's history never runs a workflow. A read made while the broker
+//! session changed is dropped. With no watch the poller reads nothing. A change is seen at most [`POLL_INTERVAL`] late,
 //! and only the status a read finds (a partial fill shows as `open` until
 //! the order completes).
 
@@ -47,11 +49,11 @@ pub fn watch_status(status: &str) -> String {
     }
 }
 
-/// What the last read of the book showed: whose book it was (the mode and
-/// the broker) and each order's status in the watches' words.
+/// What the last read of the book showed: whose book it was (the mode, the
+/// broker and the account) and each order's status in the watches' words.
 #[derive(Default)]
 pub struct Book {
-    source: Option<(String, String)>,
+    source: Option<(String, String, String)>,
     statuses: HashMap<String, String>,
 }
 
@@ -59,8 +61,14 @@ impl Book {
     /// The updates since the last read: one for each order new to the book
     /// or whose status changed. The first read of a source is its baseline
     /// and reports nothing. Orders gone from the book are forgotten.
-    pub fn changes(&mut self, mode: &str, broker: &str, orders: &[Order]) -> Vec<OrderUpdate> {
-        let source = (mode.to_string(), broker.to_string());
+    pub fn changes(
+        &mut self,
+        mode: &str,
+        broker: &str,
+        account: &str,
+        orders: &[Order],
+    ) -> Vec<OrderUpdate> {
+        let source = (mode.to_string(), broker.to_string(), account.to_string());
         let baseline = self.source.as_ref() != Some(&source);
         let mut statuses = HashMap::with_capacity(orders.len());
         let mut updates = Vec::new();
@@ -127,20 +135,33 @@ impl TriggerSide {
     /// One read of the book: each change since the last read sent to the
     /// app's order updates; how many. A failed read (no broker logged in)
     /// keeps the last book, so a change made meanwhile is still reported.
+    /// The book is labelled with the broker session it was read under (the
+    /// broker and its account, the session's user id); a read made while
+    /// the session changed is dropped, never labelled as either account's.
     pub(crate) async fn poll_order_book(&self, book: &mut Book) -> usize {
         let Some(app) = self.app() else {
             return 0;
         };
-        match OrderbookService::get_orderbook(&app, None).await {
+        let session = |app: &crate::state::AppState| {
+            app.get_broker_session()
+                .map(|s| (s.broker_id, s.user_id))
+        };
+        let before = session(&app);
+        let read = OrderbookService::get_orderbook(&app, None).await;
+        if session(&app) != before {
+            tracing::debug!(
+                "Flow dropped an order-book read made while the broker session changed"
+            );
+            return 0;
+        }
+        match read {
             Ok(read) => {
-                let broker = if read.mode == "analyze" {
-                    "sandbox".to_string()
+                let (broker, account) = if read.mode == "analyze" {
+                    ("sandbox".to_string(), String::new())
                 } else {
-                    app.get_broker_session()
-                        .map(|s| s.broker_id)
-                        .unwrap_or_default()
+                    before.unwrap_or_default()
                 };
-                let updates = book.changes(&read.mode, &broker, &read.orders);
+                let updates = book.changes(&read.mode, &broker, &account, &read.orders);
                 let sent = updates.len();
                 for u in updates {
                     // No subscriber (none since a stop) is nothing lost.
@@ -207,11 +228,12 @@ mod tests {
     fn a_book_reports_each_new_order_and_each_status_change_once() {
         let mut book = Book::default();
         assert!(book
-            .changes("analyze", "sandbox", &[order("1", "pending"), order("2", "complete")])
+            .changes("analyze", "sandbox", "", &[order("1", "pending"), order("2", "complete")])
             .is_empty());
         let updates = book.changes(
             "analyze",
             "sandbox",
+            "",
             &[order("1", "complete"), order("2", "complete"), order("3", "pending")],
         );
         let seen: Vec<(String, String)> = updates
@@ -231,8 +253,32 @@ mod tests {
         assert_eq!((u.quantity, u.filled_quantity, u.pending_quantity), (10, 4, 6));
         assert_eq!((u.price, u.average_price), (190.5, 190.25));
         assert!(book
-            .changes("analyze", "sandbox", &[order("1", "complete"), order("3", "pending")])
+            .changes("analyze", "sandbox", "", &[order("1", "complete"), order("3", "pending")])
             .is_empty());
+    }
+
+    /// Another account on the same broker (Alpaca paper keys, then live
+    /// keys) is a new source: the new account's history (its last orders,
+    /// filled and cancelled) is its baseline, never updates that would run
+    /// a watching workflow; a same-account sign-in again keeps the book.
+    #[test]
+    fn another_account_on_the_same_broker_is_a_new_baseline() {
+        let mut book = Book::default();
+        assert!(book
+            .changes("live", "alpaca", "PA-PAPER", &[order("p1", "OPEN")])
+            .is_empty());
+        let history = [order("x1", "COMPLETE"), order("x2", "CANCELLED"), order("x3", "FILLED")];
+        assert!(
+            book.changes("live", "alpaca", "LIVE-ACCT", &history).is_empty(),
+            "the live account's history is its baseline"
+        );
+        let filled = [order("x1", "COMPLETE"), order("x2", "CANCELLED"), order("x3", "FILLED"), order("x4", "COMPLETE")];
+        let seen: Vec<String> = book
+            .changes("live", "alpaca", "LIVE-ACCT", &filled)
+            .into_iter()
+            .map(|u| u.orderid)
+            .collect();
+        assert_eq!(seen, vec!["x4".to_string()], "the same account goes on from its book");
     }
 
     /// Another source (analyzer mode switched, another broker) is a new
@@ -240,12 +286,12 @@ mod tests {
     #[test]
     fn a_new_source_is_a_new_baseline() {
         let mut book = Book::default();
-        book.changes("analyze", "sandbox", &[order("1", "pending")]);
+        book.changes("analyze", "sandbox", "", &[order("1", "pending")]);
         assert!(book
-            .changes("live", "alpaca", &[order("a", "COMPLETE"), order("b", "OPEN")])
+            .changes("live", "alpaca", "PA1", &[order("a", "COMPLETE"), order("b", "OPEN")])
             .is_empty());
         assert_eq!(
-            book.changes("live", "alpaca", &[order("a", "COMPLETE"), order("b", "FILLED")])
+            book.changes("live", "alpaca", "PA1", &[order("a", "COMPLETE"), order("b", "FILLED")])
                 .len(),
             1
         );
