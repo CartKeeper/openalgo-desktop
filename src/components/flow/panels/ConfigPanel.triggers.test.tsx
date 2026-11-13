@@ -114,6 +114,14 @@ const EXCHANGES = [
   'MCX_INDEX',
   'GLOBAL_INDEX',
   'CRYPTO',
+  // This app (WP8): the US venues the run accepts.
+  'NYSE',
+  'NASDAQ',
+  'AMEX',
+  'ARCA',
+  'BATS',
+  'OTC',
+  'US',
 ]
 
 beforeEach(() => {

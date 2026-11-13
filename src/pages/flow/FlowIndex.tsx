@@ -629,7 +629,22 @@ export default function FlowIndex() {
       setIsImportOpen(false)
       setImportJson('')
       setImportError(null)
-      showToast.success(`Workflow "${data.name}" imported`, 'flow')
+      // This app (WP8): the server's notes on the import (times read as Eastern
+      // time) are a warning the trader reads; upgraded fields are counted as
+      // the editor's Replace from JSON counts them.
+      const upgraded = data.migrations?.length
+        ? ` ${data.migrations.length} legacy field(s) upgraded.`
+        : ''
+      if (data.notes?.length) {
+        showToast.warning(
+          `Workflow "${data.name}" imported. ${data.notes.join(' ')}${upgraded}`,
+          'flow'
+        )
+      } else if (upgraded) {
+        showToast.success(`Workflow "${data.name}" imported.${upgraded}`, 'flow')
+      } else {
+        showToast.success(`Workflow "${data.name}" imported`, 'flow')
+      }
       navigate(`/flow/editor/${data.id}`)
     },
     onError: (error: Error) => {

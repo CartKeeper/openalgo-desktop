@@ -101,6 +101,21 @@ export function useGuardedNavigate() {
   )
 }
 
+/**
+ * This app (WP8): runs `action` at once when the canvas has no unsaved
+ * changes, otherwise asks first with the same prompt. The account controls'
+ * Logout goes through it: upstream confirmed every logout with a dialog of
+ * its own (why `useGuardedNavigate` lets `/login` through), and this app's
+ * header logs out at once.
+ */
+export function askBeforeLeaving(action: () => void) {
+  if (!unsaved()) {
+    action()
+    return
+  }
+  usePendingLeave.getState().ask(action)
+}
+
 /** An in-app link's path, or null for anything that does not leave the page in place. */
 function inAppTarget(event: MouseEvent): string | null {
   if (event.defaultPrevented || event.button !== 0) return null

@@ -20,6 +20,15 @@ export const EXCHANGES = [
   { value: 'MCX_INDEX', label: 'MCX_INDEX' },
   { value: 'GLOBAL_INDEX', label: 'GLOBAL_INDEX' },
   { value: 'CRYPTO', label: 'CRYPTO' },
+  // This app (WP8): the US venues the run accepts, in its order
+  // (src-tauri flow::support::US_EXCHANGES).
+  { value: 'NYSE', label: 'NYSE' },
+  { value: 'NASDAQ', label: 'NASDAQ' },
+  { value: 'AMEX', label: 'AMEX' },
+  { value: 'ARCA', label: 'ARCA' },
+  { value: 'BATS', label: 'BATS' },
+  { value: 'OTC', label: 'OTC' },
+  { value: 'US', label: 'US' },
 ] as const
 
 export const INDEX_EXCHANGES = [
@@ -58,14 +67,24 @@ export const DERIVATIVE_EXCHANGES = new Set<string>([
   'NCO',
 ])
 
+/** This app (WP8): the US venues, where the default product is CNC. */
+const US_VENUES = new Set<string>(['NYSE', 'NASDAQ', 'AMEX', 'ARCA', 'BATS', 'OTC', 'US'])
+
 /**
  * The product a node on `exchange` uses when its author picked none.
  *
  * A *default*, never an override: once a product is chosen it is stored on the
  * node and wins, so a deliberately intraday NFO order stays MIS.
  */
-export function defaultProductForExchange(exchange: string | undefined | null): 'MIS' | 'NRML' {
-  return DERIVATIVE_EXCHANGES.has((exchange || '').trim().toUpperCase()) ? 'NRML' : 'MIS'
+export function defaultProductForExchange(
+  exchange: string | undefined | null
+): 'MIS' | 'NRML' | 'CNC' {
+  const segment = (exchange || '').trim().toUpperCase()
+  if (DERIVATIVE_EXCHANGES.has(segment)) return 'NRML'
+  // This app (WP8): whole shares held on a US venue, CNC, as the run's
+  // node_contracts::default_product_for_exchange decides.
+  if (US_VENUES.has(segment)) return 'CNC'
+  return 'MIS'
 }
 
 /** Options nodes trade an option whatever their underlying's exchange reads. */

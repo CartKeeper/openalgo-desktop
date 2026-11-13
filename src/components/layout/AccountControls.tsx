@@ -5,6 +5,7 @@ import { BarChart3, BookOpen, LogOut, Moon, Sun, Zap } from 'lucide-react'
 // In the Vite bundle both names resolve to one module.
 import { useNavigate } from 'react-router'
 import { AccountSwitcher } from '@/components/AccountSwitcher'
+import { askBeforeLeaving } from '@/components/desktop/FlowLeaveGuard'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -46,11 +47,17 @@ export function AccountControls({ onNavigate }: { onNavigate?: (href: string) =>
   // One logout request: the store's logout() sends it and clears the session
   // whether or not it succeeds. (The Navbar sends it twice, once itself and
   // once through the store; not changed here.)
-  const handleLogout = async () => {
+  const logOut = async () => {
     await logout()
     navigate('/login')
     showToast.success('Logged out successfully')
   }
+
+  // With unsaved changes on the Flow canvas, the editor's own "Leave without
+  // saving?" prompt asks first; otherwise this logs out at once, as the
+  // Navbar does. (Upstream confirmed every logout with a dialog of its own,
+  // which the editor's leave guard relies on; this app has none.)
+  const handleLogout = () => askBeforeLeaving(() => void logOut())
 
   const handleModeToggle = async () => {
     const result = await toggleAppMode()

@@ -316,19 +316,33 @@ export async function exportWorkflow(id: number): Promise<WorkflowExportData> {
   return flowReply(flow('flow_export_workflow', { id }))
 }
 
+/** What an import hands back: the new workflow, and what the server said about it. */
+export interface ImportedWorkflow {
+  id: number
+  name: string
+  /** This app: sentences the trader must read, e.g. that times are read as Eastern time. */
+  notes?: string[]
+  /** Legacy fields that were upgraded on the way in, if any. */
+  migrations?: string[]
+}
+
 /**
  * Import workflow from JSON
  * Backend returns { status, workflow_id } so we transform it to { id, name }
+ * (and, in this app, the reply's notes and migrations when it has any).
  */
-export async function importWorkflow(
-  data: WorkflowExportData
-): Promise<{ id: number; name: string }> {
-  const response = await flowReply<{ status: string; workflow_id: number }>(
-    flow('flow_import_workflow', { body: data })
-  )
+export async function importWorkflow(data: WorkflowExportData): Promise<ImportedWorkflow> {
+  const response = await flowReply<{
+    status: string
+    workflow_id: number
+    notes?: string[]
+    migrations?: string[]
+  }>(flow('flow_import_workflow', { body: data }))
   return {
     id: response.workflow_id,
     name: data.name || 'Imported Workflow',
+    ...(response.notes?.length ? { notes: response.notes } : {}),
+    ...(response.migrations?.length ? { migrations: response.migrations } : {}),
   }
 }
 

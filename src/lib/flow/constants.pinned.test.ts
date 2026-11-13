@@ -53,6 +53,14 @@ describe('choice lists', () => {
       { value: 'MCX_INDEX', label: 'MCX_INDEX' },
       { value: 'GLOBAL_INDEX', label: 'GLOBAL_INDEX' },
       { value: 'CRYPTO', label: 'CRYPTO' },
+      // This app (WP8): the US venues the run accepts.
+      { value: 'NYSE', label: 'NYSE' },
+      { value: 'NASDAQ', label: 'NASDAQ' },
+      { value: 'AMEX', label: 'AMEX' },
+      { value: 'ARCA', label: 'ARCA' },
+      { value: 'BATS', label: 'BATS' },
+      { value: 'OTC', label: 'OTC' },
+      { value: 'US', label: 'US' },
     ])
   })
 

@@ -459,8 +459,10 @@ those files.
   lock, so no package was added), and the dev dependencies `jest-axe
   ^10.0.0` + `@types/jest-axe ^3.5.9` (7 carried tests use
   `src/test/a11y-utils.ts`, which this repository ships but whose package
-  was never declared; the two base vitest failures on `jest-axe` go green
-  with it).
+  was never declared). The two base test files that import `jest-axe`
+  (`components/ui/button.test.tsx`, `components/layout/MobileBottomNav.test.tsx`)
+  now get past the import and still fail, on `document is not defined`:
+  they have no jsdom pragma. They are the base branch's, not fixed here.
 
 ### Not carried
 
@@ -628,3 +630,55 @@ The first rule matters: without it Rollup's CommonJS helpers land in
 | --- | --- |
 | `src/pages/flow/FlowIndex.tsx`, `FlowEditor.tsx`, `FlowKeyboardShortcuts.tsx` | `<HelpButton items={…} pageTitle="…" />` as the first child of the page's root (the editor's inside `FlowEditorContent`, before the Replace dialog), with the two imports. |
 | `src/pages/flow/FlowEditorMenu.pinned.test.tsx` | The header test's `getByText('Flow Editor')` scoped to the header bar: the help panel's title, in the DOM while closed, is "Flow Editor" too. |
+
+### Review fix pass (after the whole-branch review)
+
+| File | Edit |
+| --- | --- |
+| `src/lib/flow/constants.ts` | `EXCHANGES` gains this app's seven US venues after upstream's fourteen, in the run's order (`flow::support::US_EXCHANGES`: NYSE, NASDAQ, AMEX, ARCA, BATS, OTC, US), and `defaultProductForExchange` answers `CNC` on them (`US_VENUES`), as `node_contracts::default_product_for_exchange` does. Without them a US trader could not pick NASDAQ in any exchange field (the `{ }` text mode flips back to the select once the text has no `{{`), and a node imported on NASDAQ showed a blank exchange and MIS while the run sent CNC. New test `src/lib/flow/usExchanges.test.ts` reads the Rust list. |
+| `src/lib/flow/constants.pinned.test.ts`, `components/flow/panels/OrderFields.test.tsx`, `components/flow/panels/ConfigPanel.triggers.test.tsx` | Their pinned exchange lists (upstream's fourteen) gain the seven US venues; the OrderFields test's name says so. |
+| `src/api/flow.ts` (Task B2's) | `importWorkflow` also hands back the reply's `notes` and `migrations` when it has them (`ImportedWorkflow`). |
+| `src/pages/flow/FlowIndex.tsx` | The import's success toast: with notes (the Eastern-time sentence), a warning that carries them; with upgraded legacy fields only, their count, as Replace from JSON counts them; otherwise upstream's sentence. Test `src/pages/flow/flowImportNotes.test.tsx`. Review Focus 1's note now reaches the trader, not only the reply. |
+| `src/components/desktop/FlowLeaveGuard.tsx` | `askBeforeLeaving(action)` exported: runs the action at once, or asks with the editor's "Leave without saving?" prompt when the canvas has unsaved changes. `src/components/layout/AccountControls.tsx` sends Logout through it: upstream confirmed every logout with a dialog of its own (the reason the guard lets `/login` through), this app's header logs out at once, so Logout from the editor dropped unsaved edits without asking. Test `src/pages/flow/flowLogout.test.tsx`. |
+| `src/pages/flow/flowHelp.ts` | "What Flow is" says the true thing about Live mode: Flow orders reach `OrderService::place_order` with no acknowledged mode (`expected_mode: None`, as every `/api/v1` caller), so the app's per-order Live/Paper check does not apply; the help says a Live-mode workflow places real orders with no confirmation per order, instead of "the order checks apply". |
+
+### Known deviations after Phase B (recorded, not changed)
+
+- **Times on the Flow pages are upstream's.** The workflow list's dates
+  (`src/lib/flow/listDate.ts`) are written in Asia/Kolkata, so a workflow
+  saved after 1:30 PM ET (2:30 PM in summer) shows the next day's date,
+  and the Execution Log's times are 24-hour (`ExecutionLogPanel.tsx`).
+  CLAUDE.md asks for America/New_York, 12-hour with AM/PM: plan Task D4.
+- **New nodes carry upstream's NSE defaults.** Every node defaults to
+  exchange NSE. A new Start node defaults to a daily 09:15 run with "Only
+  during market hours" on, a window of 09:15–15:15 and the calendar NSE;
+  Time Window defaults to 09:15–15:30. In this app a node's window replaces
+  a side of the US session (`nodes/timing.rs`), so a default Start node's
+  09:15 ET run passes the gate before the 9:30 AM ET open, and its 15:15
+  end shuts the last 45 minutes. The spec fixes market hours at 9:30 AM to
+  4:00 PM ET; the default schedule time, window, calendar and exchange are
+  the user's to choose.
+- **The carried Flow UI keeps upstream's styling, not this app's design
+  tokens.** The Flow editor CSS block has literal colors (handle and node
+  glow `#e879f9`/`#22d3ee`, edges `#888888`, the hovered edge `#ffffff`),
+  the carried components use Tailwind palette colors directly
+  (`bg-purple-500`, `text-amber-500`, `bg-green-500`, `text-red-500` and
+  the like, hundreds of uses), and the editor's controls are mostly 32 px
+  (`h-8`) with a few 28 px and 24 px ones (`h-7`, `h-6`) that are outside
+  CLAUDE.md's button scale. Restyling upstream's 168 files was not part of
+  the carry; it would be its own piece of work.
+- **The editor's help trigger** (the shared `HelpButton`, fixed at the
+  bottom right) covers the MiniMap's corner, or the bottom of the side
+  panel when one is open. Where the editor's help icon goes is the user's
+  call; the shared component is outside WP8's files.
+- **The internal token reaches the app's log, not the UI.** The `/api/v1`
+  handlers log each request with `{:?}` (`webhook/handlers.rs`, e.g.
+  `info!("Place order request: {:?}", req)`), and the request's `apikey` is
+  the internal token for a Flow call (`internal_trust` writes it into the
+  body); they also emit the request in `api_*` events, which no page
+  listens to. The Logs page reads the stub web client, so no page shows it.
+  The token is valid only while the app runs, but `validate_api_key`
+  accepts it in any request body, including one arriving through the
+  Ngrok/Public URL. The fix (blank `apikey` in those logs and events when it
+  is the internal token, or mark internal requests with a request extension
+  instead of the body) is in Phase A's and the app's files, outside Phase B.

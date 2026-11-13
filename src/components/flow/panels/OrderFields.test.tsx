@@ -81,7 +81,7 @@ const toFixed = (label: string) =>
   fireEvent.click(screen.getByRole('button', { name: `Use a fixed ${label}` }))
 
 describe('ExchangeField (F-517)', () => {
-  it('offers the fourteen exchanges in order', () => {
+  it('offers the fourteen exchanges, then this app\'s seven US venues, in order', () => {
     mount(ExchangeField, 'NSE')
     expect(screen.getByText('Exchange').tagName).toBe('LABEL')
     expect(offered('Exchange')).toEqual([
@@ -99,6 +99,14 @@ describe('ExchangeField (F-517)', () => {
       'MCX_INDEX',
       'GLOBAL_INDEX',
       'CRYPTO',
+      // This app (WP8): the US venues the run accepts.
+      'NYSE',
+      'NASDAQ',
+      'AMEX',
+      'ARCA',
+      'BATS',
+      'OTC',
+      'US',
     ])
   })
 

@@ -180,6 +180,24 @@ describe('what each function hands back', () => {
     })
   })
 
+  it("an import hands back the reply's notes and migrations, which the Flow page shows", async () => {
+    const note = 'Schedule and time-window times are read as Eastern time in this app'
+    mocks.invoke.mockResolvedValue(
+      refused(201, {
+        status: 'success',
+        workflow_id: 42,
+        notes: [note],
+        migrations: ["positionCheck 'n3': operator 'gt' -> condition 'quantity_above'"],
+      })
+    )
+    expect(await importWorkflow(EXPORTED)).toEqual({
+      id: 42,
+      name: 'Opening range',
+      notes: [note],
+      migrations: ["positionCheck 'n3': operator 'gt' -> condition 'quantity_above'"],
+    })
+  })
+
   it('index lot sizes unwrap data, and an empty reply is an empty list', async () => {
     mocks.invoke.mockResolvedValue(
       ok({ status: 'success', data: [{ value: 'NIFTY', label: 'NIFTY', lotSize: 75 }] })

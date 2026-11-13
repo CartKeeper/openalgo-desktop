@@ -16,7 +16,7 @@ export const FLOW_INDEX_HELP: HelpItem[] = [
   {
     title: 'What Flow is',
     description:
-      'A drag-and-drop canvas for trading automations: a trigger wired through data and conditions to orders and alerts. Workflows place orders through the same path as every other order in the app, so analyzer mode and the order checks apply. Active workflows run only while this app is open and you are signed in.',
+      'A drag-and-drop canvas for trading automations: a trigger wired through data and conditions to orders and alerts. Workflows place orders through the app’s API order path, so analyzer mode applies: with it on, orders go to the sandbox. In Live mode a workflow places real orders with no confirmation per order. Active workflows run only while this app is open and you are signed in.',
   },
   {
     title: 'New Workflow',

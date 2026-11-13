@@ -128,6 +128,10 @@ describe('the Flow page', () => {
     expect(
       within(panel).getByText(/Webhook alerts, Order Update triggers and Telegram alerts/)
     ).toBeInTheDocument()
+    // Flow orders reach OrderService with no acknowledged mode, so the app's
+    // per-order Live/Paper check (Gate B) does not apply: the help says so.
+    expect(within(panel).getByText(/no confirmation per order/)).toBeInTheDocument()
+    expect(within(panel).queryByText(/order checks apply/)).not.toBeInTheDocument()
   })
 })
 
