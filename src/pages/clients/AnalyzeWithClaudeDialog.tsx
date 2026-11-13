@@ -653,9 +653,8 @@ export default function AnalyzeWithClaudeDialog({
       </DialogContent>
     </Dialog>
     {/* Mounted per-dialog-instance (like BriefingPage/CopilotPage/ViewReport)
-        so scenario-mode props are local to this flow. Scenario Detail's
-        Allocation card ("Review plan" in AllocationCard.tsx) depends on this
-        modal staying mounted unconditionally; it opens it via setItemsAndOpen. */}
+        so scenario-mode props are local to this flow. */}
+    {/* Scenario Detail's Allocation card ("Review plan") opens this modal via setItemsAndOpen: keep it mounted unconditionally. */}
     <ActionReviewModal
       onApply={handleApplyToScenario}
       cloneNameRequired={isBaseline}
