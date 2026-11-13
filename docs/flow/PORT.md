@@ -672,14 +672,33 @@ The first rule matters: without it Rollup's CommonJS helpers land in
   bottom right) covers the MiniMap's corner, or the bottom of the side
   panel when one is open. Where the editor's help icon goes is the user's
   call; the shared component is outside WP8's files.
-- **The internal token reaches the app's log, not the UI.** The `/api/v1`
-  handlers log each request with `{:?}` (`webhook/handlers.rs`, e.g.
-  `info!("Place order request: {:?}", req)`), and the request's `apikey` is
-  the internal token for a Flow call (`internal_trust` writes it into the
-  body); they also emit the request in `api_*` events, which no page
-  listens to. The Logs page reads the stub web client, so no page shows it.
-  The token is valid only while the app runs, but `validate_api_key`
-  accepts it in any request body, including one arriving through the
-  Ngrok/Public URL. The fix (blank `apikey` in those logs and events when it
-  is the internal token, or mark internal requests with a request extension
-  instead of the body) is in Phase A's and the app's files, outside Phase B.
+### Follow-up 1: the `/api/v1` key (coordinator-authorized, after the review)
+
+Two holes the review found, fixed in `webhook/handlers.rs`,
+`webhook/server.rs` and `flow/support/dispatch.rs` (Phase A's and the app's
+files, opened to this phase for it):
+
+- **No key in a log line or an event.** The six order routes logged their
+  request with `{:?}` (`info!("Place order request: {:?}", req)`) and eight
+  routes sent it to the frontend in `api_*` events, `apikey` included: the
+  user's own OpenAlgo API key on an outside call, the internal token on a
+  Flow call. They now log and emit `redacted(&req)`, the request's JSON with
+  every `apikey`, at any depth, as `"[redacted]"`.
+- **The internal token works only in process.** It was accepted from any
+  request's body (`validate_api_key`) or header (`internal_trust`), so the
+  network listener, and a public URL in front of it, took it too.
+  `dispatch::run` now marks every request it hands the app's router
+  (`InProcessCall`, a request extension, which only code in this process
+  can add); `internal_trust` refuses the token header, as a wrong key, on a
+  request without the mark, and runs a marked request with the right token
+  inside the task-local `IN_PROCESS_CALL`; `WebhookState::is_internal`
+  honors the token only inside that scope, so over the network the token is
+  checked like any other key and refused with exactly a wrong key's answer.
+- Tests (`webhook/server.rs` `key_tests`, `webhook/handlers.rs`
+  `redaction_tests`): the six routes' log lines with the key `k-123` carry
+  no `k-123`; an order's `api_order` event with a user key carries
+  `"[redacted]"`; the listener refuses the internal token in a header and in
+  a body (no sandbox order); the in-process order path takes the token and
+  neither its log nor its event carries it; nested keys are masked. The
+  test-only `handlers::emitted` records what the handlers emit on the
+  test's thread (a headless state has no window).

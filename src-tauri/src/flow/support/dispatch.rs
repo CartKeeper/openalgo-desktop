@@ -87,11 +87,24 @@ pub fn post_request(
         .map_err(|_| Transport::NotSent)
 }
 
+/// The mark [`run`] puts on every request it hands the app's own router.
+/// The router's internal-trust layer honors the internal token only on a
+/// request that carries it, and only code in this process can put it on a
+/// request, so the token never works over the network listener or a
+/// public URL in front of it.
+#[derive(Clone, Copy, Debug)]
+pub struct InProcessCall;
+
 /// Hand `req` to the app's `/api/v1` router and read the answer within
 /// `timeout`. The call runs as a task the app owns, so a node future that
 /// is dropped (the run was stopped) never cuts an order off mid-flight:
 /// the handler finishes, and only the answer is lost.
-pub async fn run(app: &Arc<AppState>, req: Request<Body>, timeout: Duration) -> Result<Raw, Transport> {
+pub async fn run(
+    app: &Arc<AppState>,
+    mut req: Request<Body>,
+    timeout: Duration,
+) -> Result<Raw, Transport> {
+    req.extensions_mut().insert(InProcessCall);
     let router = app.api_router();
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.spawn(async move {

@@ -43,13 +43,23 @@ impl WebhookState {
         self.state.upgrade()
     }
 
-    /// Whether `apikey` is the app's own per-process token: a Flow run
-    /// calling these handlers in process (`flow::support::dispatch`).
-    pub(crate) fn is_internal(&self, apikey: &str) -> bool {
+    /// Whether `given` is the app's per-process token (compared in
+    /// constant time). Where it came from is not this check's concern:
+    /// see [`Self::is_internal`].
+    pub(crate) fn is_internal_token(&self, given: &str) -> bool {
         use subtle::ConstantTimeEq;
         self.get_app_state().is_some_and(|state| {
-            bool::from(apikey.as_bytes().ct_eq(state.internal_token.as_bytes()))
+            bool::from(given.as_bytes().ct_eq(state.internal_token.as_bytes()))
         })
+    }
+
+    /// Whether `apikey` stands for a Flow run calling these handlers in
+    /// process: the per-process token, on a request `flow::support::
+    /// dispatch::run` handed the app's router (`server::in_process_call`).
+    /// The same token on a request over the network listener, or a public
+    /// URL in front of it, is checked like any other key, and refused.
+    pub(crate) fn is_internal(&self, apikey: &str) -> bool {
+        crate::webhook::server::in_process_call() && self.is_internal_token(apikey)
     }
 
     /// Validate API key and return the key name if valid
@@ -79,6 +89,8 @@ impl WebhookState {
 
     /// Emit event to frontend (there is no window for a headless state)
     fn emit<T: serde::Serialize + Clone>(&self, event: &str, payload: &T) {
+        #[cfg(test)]
+        emitted::record(event, payload);
         if let Some(handle) = &self.app_handle {
             if let Err(e) = handle.emit(event, payload) {
                 warn!("Failed to emit {}: {}", event, e);
@@ -91,6 +103,81 @@ impl WebhookState {
         self.get_app_state()
             .map(|s| s.is_broker_connected())
             .unwrap_or(false)
+    }
+}
+
+/// What stands in for a key in a log line or a frontend event.
+const REDACTED: &str = "[redacted]";
+
+/// A request as the log and the frontend events show it: its JSON with
+/// every `apikey`, at any depth, masked. The key is a credential: the
+/// user's OpenAlgo API key, or the app's per-process token on a Flow call.
+fn redacted<T: serde::Serialize>(req: &T) -> serde_json::Value {
+    fn mask(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, v) in map.iter_mut() {
+                    if key == "apikey" {
+                        *v = serde_json::Value::String(REDACTED.into());
+                    } else {
+                        mask(v);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(mask),
+            _ => {}
+        }
+    }
+    let mut value = serde_json::to_value(req).unwrap_or(serde_json::Value::Null);
+    mask(&mut value);
+    value
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn every_apikey_is_masked_at_any_depth_and_nothing_else_changes() {
+        let request = json!({
+            "apikey": "k-123",
+            "strategy": "basket",
+            "orders": [{"symbol": "AAPL", "apikey": "k-456"}, {"symbol": "MSFT"}],
+            "meta": {"inner": {"apikey": "k-789"}},
+        });
+        let shown = redacted(&request);
+        assert_eq!(
+            shown,
+            json!({
+                "apikey": "[redacted]",
+                "strategy": "basket",
+                "orders": [{"symbol": "AAPL", "apikey": "[redacted]"}, {"symbol": "MSFT"}],
+                "meta": {"inner": {"apikey": "[redacted]"}},
+            })
+        );
+        assert!(!shown.to_string().contains("k-"));
+    }
+}
+
+/// Test-only: what the handlers emitted on this thread, so a test can read
+/// an event's payload (a headless state has no window to emit to).
+#[cfg(test)]
+pub(crate) mod emitted {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static EVENTS: RefCell<Vec<(String, serde_json::Value)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(crate) fn record<T: serde::Serialize>(event: &str, payload: &T) {
+        let value = serde_json::to_value(payload).unwrap_or(serde_json::Value::Null);
+        EVENTS.with(|e| e.borrow_mut().push((event.to_string(), value)));
+    }
+
+    /// The events emitted on this thread since the last call, oldest first.
+    pub(crate) fn take() -> Vec<(String, serde_json::Value)> {
+        EVENTS.with(|e| std::mem::take(&mut *e.borrow_mut()))
     }
 }
 
@@ -321,7 +408,7 @@ pub async fn place_order(
     AxumState(state): AxumState<Arc<WebhookState>>,
     Json(req): Json<PlaceOrderRequest>,
 ) -> impl IntoResponse {
-    info!("Place order request: {:?}", req);
+    info!("Place order request: {}", redacted(&req));
 
     // Validate API key
     if let Err(e) = state.validate_api_key(&req.apikey) {
@@ -366,7 +453,7 @@ pub async fn place_order(
     // Execute order via service
     match OrderService::place_order(&app_state, order, state.service_key(&req.apikey), None).await {
         Ok(result) => {
-            state.emit("api_order", &req);
+            state.emit("api_order", &redacted(&req));
             if result.success {
                 (
                     StatusCode::OK,
@@ -400,7 +487,7 @@ pub async fn place_smart_order(
     AxumState(state): AxumState<Arc<WebhookState>>,
     Json(req): Json<PlaceSmartOrderRequest>,
 ) -> impl IntoResponse {
-    info!("Place smart order request: {:?}", req);
+    info!("Place smart order request: {}", redacted(&req));
 
     // Validate API key
     if let Err(e) = state.validate_api_key(&req.apikey) {
@@ -430,7 +517,7 @@ pub async fn place_smart_order(
 
     match SmartOrderService::place_smart_order(&app_state, smart_order_req, state.service_key(&req.apikey)).await {
         Ok(result) => {
-            state.emit("api_smart_order", &req);
+            state.emit("api_smart_order", &redacted(&req));
             if result.success {
                 (
                     StatusCode::OK,
@@ -464,7 +551,7 @@ pub async fn modify_order(
     AxumState(state): AxumState<Arc<WebhookState>>,
     Json(req): Json<ModifyOrderRequest>,
 ) -> impl IntoResponse {
-    info!("Modify order request: {:?}", req);
+    info!("Modify order request: {}", redacted(&req));
 
     if let Err(e) = state.validate_api_key(&req.apikey) {
         return (StatusCode::FORBIDDEN, Json(ApiResponse::<Empty>::error(&e)));
@@ -491,7 +578,7 @@ pub async fn modify_order(
 
     match OrderService::modify_order(&app_state, &req.orderid, modify_req, state.service_key(&req.apikey)).await {
         Ok(result) => {
-            state.emit("api_modify_order", &req);
+            state.emit("api_modify_order", &redacted(&req));
             if result.success {
                 (
                     StatusCode::OK,
@@ -519,7 +606,7 @@ pub async fn cancel_order(
     AxumState(state): AxumState<Arc<WebhookState>>,
     Json(req): Json<CancelOrderRequest>,
 ) -> impl IntoResponse {
-    info!("Cancel order request: {:?}", req);
+    info!("Cancel order request: {}", redacted(&req));
 
     if let Err(e) = state.validate_api_key(&req.apikey) {
         return (StatusCode::FORBIDDEN, Json(ApiResponse::<Empty>::error(&e)));
@@ -537,7 +624,7 @@ pub async fn cancel_order(
 
     match OrderService::cancel_order(&app_state, &req.orderid, None, state.service_key(&req.apikey)).await {
         Ok(result) => {
-            state.emit("api_cancel_order", &req);
+            state.emit("api_cancel_order", &redacted(&req));
             if result.success {
                 (
                     StatusCode::OK,
@@ -565,7 +652,7 @@ pub async fn cancel_all_orders(
     AxumState(state): AxumState<Arc<WebhookState>>,
     Json(req): Json<CancelAllOrdersRequest>,
 ) -> impl IntoResponse {
-    info!("Cancel all orders request: {:?}", req);
+    info!("Cancel all orders request: {}", redacted(&req));
 
     if let Err(e) = state.validate_api_key(&req.apikey) {
         return (StatusCode::FORBIDDEN, Json(ApiResponse::<Empty>::error(&e)));
@@ -583,7 +670,7 @@ pub async fn cancel_all_orders(
 
     match OrderService::cancel_all_orders(&app_state, state.service_key(&req.apikey)).await {
         Ok(results) => {
-            state.emit("api_cancel_all_orders", &req);
+            state.emit("api_cancel_all_orders", &redacted(&req));
             let cancelled_count = results.iter().filter(|r| r.success).count();
             let failed_count = results.len() - cancelled_count;
             let message = if failed_count == 0 {
@@ -612,7 +699,7 @@ pub async fn close_position(
     AxumState(state): AxumState<Arc<WebhookState>>,
     Json(req): Json<ClosePositionRequest>,
 ) -> impl IntoResponse {
-    info!("Close position request: {:?}", req);
+    info!("Close position request: {}", redacted(&req));
 
     if let Err(e) = state.validate_api_key(&req.apikey) {
         return (StatusCode::FORBIDDEN, Json(ApiResponse::<Empty>::error(&e)));
@@ -631,7 +718,7 @@ pub async fn close_position(
     // Close all positions (ClosePositionRequest only has apikey and strategy)
     match PositionService::close_all_positions(&app_state, state.service_key(&req.apikey)).await {
         Ok(results) => {
-            state.emit("api_close_position", &req);
+            state.emit("api_close_position", &redacted(&req));
             let closed_count = results.iter().filter(|r| r.success).count();
             (
                 StatusCode::OK,
@@ -978,7 +1065,7 @@ pub async fn place_basket_order(
                     message: if r.success { None } else { Some(r.message) },
                 })
                 .collect();
-            state.emit("api_basket_order", &req);
+            state.emit("api_basket_order", &redacted(&req));
             (
                 StatusCode::OK,
                 Json(ApiResponse::success_with_data(results))
@@ -1028,7 +1115,7 @@ pub async fn place_split_order(
 
     match SmartOrderService::place_split_order(&app_state, split_req, state.service_key(&req.apikey)).await {
         Ok(result) => {
-            state.emit("api_split_order", &req);
+            state.emit("api_split_order", &redacted(&req));
             let api_result = SplitOrderResult {
                 total_quantity: result.total_quantity,
                 split_size: result.split_size,
