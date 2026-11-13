@@ -1361,3 +1361,42 @@ send into the app's client, and writes the user guide.
   Open button), `FlowIndex.w6.test.tsx` (the card lookup). New:
   `src/pages/flow/flowCardSelection.test.tsx`. Help (`flowHelp.ts`, "New
   Workflow"): a click selects a card; double-click or Open opens it.
+
+### Two triggers that re-ran themselves (coordinator decision 6d)
+
+Two departures from the web, each recorded in the doc comment of the file
+it changes ("Departures from the web"):
+
+- **An order-update watch never fires on an order its own workflow
+  placed.** `flow/triggers/own_orders.rs` (new): `OwnOrders` keeps, per
+  workflow, the newest 200 order ids its runs placed, in memory
+  (`FlowModule::own_orders`). The app's client of a run
+  (`AppFlowClient::for_workflow`, set by the executor) takes them from the
+  replies to its order calls (`placeorder`, `placesmartorder`,
+  `basketorder`, `splitorder`, `optionsorder`, `optionsmultiorder`, and a
+  scoped close: every `orderid` in the reply). **Hand edits**:
+  `order_monitor.rs` (`Watches::claim_except`: a matching watch whose
+  workflow placed the order is skipped, with the line "Order-update watch
+  of workflow N skipped order X (complete): its own run placed it"; `claim`
+  is `claim_except` with no exception), `drive.rs` (`on_order_update`
+  passes the app's `OwnOrders`), `executor/mod.rs` (the run's client knows
+  its workflow), `contract/client/app.rs` (the record). Without this an
+  every-time watch on AAPL whose run buys AAPL re-ran itself on each of its
+  own fills. Test `triggers/tests/own_orders.rs`: another workflow's AAPL
+  order runs the watching workflow, whose run buys AAPL; that order's fill
+  does not run it again (and the line says why); the other workflow's next
+  AAPL order runs it again. Unit tests: the ids in an order reply; the
+  bound per workflow.
+- **An every-time price alert with a level condition fires when its
+  condition becomes true, and again only after a poll where it was
+  false.** **Hand edit** (`triggers/price_monitor.rs`): `Alert::held` (the
+  condition held on the previous poll) and `Alert::fires_on_change` (an
+  every-time alert whose condition is not `crossing_up` or `crossing_down`:
+  greater than, less than, at the level, inside or outside a channel, and
+  the moving conditions, which can all stay true across polls). The
+  crossings already fire once per crossing and are unchanged, and so are
+  one-time alerts (their latch). The web re-ran a "greater than" alert
+  every 5 seconds while the price stayed above the level. Tests
+  (`triggers/tests/price_poll.rs`): every-time "greater than 100" over 101,
+  102, 103 runs once, then 99 and 101 run it a second time; every-time
+  "inside the channel" 95 to 105 over 100, 101, 110, 100 runs twice.

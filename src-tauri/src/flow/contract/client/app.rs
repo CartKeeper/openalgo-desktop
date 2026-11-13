@@ -32,15 +32,43 @@ pub const TELEGRAM_NOT_SET_UP: &str =
 pub const WHATSAPP_NOT_AVAILABLE: &str = "WhatsApp alerts are not available in this app";
 
 /// The real client for one run: the app and the run's credential (the
-/// internal token).
+/// internal token), and the workflow whose run it serves, if any.
 pub struct AppFlowClient {
     app: Weak<AppState>,
     api_key: Secret,
+    workflow_id: Option<i64>,
 }
 
 impl AppFlowClient {
     pub fn new(app: Weak<AppState>, api_key: Secret) -> Self {
-        Self { app, api_key }
+        Self {
+            app,
+            api_key,
+            workflow_id: None,
+        }
+    }
+
+    /// The client of a run of `workflow_id`: the orders it places are
+    /// remembered as that workflow's own, which its order-update watch
+    /// skips (WP8 Phase D, decision 6d).
+    pub fn for_workflow(mut self, workflow_id: i64) -> Self {
+        self.workflow_id = Some(workflow_id);
+        self
+    }
+
+    /// Remember the orders a placing call's reply names as the run's
+    /// workflow's own.
+    fn remember_orders(&self, app: &AppState, endpoint: &str, reply: &Value) {
+        let Some(workflow_id) = self.workflow_id else {
+            return;
+        };
+        if !crate::flow::triggers::own_orders::PLACING.contains(&endpoint) {
+            return;
+        }
+        let ids = crate::flow::triggers::own_orders::order_ids(reply);
+        if !ids.is_empty() {
+            app.flow.own_orders.record(workflow_id, ids);
+        }
     }
 }
 
@@ -184,24 +212,31 @@ impl FlowClient for AppFlowClient {
         }
         // Strike-mode legs and a scoped close: the public schemas cannot
         // carry them, so they take Flow's internal entry (nodes-orders).
+        let endpoint = call.endpoint;
         if let Some(which) = crate::flow::nodes::internal::route(&call) {
             let key = self.api_key.expose();
-            return match crate::flow::nodes::internal::run(&app, key, which, call.payload).await {
+            let out = match crate::flow::nodes::internal::run(&app, key, which, call.payload).await
+            {
                 Ok(raw) => with_broker_cause(&app, shaped(raw)),
                 Err(t) => transport_failure(t),
             };
+            // A scoped close places its order through the same path.
+            self.remember_orders(&app, "placeorder", &out);
+            return out;
         }
         let req = match dispatch::post_request(self.api_key.expose(), call.endpoint, call.payload) {
             Ok(r) => r,
             Err(t) => return transport_failure(t),
         };
-        match dispatch::run(&app, req, CALL_TIMEOUT).await {
+        let out = match dispatch::run(&app, req, CALL_TIMEOUT).await {
             Ok(raw) => with_broker_cause(&app, shaped(raw)),
             Err(t) => {
                 tracing::warn!("Flow {} got no answer: {:?}", call.method, t);
                 transport_failure(t)
             }
-        }
+        };
+        self.remember_orders(&app, endpoint, &out);
+        out
     }
 
     async fn telegram(&self, _message: &str) -> Value {

@@ -298,7 +298,14 @@ impl TriggerSide {
     /// An order update from the bus: claim every matching watch and queue
     /// its run (`_on_order_update`); never blocks the bus.
     pub fn on_order_update(self: &Arc<Self>, update: &OrderUpdate) {
-        for (id, gen) in self.watches.claim(update) {
+        // A watch never fires on an order its own workflow placed (WP8
+        // Phase D, decision 6d; `own_orders`).
+        let own = self.app().map(|app| app.flow.own_orders.clone());
+        let placed_by = |workflow_id: i64| {
+            own.as_ref()
+                .is_some_and(|o| o.placed(workflow_id, &update.orderid))
+        };
+        for (id, gen) in self.watches.claim_except(update, placed_by) {
             tracing::info!(
                 "Order-update trigger fired for workflow {}: orderid={} status={}",
                 id,

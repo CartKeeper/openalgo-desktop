@@ -9,10 +9,16 @@
 //! tell apart (parity T-052). Sandbox fills publish the same event, so a
 //! workflow in analyzer mode fires as on the web.
 //!
-//! Departure from the web, decided (T-057): an every-time watch whose run
-//! is still going keeps the newest update that arrived meanwhile and runs
-//! once more for it, with a log line, instead of dropping it silently (a
-//! basket filling leg by leg ran the workflow for the first fill only).
+//! Departures from the web, decided:
+//!
+//! - (T-057) An every-time watch whose run is still going keeps the newest
+//!   update that arrived meanwhile and runs once more for it, with a log
+//!   line, instead of dropping it silently (a basket filling leg by leg ran
+//!   the workflow for the first fill only).
+//! - (WP8 Phase D, decision 6d) A watch never fires on an order its own
+//!   workflow placed ([`Watches::claim_except`], the ids from
+//!   `own_orders`), with a log line: an every-time watch on AAPL whose run
+//!   buys AAPL re-ran itself on each of its own fills on the web.
 
 use crate::events::OrderUpdate;
 use crate::flow::contract::pyfmt;
@@ -182,12 +188,27 @@ impl Watches {
     /// (`_on_order_update`). A claimed every-time watch keeps `u` for one
     /// more run.
     pub fn claim(&self, u: &OrderUpdate) -> Vec<(i64, u64)> {
+        self.claim_except(u, |_| false)
+    }
+
+    /// [`Self::claim`], skipping the watches of the workflows `own` says
+    /// placed `u`'s order themselves (logged; WP8 Phase D).
+    pub fn claim_except(&self, u: &OrderUpdate, own: impl Fn(i64) -> bool) -> Vec<(i64, u64)> {
         if !self.attached.load(Ordering::SeqCst) {
             return Vec::new();
         }
         let mut claimed = Vec::new();
         for w in self.watches.lock().values_mut() {
             if !w.matches(u) {
+                continue;
+            }
+            if own(w.workflow_id) {
+                tracing::info!(
+                    "Order-update watch of workflow {} skipped order {} ({}): its own run placed it",
+                    w.workflow_id,
+                    u.orderid,
+                    u.order_status
+                );
                 continue;
             }
             if !w.triggered {

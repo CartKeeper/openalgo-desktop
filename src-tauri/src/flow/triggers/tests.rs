@@ -581,6 +581,7 @@ mod eastern;
 mod lifecycle;
 mod monitor_runs;
 mod order_updates;
+mod own_orders;
 mod price_logs;
 mod price_poll;
 mod restart;

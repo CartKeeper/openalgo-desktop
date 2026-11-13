@@ -17,6 +17,14 @@
 //! - An expired alert stands its workflow down too (T-038): the web only
 //!   forgot the alert, so the workflow showed Active and a restart re-armed
 //!   it with a fresh window.
+//! - An every-time alert with a level condition fires when the condition
+//!   becomes true, and again only after a poll where it was false (WP8
+//!   Phase D, decision 6d): the web re-ran a "greater than" alert every 5
+//!   seconds while the price stayed above the level, placing its orders
+//!   again each time. A level condition is any that can stay true across
+//!   polls: greater than, less than, at the level (`crossing`), inside or
+//!   outside a channel, and the moving conditions; crossing up and crossing
+//!   down already fire once per crossing and are unchanged.
 
 use crate::flow::contract::pyfmt;
 use crate::flow::node_contracts::normalize_condition;
@@ -49,6 +57,9 @@ pub struct Alert {
     pub last: Option<f64>,
     /// The one-shot latch.
     pub triggered: bool,
+    /// The condition held on the previous poll (an every-time level alert
+    /// fires only when it becomes true).
+    pub held: bool,
     pub created: DateTime<Utc>,
     /// `once` or `every_time` (lower-cased).
     pub trigger: String,
@@ -106,6 +117,7 @@ impl Alert {
             percentage: number(data, "percentage", "percentage")?,
             last: None,
             triggered: false,
+            held: false,
             created: now,
             trigger: word(data, "trigger", "once"),
             expiration: word(data, "expiration", "none"),
@@ -114,6 +126,13 @@ impl Alert {
 
     pub fn one_shot(&self) -> bool {
         self.trigger != "every_time"
+    }
+
+    /// An every-time alert whose condition can stay true across polls: it
+    /// fires when the condition becomes true, not on each poll it holds.
+    /// The crossings detect their own edge from the previous price.
+    pub fn fires_on_change(&self) -> bool {
+        !self.one_shot() && !matches!(self.condition.as_str(), "crossing_up" | "crossing_down")
     }
 
     /// Past its expiration window (`_is_expired`).
@@ -256,8 +275,16 @@ impl Alerts {
         };
         if !met || alert.triggered {
             alert.last = Some(ltp);
+            alert.held = met;
             return Observed::Quiet;
         }
+        if alert.fires_on_change() && alert.held {
+            // Still true since the poll it fired on: it fires again only
+            // after a poll where it was false.
+            alert.last = Some(ltp);
+            return Observed::Quiet;
+        }
+        alert.held = true;
         if alert.one_shot() {
             alert.triggered = true;
         } else {

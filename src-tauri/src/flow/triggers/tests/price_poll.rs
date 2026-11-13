@@ -143,3 +143,50 @@ async fn an_alert_past_its_window_stands_down_without_a_quote() {
     assert!(client.calls_to("quotes").is_empty());
     assert_eq!(run_count(&t.ctx, id), 0);
 }
+
+/// WP8 Phase D (decision 6d): an every-time alert with a level condition
+/// fires when its condition becomes true, and again only after a poll where
+/// it was false: "greater than 100" over 101, 102, 103 runs once, not every
+/// 5 seconds while the price stays above; 99 then 101 runs it a second time.
+#[tokio::test]
+async fn an_every_time_greater_than_alert_runs_when_it_becomes_true_not_while_it_stays_true() {
+    let t = eastern("2026-11-03T15:00:00Z").await;
+    let s = side(&t);
+    let id = alert(
+        &t,
+        &s,
+        json!({"symbol": "AAPL", "exchange": "US", "condition": "greater_than", "price": 100, "trigger": "every_time"}),
+    )
+    .await;
+    let client = quotes(&[101.0, 102.0, 103.0, 99.0, 101.0]);
+    let mut counts = Vec::new();
+    for _ in 0..5 {
+        poll(&s, &client).await;
+        counts.push(run_count(&t.ctx, id));
+    }
+    assert_eq!(counts, vec![1, 1, 1, 1, 2]);
+    assert!(active(&t.ctx, id), "an every-time alert keeps watching");
+}
+
+/// Any condition that can stay true across polls is a level: an every-time
+/// "inside the channel" 95 to 105 runs when the price comes inside, not
+/// again while it stays inside, and again after it was outside.
+#[tokio::test]
+async fn an_every_time_channel_alert_runs_when_the_price_comes_inside() {
+    let t = eastern("2026-11-03T15:00:00Z").await;
+    let s = side(&t);
+    let id = alert(
+        &t,
+        &s,
+        json!({"symbol": "AAPL", "exchange": "US", "condition": "inside_channel",
+               "priceLower": 95, "priceUpper": 105, "trigger": "every_time"}),
+    )
+    .await;
+    let client = quotes(&[100.0, 101.0, 110.0, 100.0]);
+    let mut counts = Vec::new();
+    for _ in 0..4 {
+        poll(&s, &client).await;
+        counts.push(run_count(&t.ctx, id));
+    }
+    assert_eq!(counts, vec![1, 1, 1, 2]);
+}
