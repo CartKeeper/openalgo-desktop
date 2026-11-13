@@ -63,7 +63,7 @@ export const StartNode = memo(({ data, selected }: StartNodeProps) => {
           ) : (
             <div className="flex items-center justify-between gap-2">
               <span className="text-muted-foreground">Time:</span>
-              <span className="mono-data font-medium">{data.time || '09:15'}</span>
+              <span className="mono-data font-medium">{data.time || '09:35'}</span>
             </div>
           )}
           {(data.scheduleType === 'daily' || data.scheduleType === 'weekly') &&

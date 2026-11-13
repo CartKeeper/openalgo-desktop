@@ -59,7 +59,7 @@ export const FLOW_EDITOR_HELP: HelpItem[] = [
   {
     title: 'Node settings',
     description:
-      'Select a node to edit it on the right. US stocks take the symbol and the exchange (for example AAPL on NASDAQ) and a quantity in whole shares; the default product on a US exchange is CNC. A field with a { } switch takes a value from an earlier node.',
+      'Select a node to edit it on the right. A new node starts on the US exchange, product CNC; pick a venue for the symbol (for example AAPL on NASDAQ) and a quantity in whole shares. The Indian exchanges are still in the list. A field with a { } switch takes a value from an earlier node.',
   },
   {
     title: 'Save',
@@ -84,7 +84,7 @@ export const FLOW_EDITOR_HELP: HelpItem[] = [
   {
     title: 'Times are Eastern',
     description:
-      "Schedules, time windows, Wait Until and the {{time}} and {{date}} variables use America/New_York whatever this computer's time zone, and the regular session is 9:30 AM to 4:00 PM ET. A workflow imported from OpenAlgo web is read the same way.",
+      "Schedules, time windows, Wait Until and the {{time}} and {{date}} variables use America/New_York whatever this computer's time zone, and the regular session is 9:30 AM to 4:00 PM ET. A new Schedule runs at 9:35 AM ET, held to that session, and a new Time Window covers it. A workflow imported from OpenAlgo web is read the same way.",
   },
   {
     title: 'Export and Replace from JSON',

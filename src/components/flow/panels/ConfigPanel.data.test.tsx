@@ -96,20 +96,20 @@ function expectExchangeFallback(type: string, fallback: string) {
 beforeEach(() => useFlowWorkflowStore.getState().resetWorkflow())
 
 describe('getQuote (F-560)', () => {
-  it('asks for a symbol on NSE and says how to read the quote', () => {
+  it('asks for a symbol on US and says how to read the quote', () => {
     openPanel('getQuote')
     expectTextField('Symbol', 'RELIANCE', 'symbol')
-    expect(shownUnder('Exchange')).toBe('NSE')
+    expect(shownUnder('Exchange')).toBe('US')
     expectOutput('quote')
     expect(screen.getByText('Use {{quote.data.ltp}}')).toBeInTheDocument()
   })
 })
 
 describe('getDepth (F-561)', () => {
-  it('asks for a symbol on NSE and says how to read the best bid', () => {
+  it('asks for a symbol on US and says how to read the best bid', () => {
     openPanel('getDepth')
     expectTextField('Symbol', 'SBIN', 'symbol')
-    expect(shownUnder('Exchange')).toBe('NSE')
+    expect(shownUnder('Exchange')).toBe('US')
     expectOutput('depth')
     expect(screen.getByText('Use {{depth.data.bids[0].price}}')).toBeInTheDocument()
   })
@@ -135,7 +135,7 @@ describe('openPosition (F-563)', () => {
   it('asks for symbol, exchange and product and says how to read the quantity', () => {
     openPanel('openPosition')
     expectTextField('Symbol', 'RELIANCE', 'symbol')
-    expect(shownUnder('Exchange')).toBe('NSE')
+    expect(shownUnder('Exchange')).toBe('US')
     expectOutput('position')
     expect(screen.getByText('Use {{position.quantity}}')).toBeInTheDocument()
   })
@@ -178,7 +178,7 @@ describe('priorPeriodOhlc (F-570)', () => {
   it('asks for a symbol and says which levels it exposes', () => {
     openPanel('priorPeriodOhlc')
     expectTextField('Symbol', 'NIFTY', 'symbol')
-    expect(shownUnder('Exchange')).toBe('NSE')
+    expect(shownUnder('Exchange')).toBe('US')
     expectOutput('pdhpdl')
     expect(
       screen.getByText(
@@ -213,7 +213,7 @@ describe('barOffset (F-571)', () => {
   it('shows a daily interval and the last closed bar when nothing is stored', () => {
     openPanel('barOffset')
     expectTextField('Symbol', 'RELIANCE', 'symbol')
-    expect(shownUnder('Exchange')).toBe('NSE')
+    expect(shownUnder('Exchange')).toBe('US')
     const interval = inputUnder('Interval')
     expect(interval).toHaveValue('D')
     expect(interval).toHaveAttribute('placeholder', 'D, 5m, 1h, or a custom Historify interval')
@@ -270,10 +270,10 @@ describe('expiry (F-572)', () => {
 })
 
 describe('multiQuotes (F-573)', () => {
-  it('takes comma separated symbols on NSE and says how to read the first quote', () => {
+  it('takes comma separated symbols on US and says how to read the first quote', () => {
     openPanel('multiQuotes')
     expectTextField('Symbols (comma separated)', 'RELIANCE,INFY,TCS', 'symbols')
-    expect(shownUnder('Exchange')).toBe('NSE')
+    expect(shownUnder('Exchange')).toBe('US')
     expect(screen.getByText('Use {{quotes.results[0].data.ltp}}')).toBeInTheDocument()
   })
 })
@@ -287,9 +287,9 @@ describe('symbol (F-574)', () => {
     expect(screen.getByText('Use {{symbolInfo.data.lotsize}}')).toBeInTheDocument()
   })
 
-  it('shows the NSE a new node stores', () => {
+  it('shows the US a new node stores', () => {
     openPanel('symbol', { ...DEFAULT_NODE_DATA.symbol })
-    expect(shownUnder('Exchange')).toBe('NSE')
+    expect(shownUnder('Exchange')).toBe('US')
   })
 
   it('returns to NFO when a {{reference}} exchange is switched off', () => {

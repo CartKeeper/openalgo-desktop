@@ -411,7 +411,7 @@ impl Schedule {
         let Some(kind) = scheduled_kind(data) else {
             return Ok(None);
         };
-        let time = field_text(data, "time", "09:15");
+        let time = field_text(data, "time", crate::flow::node_contracts::default_schedule_time());
         let invalid = || format!("Invalid schedule configuration: type={}", kind);
         let days = data.get("days").cloned().unwrap_or(Value::Null);
         let schedule = match kind.as_str() {

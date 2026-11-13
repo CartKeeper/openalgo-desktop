@@ -25,7 +25,7 @@ export const GetDepthNode = memo(({ data, selected }: GetDepthNodeProps) => {
           </div>
           <div>
             <div className="text-xs font-medium leading-tight">Depth</div>
-            <div className="text-[9px] text-muted-foreground">{data.exchange || 'NSE'}</div>
+            <div className="text-[9px] text-muted-foreground">{data.exchange || 'US'}</div>
           </div>
         </div>
         <div className="rounded bg-muted/50 px-1.5 py-1">

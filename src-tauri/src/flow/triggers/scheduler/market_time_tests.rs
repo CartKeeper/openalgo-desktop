@@ -70,3 +70,17 @@ fn a_past_one_time_schedule_is_refused_naming_the_market_zone() {
         "The one-time schedule is set for 2026-10-30 09:15 ET, which has already passed. Set a later date and time, then activate it again."
     );
 }
+
+/// A daily schedule saved without a time (an import, an old file) runs at
+/// 09:35 Eastern, this app's default for a new Start node (the web's was
+/// 09:15 IST).
+#[test]
+fn a_daily_schedule_without_a_time_runs_at_0935_eastern() {
+    set_market_tz_for_tests(DEFAULT_MARKET_TZ);
+    let data = json!({"scheduleType": "daily"});
+    let now = utc("2026-10-30T12:00:00Z");
+    let s = Schedule::from_node(data.as_object().unwrap(), now)
+        .unwrap()
+        .unwrap();
+    assert_eq!(s.next_at_or_after(now), Some(utc("2026-10-30T13:35:00Z")));
+}

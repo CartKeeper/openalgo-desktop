@@ -117,7 +117,7 @@ describe('ExchangeField (F-517)', () => {
     expect(trigger('Exchange')).toHaveTextContent('MCX')
   })
 
-  it('takes {{webhook.exchange}} from the payload, with no hint, and falls back to NSE', () => {
+  it('takes {{webhook.exchange}} from the payload, with no hint, and falls back to US', () => {
     const onChange = mount(ExchangeField, 'BSE')
     toPayload('Exchange')
     expect(onChange).toHaveBeenLastCalledWith('{{webhook.exchange}}')
@@ -125,8 +125,8 @@ describe('ExchangeField (F-517)', () => {
     expect(screen.getByText('Exchange').parentElement?.querySelector('p')).toBeNull()
 
     toFixed('Exchange')
-    expect(onChange).toHaveBeenLastCalledWith('NSE')
-    expect(trigger('Exchange')).toHaveTextContent('NSE')
+    expect(onChange).toHaveBeenLastCalledWith('US')
+    expect(trigger('Exchange')).toHaveTextContent('US')
   })
 
   it('takes a caller label and fallback', () => {

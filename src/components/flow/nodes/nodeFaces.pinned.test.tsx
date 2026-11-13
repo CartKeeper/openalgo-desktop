@@ -118,9 +118,9 @@ describe('F-674 the Start node', () => {
     expect(has(el, 'Time:')).toBe(false)
   })
 
-  it('shows the time of any other schedule, 09:15 when unset', () => {
+  it('shows the time of any other schedule, 09:35 when unset', () => {
     expect(row(face('start', { scheduleType: 'once', time: '10:45' }), 'Time:')).toBe('10:45')
-    expect(row(face('start', { scheduleType: 'daily' }), 'Time:')).toBe('09:15')
+    expect(row(face('start', { scheduleType: 'daily' }), 'Time:')).toBe('09:35')
   })
 
   // Desktop (web defect): the web showed "Schedule" and Time: 09:15, but no
@@ -159,12 +159,12 @@ describe('F-675 the Price Alert node', () => {
     ])
   })
 
-  it('titles itself with the exchange, NSE when unset, and shows the symbol or -', () => {
+  it('titles itself with the exchange, US when unset, and shows the symbol or -', () => {
     const el = face('priceAlert', { exchange: 'NFO', symbol: 'NIFTY25AUGFUT' })
     expect(subtitle(el, 'Price Alert')).toBe('NFO')
     expect(row(el, 'Symbol')).toBe('NIFTY25AUGFUT')
     const blank = face('priceAlert')
-    expect(subtitle(blank, 'Price Alert')).toBe('NSE')
+    expect(subtitle(blank, 'Price Alert')).toBe('US')
     expect(row(blank, 'Symbol')).toBe('-')
   })
 
@@ -254,14 +254,14 @@ describe('F-677 the order nodes', () => {
     expect(has(el, 'NRML')).toBe(true)
   })
 
-  it('Place Order: the fallbacks NSE, -, BUY, 0, MARKET and the cash product', () => {
+  it('Place Order: the fallbacks US, -, BUY, 0, MARKET and the cash product (CNC on US)', () => {
     const el = face('placeOrder')
-    expect(subtitle(el, 'Place Order')).toBe('NSE')
+    expect(subtitle(el, 'Place Order')).toBe('US')
     expect(row(el, 'Symbol')).toBe('-')
     expect(has(el, 'BUY')).toBe(true)
     expect(row(el, 'Qty:')).toBe('0')
     expect(has(el, 'MARKET')).toBe(true)
-    expect(has(el, 'MIS')).toBe(true)
+    expect(has(el, 'CNC')).toBe(true)
     expect(leaf(face('placeOrder', { action: 'BUY' }), 'BUY').classList.contains('badge-buy')).toBe(
       true
     )
@@ -375,7 +375,7 @@ describe('F-677 the order nodes', () => {
     expect(
       leaf(face('splitOrder', { action: 'BUY' }), 'BUY').classList.contains('text-green-500')
     ).toBe(true)
-    expect(subtitle(face('splitOrder'), 'Split Order')).toBe('NSE')
+    expect(subtitle(face('splitOrder'), 'Split Order')).toBe('US')
   })
 
   it('Modify Order: the last six of the order id, else Variable, and only the changes set', () => {
@@ -431,7 +431,7 @@ describe('F-677 the order rows the pins above skip', () => {
     expect(rowOf(el, 'SL-M')).toEqual(['SL-M', 'CNC'])
     const blank = face('smartOrder')
     expect(row(blank, 'Symbol')).toBe('-')
-    expect(rowOf(blank, 'MARKET')).toEqual(['MARKET', 'MIS'])
+    expect(rowOf(blank, 'MARKET')).toEqual(['MARKET', 'CNC'])
   })
 
   it('Split Order shows the symbol or -', () => {
@@ -503,15 +503,15 @@ describe('F-678 the condition nodes', () => {
     expect(row(el, 'Check')).toBe(shown)
   })
 
-  it('Time Window: start and end, 09:15-15:30 by default, Outside window when inverted', () => {
+  it('Time Window: start and end, 09:30-16:00 by default, Outside window when inverted', () => {
     const el = face('timeWindow', { startTime: '10:00', endTime: '14:00', invertCondition: true })
     expect(subtitle(el, 'Time')).toBe('Window')
     expect(row(el, 'Start')).toBe('10:00')
     expect(row(el, 'End')).toBe('14:00')
     expect(has(el, 'Outside window')).toBe(true)
     const blank = face('timeWindow')
-    expect(row(blank, 'Start')).toBe('09:15')
-    expect(row(blank, 'End')).toBe('15:30')
+    expect(row(blank, 'Start')).toBe('09:30')
+    expect(row(blank, 'End')).toBe('16:00')
     expect(has(blank, 'Outside window')).toBe(false)
   })
 

@@ -120,15 +120,25 @@ describe('the history symbol, days and output (F-564)', () => {
     expect(stored().symbol).toBe('RELIANCE')
   })
 
-  it('shows NSE, the run default, when no exchange is stored, and stores the one picked', () => {
+  // This app (WP8): the run's default for a missing exchange is US
+  // (node_contracts::default_exchange; the web's NSE only in a web replay).
+  it('shows US, the run default, when no exchange is stored, and stores the one picked', () => {
     const history = readFileSync(join(process.cwd(), 'src-tauri/src/flow/nodes/history.rs'), 'utf8')
-    expect(history).toMatch(/get_str\(data, "exchange", "NSE"\)/)
+    expect(history).toMatch(
+      /get_str\(data, "exchange", crate::flow::node_contracts::default_exchange\(\)\)/
+    )
+    const contracts = readFileSync(
+      join(process.cwd(), 'src-tauri/src/flow/node_contracts.rs'),
+      'utf8'
+    )
+    const body = contracts.slice(contracts.indexOf('pub fn default_exchange()'))
+    expect(body.slice(0, body.indexOf('\n}\n'))).toMatch(/\} else \{\s*"US"\s*\}/)
     openPanel('history', { symbol: 'SBIN' })
     const exchange = screen
       .getByText('Exchange', { selector: 'label' })
       .parentElement?.querySelector('button') as HTMLElement
     expect(exchange).toHaveAttribute('role', 'combobox')
-    expect(exchange).toHaveTextContent(/^NSE$/)
+    expect(exchange).toHaveTextContent(/^US$/)
     expect(stored().exchange).toBeUndefined()
     fireEvent.click(exchange)
     fireEvent.click(within(screen.getByRole('listbox')).getByRole('option', { name: 'MCX' }))

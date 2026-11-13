@@ -26,7 +26,7 @@ export const OpenPositionNode = memo(({ data, selected }: OpenPositionNodeProps)
           </div>
           <div>
             <div className="text-xs font-medium leading-tight">Position</div>
-            <div className="text-[9px] text-muted-foreground">{data.exchange || 'NSE'}</div>
+            <div className="text-[9px] text-muted-foreground">{data.exchange || 'US'}</div>
           </div>
         </div>
         <div className="space-y-1">
@@ -35,7 +35,7 @@ export const OpenPositionNode = memo(({ data, selected }: OpenPositionNodeProps)
             <span className="mono-data text-[10px] font-medium">{data.symbol || '-'}</span>
           </div>
           <div className="text-center text-[9px] text-muted-foreground">
-            {data.product || defaultProductForExchange(data.exchange)}
+            {data.product || defaultProductForExchange(data.exchange || 'US')}
           </div>
         </div>
       </div>

@@ -21,7 +21,7 @@ export const PlaceOrderNode = memo(({ data, selected }: PlaceOrderNodeProps) => 
           </div>
           <div>
             <div className="text-xs font-medium leading-tight">Place Order</div>
-            <div className="text-[9px] text-muted-foreground">{data.exchange || 'NSE'}</div>
+            <div className="text-[9px] text-muted-foreground">{data.exchange || 'US'}</div>
           </div>
         </div>
         <div className="space-y-1">
@@ -46,7 +46,7 @@ export const PlaceOrderNode = memo(({ data, selected }: PlaceOrderNodeProps) => 
           </div>
           <div className="flex items-center justify-between text-[9px] text-muted-foreground">
             <span>{data.priceType || 'MARKET'}</span>
-            <span>{data.product || defaultProductForExchange(data.exchange)}</span>
+            <span>{data.product || defaultProductForExchange(data.exchange || 'US')}</span>
           </div>
           {data.ltp !== undefined && (
             <div className="mt-0.5 flex items-center justify-between rounded border border-border/50 bg-surface-2 px-1.5 py-0.5">

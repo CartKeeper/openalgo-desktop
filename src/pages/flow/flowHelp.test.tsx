@@ -154,6 +154,11 @@ describe('the Flow editor', () => {
     }
     expect(within(panel).getByText(/America\/New_York/)).toBeInTheDocument()
     expect(within(panel).getByText(/AAPL on NASDAQ/)).toBeInTheDocument()
+    // The new nodes' US defaults, as the editor gives them (WP8 follow-up).
+    expect(
+      within(panel).getByText(/A new node starts on the US exchange, product CNC/)
+    ).toBeInTheDocument()
+    expect(within(panel).getByText(/A new Schedule runs at 9:35 AM ET/)).toBeInTheDocument()
     expect(within(panel).getByText(/the Orderbook shows them/)).toBeInTheDocument()
     expect(within(panel).queryByText(/Sandbox page/)).not.toBeInTheDocument()
     // The variables example is one a run can produce on this branch.

@@ -99,3 +99,21 @@ async fn the_gate_falls_back_to_the_regular_session_when_the_market_clock_cannot
     let before_open: DateTime<Utc> = "2026-10-27T12:30:00Z".parse().unwrap();
     assert!(is_within_market_hours(&t.ctx, before_open, &early).await);
 }
+
+/// A Time Window saved without a start or an end (an import, an old file)
+/// is open over the US regular session, 09:30 to 16:00 Eastern, this app's
+/// default for a new Time Window (the web's was 09:15 to 15:30 IST).
+#[tokio::test]
+async fn a_time_window_without_times_is_the_us_regular_session() {
+    // Tuesday 2026-10-27 is EDT (UTC-4).
+    for (instant, open) in [
+        ("2026-10-27T13:20:00Z", false), // 09:20 ET
+        ("2026-10-27T13:45:00Z", true),  // 09:45 ET
+        ("2026-10-27T19:55:00Z", true),  // 15:55 ET
+        ("2026-10-27T20:30:00Z", false), // 16:30 ET
+    ] {
+        let ctx = at_instant(instant.parse().unwrap());
+        let out = run(&TimeWindow, &ctx, json!({})).await;
+        assert_eq!(out.condition_met(), Some(open), "{instant}");
+    }
+}

@@ -388,7 +388,7 @@ impl FlowNode for Subscribe {
     async fn run(&self, ctx: &NodeCtx, data: &Map<String, Value>) -> NodeOutcome {
         let s = self.0;
         let symbol = ctx.get_str(data, "symbol", "");
-        let exchange = ctx.get_str(data, "exchange", "NSE");
+        let exchange = ctx.get_str(data, "exchange", crate::flow::node_contracts::default_exchange());
         if symbol.is_empty() {
             ctx.error(format!("Subscribe {}: No symbol specified", s.mode));
             return NodeOutcome::error("No symbol specified");
@@ -463,7 +463,7 @@ impl FlowNode for Unsubscribe {
 
     async fn run(&self, ctx: &NodeCtx, data: &Map<String, Value>) -> NodeOutcome {
         let symbol = ctx.get_str(data, "symbol", "");
-        let exchange = ctx.get_str(data, "exchange", "NSE");
+        let exchange = ctx.get_str(data, "exchange", crate::flow::node_contracts::default_exchange());
         let stream_type = ctx.get_str(data, "streamType", "all");
         let shown = if symbol.is_empty() {
             "all"

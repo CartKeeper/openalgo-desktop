@@ -58,20 +58,20 @@ function pick(option: string) {
   fireEvent.click(within(screen.getByRole('listbox')).getByText(option))
 }
 
-/** A symbol box with the RELIANCE hint on an NSE picker, and the hint below the output. */
+/** A symbol box with the RELIANCE hint on a US picker, and the hint below the output. */
 function expectSubscribeForm(hint: string) {
   const symbol = under('Symbol', 'input')
   expect(symbol).toHaveAttribute('placeholder', 'RELIANCE')
   fireEvent.change(symbol, { target: { value: 'SBIN' } })
   expect(stored().symbol).toBe('SBIN')
-  expect(shownUnder('Exchange')).toBe('NSE')
+  expect(shownUnder('Exchange')).toBe('US')
   expect(screen.getByText(hint)).toBeInTheDocument()
 }
 
 beforeEach(() => useFlowWorkflowStore.getState().resetWorkflow())
 
 describe('subscribeLtp (F-590)', () => {
-  it('subscribes a symbol on NSE and names the live value', () => {
+  it('subscribes a symbol on US and names the live value', () => {
     openPanel('subscribeLtp')
     expectSubscribeForm('Real-time: {{ltp}}')
   })
@@ -85,14 +85,14 @@ describe('subscribeLtp (F-590)', () => {
 })
 
 describe('subscribeQuote (F-591)', () => {
-  it('subscribes a symbol on NSE and names the quote fields', () => {
+  it('subscribes a symbol on US and names the quote fields', () => {
     openPanel('subscribeQuote')
     expectSubscribeForm('Use {{quote.ltp}}, {{quote.open}}')
   })
 })
 
 describe('subscribeDepth (F-592)', () => {
-  it('subscribes a symbol on NSE and names the best bid', () => {
+  it('subscribes a symbol on US and names the best bid', () => {
     openPanel('subscribeDepth')
     expectSubscribeForm('Use {{depth.bids[0].price}}')
   })
@@ -112,14 +112,14 @@ describe('unsubscribe (F-593)', () => {
     expect(stored().streamType).toBe('quote')
   })
 
-  it('takes every symbol when the symbol is blank, on NSE', () => {
+  it('takes every symbol when the symbol is blank, on US', () => {
     openPanel('unsubscribe')
     const symbol = under('Symbol', 'input')
     expect(symbol).toHaveValue('')
     expect(symbol).toHaveAttribute('placeholder', 'Empty = all symbols')
     fireEvent.change(symbol, { target: { value: 'SBIN' } })
     expect(stored().symbol).toBe('SBIN')
-    expect(shownUnder('Exchange')).toBe('NSE')
+    expect(shownUnder('Exchange')).toBe('US')
   })
 })
 

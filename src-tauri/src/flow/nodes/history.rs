@@ -378,7 +378,7 @@ impl FlowNode for HistoryNode {
 
     async fn run(&self, ctx: &NodeCtx, data: &Map<String, Value>) -> NodeOutcome {
         let symbol = ctx.get_str(data, "symbol", "");
-        let exchange = ctx.get_str(data, "exchange", "NSE");
+        let exchange = ctx.get_str(data, "exchange", crate::flow::node_contracts::default_exchange());
         let interval = ctx.get_str(data, "interval", "5m");
         let mut start = ctx.get_str(data, "startDate", "");
         let mut end = ctx.get_str(data, "endDate", "");
@@ -445,7 +445,7 @@ impl FlowNode for PriorPeriodOhlcNode {
         // Interpolated once: the web interpolated the symbol twice, so a
         // payload value holding `{{...}}` was resolved again (N-dataCommon-14).
         let symbol = ctx.get_str(data, "symbol", "");
-        let exchange = ctx.get_str(data, "exchange", "NSE");
+        let exchange = ctx.get_str(data, "exchange", crate::flow::node_contracts::default_exchange());
         let period = ctx.get_str(data, "period", "previous_day");
         let source = ctx.get_str(data, "source", "api");
         if symbol.is_empty() {
@@ -510,7 +510,7 @@ impl FlowNode for BarOffsetNode {
 
     async fn run(&self, ctx: &NodeCtx, data: &Map<String, Value>) -> NodeOutcome {
         let symbol = ctx.get_str(data, "symbol", "");
-        let exchange = ctx.get_str(data, "exchange", "NSE");
+        let exchange = ctx.get_str(data, "exchange", crate::flow::node_contracts::default_exchange());
         let interval = ctx.get_str(data, "interval", "D");
         let source = ctx.get_str(data, "source", "api");
         let requested = match ctx.try_get_int(data, "offsetBars", 0) {

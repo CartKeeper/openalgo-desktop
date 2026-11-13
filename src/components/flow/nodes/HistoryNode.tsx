@@ -26,7 +26,7 @@ export const HistoryNode = memo(({ data, selected }: HistoryNodeProps) => {
           </div>
           <div>
             <div className="text-xs font-medium leading-tight">History</div>
-            <div className="text-[9px] text-muted-foreground">{data.exchange || 'NSE'}</div>
+            <div className="text-[9px] text-muted-foreground">{data.exchange || 'US'}</div>
           </div>
         </div>
         <div className="space-y-1">

@@ -111,9 +111,9 @@ describe('F-681 the data nodes', () => {
     ['priorPeriodOhlc', 'Prev Day'],
     ['multiQuotes', 'Multi Quotes'],
     ['symbol', 'Symbol Info'],
-  ])('%s shows its exchange under "%s", NSE when unset', (type, title) => {
+  ])('%s shows its exchange under "%s", US when unset', (type, title) => {
     expect(subtitle(face(type, { exchange: 'BSE' }), title)).toBe('BSE')
-    expect(subtitle(face(type), title)).toBe('NSE')
+    expect(subtitle(face(type), title)).toBe('US')
   })
 
   it.each([
@@ -212,7 +212,7 @@ describe('F-681 the data nodes', () => {
     ['previous_month', 'Prev Month'],
     ['', 'Prev Day'],
   ])('Prior Period OHLC titles a %s period "%s"', (period, title) => {
-    expect(subtitle(face('priorPeriodOhlc', { period }), title)).toBe('NSE')
+    expect(subtitle(face('priorPeriodOhlc', { period }), title)).toBe('US')
   })
 
   it('Strategy P&L names the strategy, this workflow by default', () => {
@@ -393,7 +393,7 @@ describe('F-682 the streaming nodes', () => {
     expect(row(el, 'Output:')).toBe('{{tick}}')
 
     const noOutput = face(type, { symbol: 'SBIN' })
-    expect(row(noOutput, 'Exchange:')).toBe('NSE')
+    expect(row(noOutput, 'Exchange:')).toBe('US')
     expect(has(noOutput, 'Output:')).toBe(false)
 
     const blank = face(type, { exchange: 'BSE', outputVariable: 'tick' })

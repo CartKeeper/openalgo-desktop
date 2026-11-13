@@ -31,7 +31,7 @@ export const SubscribeQuoteNode = memo(({ data, selected }: SubscribeQuoteNodePr
             </div>
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground">Exchange:</span>
-              <span className="mono-data">{data.exchange || 'NSE'}</span>
+              <span className="mono-data">{data.exchange || 'US'}</span>
             </div>
             {data.outputVariable && (
               <div className="flex items-center justify-between">

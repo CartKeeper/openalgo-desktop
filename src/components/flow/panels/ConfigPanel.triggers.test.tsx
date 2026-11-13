@@ -175,11 +175,11 @@ describe('start: schedule type, time and interval (F-530)', () => {
     expect(stored().scheduleType).toBe(value)
   })
 
-  it('shows a time box at 09:15 when none is stored and stores the time typed', () => {
+  it('shows a time box at 09:35 when none is stored and stores the time typed', () => {
     openPanel('start', { scheduleType: 'daily' })
     const time = fieldUnder('Time')
     expect(time).toHaveAttribute('type', 'time')
-    expect(time).toHaveValue('09:15')
+    expect(time).toHaveValue('09:35')
     fireEvent.change(time, { target: { value: '10:30' } })
     expect(stored().time).toBe('10:30')
   })
@@ -293,25 +293,25 @@ describe('start: market hours (F-533)', () => {
   const HELP =
     "The window narrows the exchange's own session; it never reopens a holiday or a weekend. Leave the calendar on the exchange you trade, so MCX and CRYPTO inherit their real hours."
 
-  it('is on by default, 09:15 to 15:15 on the NSE calendar, with the help sentence', () => {
+  it('is on by default, 09:30 to 16:00 on the US calendar, with the help sentence', () => {
     openPanel('start', { scheduleType: 'daily' })
     expect(labelled('Only during market hours')).toBeInTheDocument()
     expect(screen.getByRole('switch')).toBeChecked()
     expect(fieldUnder('Start')).toHaveAttribute('type', 'time')
-    expect(fieldUnder('Start')).toHaveValue('09:15')
+    expect(fieldUnder('Start')).toHaveValue('09:30')
     expect(fieldUnder('End')).toHaveAttribute('type', 'time')
-    expect(fieldUnder('End')).toHaveValue('15:15')
-    expect(triggerUnder('Calendar')).toHaveTextContent('NSE')
+    expect(fieldUnder('End')).toHaveValue('16:00')
+    expect(triggerUnder('Calendar')).toHaveTextContent('US')
     expect(screen.getByText(HELP)).toBeInTheDocument()
   })
 
   it('stores the window and the calendar edited', () => {
     openPanel('start', { scheduleType: 'daily', marketHoursOnly: true })
-    fireEvent.change(fieldUnder('Start'), { target: { value: '09:30' } })
+    fireEvent.change(fieldUnder('Start'), { target: { value: '09:45' } })
     fireEvent.change(fieldUnder('End'), { target: { value: '15:00' } })
     choose('Calendar', 'MCX')
     expect(stored()).toMatchObject({
-      marketHoursStart: '09:30',
+      marketHoursStart: '09:45',
       marketHoursEnd: '15:00',
       marketHoursExchange: 'MCX',
     })
@@ -337,7 +337,7 @@ describe('start: market hours (F-533)', () => {
     openPanel('start', { scheduleType: 'daily', marketHoursOnly: false })
     fireEvent.click(screen.getByRole('switch'))
     expect(stored().marketHoursOnly).toBe(true)
-    expect(fieldUnder('Start')).toHaveValue('09:15')
+    expect(fieldUnder('Start')).toHaveValue('09:30')
   })
 })
 
@@ -346,7 +346,7 @@ describe('priceAlert (F-534)', () => {
     openPanel('priceAlert', {})
     expect(fieldUnder('Symbol')).toHaveAttribute('placeholder', 'RELIANCE')
     expect(fieldUnder('Symbol')).toHaveValue('')
-    expect(triggerUnder('Exchange')).toHaveTextContent('NSE')
+    expect(triggerUnder('Exchange')).toHaveTextContent('US')
     expect(triggerUnder('Condition')).toHaveTextContent('Greater Than')
     expect(fieldUnder('Target Price')).toHaveAttribute('type', 'number')
     expect(fieldUnder('Target Price')).toHaveAttribute('step', '0.05')

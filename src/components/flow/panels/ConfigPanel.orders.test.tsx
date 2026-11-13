@@ -103,9 +103,9 @@ describe('placeOrder (F-540)', () => {
     expect(stored().symbol).toBe('{{webhook.symbol}}')
   })
 
-  it('shows NSE, quantity 1 and Market when none is stored, and no side selected', () => {
+  it('shows US, quantity 1 and Market when none is stored, and no side selected', () => {
     openPanel('placeOrder', { symbol: 'SBIN' })
-    expect(triggerUnder('Exchange')).toHaveTextContent('NSE')
+    expect(triggerUnder('Exchange')).toHaveTextContent('US')
     expect(fieldUnder('Quantity')).toHaveValue(1)
     expect(fieldUnder('Quantity')).toHaveAttribute('min', '1')
     expect(triggerUnder('Price Type')).toHaveTextContent('Market')
@@ -447,9 +447,9 @@ describe('F-541: smartOrder symbol, exchange and price type, as placeOrder', () 
     expect(stored().symbol).toBe('SBIN')
   })
 
-  it('shows NSE and Market when none is stored, and stores nothing until picked', () => {
+  it('shows US and Market when none is stored, and stores nothing until picked', () => {
     openPanel('smartOrder', { symbol: 'SBIN' })
-    expect(triggerUnder('Exchange')).toHaveTextContent(/^NSE$/)
+    expect(triggerUnder('Exchange')).toHaveTextContent(/^US$/)
     expect(triggerUnder('Price Type')).toHaveTextContent(/^Market$/)
     expect(isShown('Price')).toBe(false)
     expect(isShown('Trigger Price')).toBe(false)

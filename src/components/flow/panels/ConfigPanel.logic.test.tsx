@@ -67,12 +67,12 @@ const OPERATORS = ['>', '<', '=', '>=', '<=', '!=']
 beforeEach(() => useFlowWorkflowStore.getState().resetWorkflow())
 
 describe('timeWindow (F-610)', () => {
-  it('shows the 09:15 to 15:30 session when nothing is stored', () => {
+  it('shows the 09:30 to 16:00 session when nothing is stored', () => {
     openPanel('timeWindow')
     expect(inputUnder('Start Time')).toHaveAttribute('type', 'time')
-    expect(inputUnder('Start Time')).toHaveValue('09:15')
+    expect(inputUnder('Start Time')).toHaveValue('09:30')
     expect(inputUnder('End Time')).toHaveAttribute('type', 'time')
-    expect(inputUnder('End Time')).toHaveValue('15:30')
+    expect(inputUnder('End Time')).toHaveValue('16:00')
   })
 
   it('stores the times set', () => {
@@ -142,13 +142,13 @@ describe('timeCondition (F-611)', () => {
 })
 
 describe('priceCondition (F-612)', () => {
-  it('asks for a symbol on NSE', () => {
+  it('asks for a symbol on US', () => {
     openPanel('priceCondition')
     const symbol = inputUnder('Symbol')
     expect(symbol).toHaveAttribute('placeholder', 'RELIANCE')
     fireEvent.change(symbol, { target: { value: 'SBIN' } })
     expect(stored().symbol).toBe('SBIN')
-    expect(shownUnder('Exchange')).toBe('NSE')
+    expect(shownUnder('Exchange')).toBe('US')
   })
 
   it('compares the LTP by default and offers six fields', () => {

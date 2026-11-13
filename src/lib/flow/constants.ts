@@ -1217,18 +1217,19 @@ export const NODE_DEFINITIONS = {
 export const DEFAULT_NODE_DATA = {
   start: {
     scheduleType: 'daily' as const,
-    time: '09:15',
-    // The scheduler has always read these; only the switch had a default, so a
-    // workflow inherited the exchange's full session unless someone edited the
-    // JSON by hand. 15:15 leaves room to square off before the 15:30 close.
+    // This app (WP8): the US market. A new schedule runs at 09:35 ET, inside
+    // the regular 09:30 to 16:00 ET session on the US calendar (the web's was
+    // 09:15, gated 09:15 to 15:15 on NSE). The run reads the same defaults for
+    // a missing field (src-tauri flow::node_contracts).
+    time: '09:35',
     marketHoursOnly: true,
-    marketHoursStart: '09:15',
-    marketHoursEnd: '15:15',
-    marketHoursExchange: 'NSE',
+    marketHoursStart: '09:30',
+    marketHoursEnd: '16:00',
+    marketHoursExchange: 'US',
   },
   priceAlert: {
     symbol: '',
-    exchange: 'NSE',
+    exchange: 'US',
     condition: 'above' as const,
     price: 0,
     // Both are honored at activation; defaults match the panel's own.
@@ -1253,7 +1254,7 @@ export const DEFAULT_NODE_DATA = {
   },
   placeOrder: {
     symbol: '',
-    exchange: 'NSE',
+    exchange: 'US',
     action: 'BUY' as const,
     quantity: 1,
     priceType: 'MARKET' as const,
@@ -1265,7 +1266,7 @@ export const DEFAULT_NODE_DATA = {
   },
   smartOrder: {
     symbol: '',
-    exchange: 'NSE',
+    exchange: 'US',
     action: 'BUY' as const,
     quantity: 1,
     positionSize: 0,
@@ -1283,22 +1284,22 @@ export const DEFAULT_NODE_DATA = {
   },
   subscribeLtp: {
     symbol: '',
-    exchange: 'NSE' as const,
+    exchange: 'US' as const,
     outputVariable: 'ltp',
   },
   subscribeQuote: {
     symbol: '',
-    exchange: 'NSE' as const,
+    exchange: 'US' as const,
     outputVariable: 'quote',
   },
   subscribeDepth: {
     symbol: '',
-    exchange: 'NSE' as const,
+    exchange: 'US' as const,
     outputVariable: 'depth',
   },
   unsubscribe: {
     symbol: '',
-    exchange: 'NSE' as const,
+    exchange: 'US' as const,
     streamType: 'all' as const,
   },
   optionsOrder: {
@@ -1338,7 +1339,7 @@ export const DEFAULT_NODE_DATA = {
   cancelAllOrders: {},
   closePositions: {
     symbol: '',
-    exchange: 'NSE',
+    exchange: 'US',
     // No product: an untouched node follows its exchange, so switching it to a
     // derivative segment shows -- and sends -- NRML while cash stays MIS. A
     // product the author actually picks is stored and wins.
@@ -1363,7 +1364,7 @@ export const DEFAULT_NODE_DATA = {
   },
   splitOrder: {
     symbol: '',
-    exchange: 'NSE',
+    exchange: 'US',
     action: 'BUY' as const,
     quantity: 100,
     splitSize: 50,
@@ -1376,7 +1377,7 @@ export const DEFAULT_NODE_DATA = {
   },
   positionCheck: {
     symbol: '',
-    exchange: 'NSE',
+    exchange: 'US',
     // No product: an untouched node follows its exchange, so switching it to a
     // derivative segment shows -- and sends -- NRML while cash stays MIS. A
     // product the author actually picks is stored and wins.
@@ -1391,7 +1392,7 @@ export const DEFAULT_NODE_DATA = {
   },
   priceCondition: {
     symbol: '',
-    exchange: 'NSE',
+    exchange: 'US',
     field: 'ltp' as const,
     operator: '>' as const,
     value: 0,
@@ -1402,8 +1403,9 @@ export const DEFAULT_NODE_DATA = {
     rightValue: '0',
   },
   timeWindow: {
-    startTime: '09:15',
-    endTime: '15:30',
+    // This app (WP8): the US regular session, 09:30 to 16:00 ET.
+    startTime: '09:30',
+    endTime: '16:00',
   },
   timeCondition: {
     targetTime: '09:30',
@@ -1414,17 +1416,17 @@ export const DEFAULT_NODE_DATA = {
   notGate: {},
   getQuote: {
     symbol: '',
-    exchange: 'NSE',
+    exchange: 'US',
     outputVariable: '',
   },
   getDepth: {
     symbol: '',
-    exchange: 'NSE',
+    exchange: 'US',
     outputVariable: '',
   },
   history: {
     symbol: '',
-    exchange: 'NSE',
+    exchange: 'US',
     interval: '5m' as const,
     // The panel exposes Days; startDate/endDate stay available for an explicit
     // range and take precedence when both are set.
@@ -1435,7 +1437,7 @@ export const DEFAULT_NODE_DATA = {
   },
   indicator: {
     symbol: '',
-    exchange: 'NSE',
+    exchange: 'US',
     interval: 'D',
     source: 'api' as const,
     indicatorName: 'rsi',
@@ -1456,14 +1458,14 @@ export const DEFAULT_NODE_DATA = {
   },
   priorPeriodOhlc: {
     symbol: '',
-    exchange: 'NSE',
+    exchange: 'US',
     period: 'previous_day' as const,
     source: 'api' as const,
     outputVariable: '',
   },
   barOffset: {
     symbol: '',
-    exchange: 'NSE',
+    exchange: 'US',
     interval: 'D',
     source: 'api' as const,
     offsetBars: 0,
@@ -1471,7 +1473,7 @@ export const DEFAULT_NODE_DATA = {
   },
   openPosition: {
     symbol: '',
-    exchange: 'NSE',
+    exchange: 'US',
     // No product: an untouched node follows its exchange, so switching it to a
     // derivative segment shows -- and sends -- NRML while cash stays MIS. A
     // product the author actually picks is stored and wins.
@@ -1548,7 +1550,7 @@ export const DEFAULT_NODE_DATA = {
   },
   symbol: {
     symbol: '',
-    exchange: 'NSE',
+    exchange: 'US',
     outputVariable: '',
   },
   optionSymbol: {
@@ -1571,7 +1573,7 @@ export const DEFAULT_NODE_DATA = {
   },
   multiQuotes: {
     symbols: '',
-    exchange: 'NSE',
+    exchange: 'US',
     // See the note on orderBook: a displayed fallback that is not persisted
     // leaves the variable undefined at run time.
     outputVariable: 'quotes',

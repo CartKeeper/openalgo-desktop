@@ -35,11 +35,11 @@ export const TimeWindowNode = memo(({ data, selected }: TimeWindowNodeProps) => 
         <div className="space-y-1">
           <div className="flex items-center justify-between rounded bg-muted/50 px-1.5 py-1">
             <span className="text-[10px] text-muted-foreground">Start</span>
-            <span className="mono-data text-[10px] font-medium">{data.startTime || '09:15'}</span>
+            <span className="mono-data text-[10px] font-medium">{data.startTime || '09:30'}</span>
           </div>
           <div className="flex items-center justify-between rounded bg-muted/50 px-1.5 py-1">
             <span className="text-[10px] text-muted-foreground">End</span>
-            <span className="mono-data text-[10px] font-medium">{data.endTime || '15:30'}</span>
+            <span className="mono-data text-[10px] font-medium">{data.endTime || '16:00'}</span>
           </div>
           {data.invertCondition && (
             <div className="text-center text-[9px] text-muted-foreground">Outside window</div>

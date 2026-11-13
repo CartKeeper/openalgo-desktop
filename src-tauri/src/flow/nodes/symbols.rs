@@ -101,7 +101,7 @@ impl FlowNode for SymbolNode {
 
     async fn run(&self, ctx: &NodeCtx, data: &Map<String, Value>) -> NodeOutcome {
         let symbol = ctx.get_str(data, "symbol", "");
-        let exchange = ctx.get_str(data, "exchange", "NSE");
+        let exchange = ctx.get_str(data, "exchange", crate::flow::node_contracts::default_exchange());
         ctx.info(format!(
             "Getting symbol info for: {} ({})",
             symbol, exchange

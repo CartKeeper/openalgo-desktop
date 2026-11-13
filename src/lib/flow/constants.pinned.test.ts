@@ -367,19 +367,22 @@ describe('the node catalogue (F-252)', () => {
   })
 })
 
+// This app (WP8): the equity and order nodes start on US (product CNC by their
+// exchange), Start and Time Window on the 09:30 to 16:00 ET session; the option,
+// index and margin nodes keep the web's defaults until Phase D.
 describe('what a new node starts with (F-253..F-258, IND-081)', () => {
   it('triggers (F-253)', () => {
     expect(DEFAULT_NODE_DATA.start).toEqual({
       scheduleType: 'daily',
-      time: '09:15',
+      time: '09:35',
       marketHoursOnly: true,
-      marketHoursStart: '09:15',
-      marketHoursEnd: '15:15',
-      marketHoursExchange: 'NSE',
+      marketHoursStart: '09:30',
+      marketHoursEnd: '16:00',
+      marketHoursExchange: 'US',
     })
     expect(DEFAULT_NODE_DATA.priceAlert).toEqual({
       symbol: '',
-      exchange: 'NSE',
+      exchange: 'US',
       condition: 'above',
       price: 0,
       trigger: 'once',
@@ -398,7 +401,7 @@ describe('what a new node starts with (F-253..F-258, IND-081)', () => {
   it('orders (F-254)', () => {
     expect(DEFAULT_NODE_DATA.placeOrder).toEqual({
       symbol: '',
-      exchange: 'NSE',
+      exchange: 'US',
       action: 'BUY',
       quantity: 1,
       priceType: 'MARKET',
@@ -407,7 +410,7 @@ describe('what a new node starts with (F-253..F-258, IND-081)', () => {
     })
     expect(DEFAULT_NODE_DATA.smartOrder).toEqual({
       symbol: '',
-      exchange: 'NSE',
+      exchange: 'US',
       action: 'BUY',
       quantity: 1,
       positionSize: 0,
@@ -449,7 +452,7 @@ describe('what a new node starts with (F-253..F-258, IND-081)', () => {
     })
     expect(DEFAULT_NODE_DATA.splitOrder).toEqual({
       symbol: '',
-      exchange: 'NSE',
+      exchange: 'US',
       action: 'BUY',
       quantity: 100,
       splitSize: 50,
@@ -460,20 +463,20 @@ describe('what a new node starts with (F-253..F-258, IND-081)', () => {
     expect(DEFAULT_NODE_DATA.modifyOrder).toEqual({ orderId: '' })
     expect(DEFAULT_NODE_DATA.cancelOrder).toEqual({ orderId: '' })
     expect(DEFAULT_NODE_DATA.cancelAllOrders).toEqual({})
-    expect(DEFAULT_NODE_DATA.closePositions).toEqual({ symbol: '', exchange: 'NSE' })
+    expect(DEFAULT_NODE_DATA.closePositions).toEqual({ symbol: '', exchange: 'US' })
   })
 
   it('conditions (F-255)', () => {
     expect(DEFAULT_NODE_DATA.positionCheck).toEqual({
       symbol: '',
-      exchange: 'NSE',
+      exchange: 'US',
       condition: 'exists',
       threshold: 0,
     })
     expect(DEFAULT_NODE_DATA.fundCheck).toEqual({ minAvailable: 10000 })
     expect(DEFAULT_NODE_DATA.priceCondition).toEqual({
       symbol: '',
-      exchange: 'NSE',
+      exchange: 'US',
       field: 'ltp',
       operator: '>',
       value: 0,
@@ -483,7 +486,7 @@ describe('what a new node starts with (F-253..F-258, IND-081)', () => {
       operator: '>',
       rightValue: '0',
     })
-    expect(DEFAULT_NODE_DATA.timeWindow).toEqual({ startTime: '09:15', endTime: '15:30' })
+    expect(DEFAULT_NODE_DATA.timeWindow).toEqual({ startTime: '09:30', endTime: '16:00' })
     expect(DEFAULT_NODE_DATA.timeCondition).toEqual({ targetTime: '09:30', operator: '>=' })
     expect(DEFAULT_NODE_DATA.andGate).toEqual({})
     expect(DEFAULT_NODE_DATA.orGate).toEqual({})
@@ -493,22 +496,22 @@ describe('what a new node starts with (F-253..F-258, IND-081)', () => {
   it('streaming (F-257)', () => {
     expect(DEFAULT_NODE_DATA.subscribeLtp).toEqual({
       symbol: '',
-      exchange: 'NSE',
+      exchange: 'US',
       outputVariable: 'ltp',
     })
     expect(DEFAULT_NODE_DATA.subscribeQuote).toEqual({
       symbol: '',
-      exchange: 'NSE',
+      exchange: 'US',
       outputVariable: 'quote',
     })
     expect(DEFAULT_NODE_DATA.subscribeDepth).toEqual({
       symbol: '',
-      exchange: 'NSE',
+      exchange: 'US',
       outputVariable: 'depth',
     })
     expect(DEFAULT_NODE_DATA.unsubscribe).toEqual({
       symbol: '',
-      exchange: 'NSE',
+      exchange: 'US',
       streamType: 'all',
     })
   })
@@ -545,11 +548,11 @@ describe('what a new node starts with (F-253..F-258, IND-081)', () => {
       waitForCompletion: false,
       outputVariable: 'orderStatus',
     })
-    expect(DEFAULT_NODE_DATA.getQuote).toEqual({ symbol: '', exchange: 'NSE', outputVariable: '' })
-    expect(DEFAULT_NODE_DATA.getDepth).toEqual({ symbol: '', exchange: 'NSE', outputVariable: '' })
+    expect(DEFAULT_NODE_DATA.getQuote).toEqual({ symbol: '', exchange: 'US', outputVariable: '' })
+    expect(DEFAULT_NODE_DATA.getDepth).toEqual({ symbol: '', exchange: 'US', outputVariable: '' })
     expect(DEFAULT_NODE_DATA.history).toEqual({
       symbol: '',
-      exchange: 'NSE',
+      exchange: 'US',
       interval: '5m',
       days: 30,
       startDate: '',
@@ -558,7 +561,7 @@ describe('what a new node starts with (F-253..F-258, IND-081)', () => {
     })
     expect(DEFAULT_NODE_DATA.indicator).toEqual({
       symbol: '',
-      exchange: 'NSE',
+      exchange: 'US',
       interval: 'D',
       source: 'api',
       indicatorName: 'rsi',
@@ -573,14 +576,14 @@ describe('what a new node starts with (F-253..F-258, IND-081)', () => {
     expect(DEFAULT_NODE_DATA.strategyPnl).toEqual({ strategy: '', outputVariable: '' })
     expect(DEFAULT_NODE_DATA.priorPeriodOhlc).toEqual({
       symbol: '',
-      exchange: 'NSE',
+      exchange: 'US',
       period: 'previous_day',
       source: 'api',
       outputVariable: '',
     })
     expect(DEFAULT_NODE_DATA.barOffset).toEqual({
       symbol: '',
-      exchange: 'NSE',
+      exchange: 'US',
       interval: 'D',
       source: 'api',
       offsetBars: 0,
@@ -588,7 +591,7 @@ describe('what a new node starts with (F-253..F-258, IND-081)', () => {
     })
     expect(DEFAULT_NODE_DATA.openPosition).toEqual({
       symbol: '',
-      exchange: 'NSE',
+      exchange: 'US',
       outputVariable: '',
     })
     expect(DEFAULT_NODE_DATA.orderBook).toEqual({ outputVariable: 'orders' })
@@ -596,7 +599,7 @@ describe('what a new node starts with (F-253..F-258, IND-081)', () => {
     expect(DEFAULT_NODE_DATA.positionBook).toEqual({ outputVariable: 'positions' })
     expect(DEFAULT_NODE_DATA.holdings).toEqual({ outputVariable: 'holdings' })
     expect(DEFAULT_NODE_DATA.funds).toEqual({ outputVariable: 'funds' })
-    expect(DEFAULT_NODE_DATA.symbol).toEqual({ symbol: '', exchange: 'NSE', outputVariable: '' })
+    expect(DEFAULT_NODE_DATA.symbol).toEqual({ symbol: '', exchange: 'US', outputVariable: '' })
     expect(DEFAULT_NODE_DATA.optionSymbol).toEqual({
       underlying: 'NIFTY',
       exchange: 'NSE_INDEX',
@@ -613,7 +616,7 @@ describe('what a new node starts with (F-253..F-258, IND-081)', () => {
     expect(DEFAULT_NODE_DATA.intervals).toEqual({ outputVariable: 'intervals' })
     expect(DEFAULT_NODE_DATA.multiQuotes).toEqual({
       symbols: '',
-      exchange: 'NSE',
+      exchange: 'US',
       outputVariable: 'quotes',
     })
     expect(DEFAULT_NODE_DATA.optionChain).toEqual({

@@ -178,13 +178,13 @@ describe('nesting on another indicator (F-566, IND-082)', () => {
 })
 
 describe('the symbol block (F-567, IND-082)', () => {
-  it('asks for a symbol on NSE', () => {
+  it('asks for a symbol on US', () => {
     openPanel({ indicatorName: 'rsi' })
     const symbol = inputUnder('Symbol')
     expect(symbol).toHaveAttribute('placeholder', 'RELIANCE')
     fireEvent.change(symbol, { target: { value: 'INFY' } })
     expect(stored().symbol).toBe('INFY')
-    expect(shownUnder('Exchange')).toBe('NSE')
+    expect(shownUnder('Exchange')).toBe('US')
   })
 
   it('shows a daily interval when none is stored and takes any interval as text', () => {

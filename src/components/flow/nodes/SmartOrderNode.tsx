@@ -26,7 +26,7 @@ export const SmartOrderNode = memo(({ data, selected }: SmartOrderNodeProps) => 
           </div>
           <div>
             <div className="text-xs font-medium leading-tight">Smart Order</div>
-            <div className="text-[9px] text-muted-foreground">{data.exchange || 'NSE'}</div>
+            <div className="text-[9px] text-muted-foreground">{data.exchange || 'US'}</div>
           </div>
         </div>
         <div className="space-y-1">
@@ -55,7 +55,7 @@ export const SmartOrderNode = memo(({ data, selected }: SmartOrderNodeProps) => 
           </div>
           <div className="flex items-center justify-between text-[9px] text-muted-foreground">
             <span>{data.priceType || 'MARKET'}</span>
-            <span>{data.product || defaultProductForExchange(data.exchange)}</span>
+            <span>{data.product || defaultProductForExchange(data.exchange || 'US')}</span>
           </div>
         </div>
       </div>

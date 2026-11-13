@@ -6,6 +6,9 @@
  * N-optionsOrder-01, N-optionsMultiOrder-02, N-cancelOrder-01,
  * N-cancelAllOrders-01, N-closePositions-01, N-modifyOrder-01,
  * N-basketOrder-01, N-splitOrder-01).
+ *
+ * This app (WP8): the equity and order nodes start on US (their product
+ * follows the exchange to CNC); the options nodes keep the web's defaults.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -19,7 +22,7 @@ describe('the order nodes start from the web defaults', () => {
       'placeOrder',
       {
         symbol: '',
-        exchange: 'NSE',
+        exchange: 'US',
         action: 'BUY',
         quantity: 1,
         priceType: 'MARKET',
@@ -31,7 +34,7 @@ describe('the order nodes start from the web defaults', () => {
       'smartOrder',
       {
         symbol: '',
-        exchange: 'NSE',
+        exchange: 'US',
         action: 'BUY',
         quantity: 1,
         positionSize: 0,
@@ -74,14 +77,14 @@ describe('the order nodes start from the web defaults', () => {
     ],
     ['cancelOrder', { orderId: '' }],
     ['cancelAllOrders', {}],
-    ['closePositions', { symbol: '', exchange: 'NSE' }],
+    ['closePositions', { symbol: '', exchange: 'US' }],
     ['modifyOrder', { orderId: '' }],
     ['basketOrder', { orders: '', priceType: 'MARKET', price: 0, triggerPrice: 0 }],
     [
       'splitOrder',
       {
         symbol: '',
-        exchange: 'NSE',
+        exchange: 'US',
         action: 'BUY',
         quantity: 100,
         splitSize: 50,

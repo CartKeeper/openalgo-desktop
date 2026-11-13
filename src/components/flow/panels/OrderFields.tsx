@@ -51,7 +51,7 @@ export function ExchangeField({
   value,
   onChange,
   label = 'Exchange',
-  fallback = 'NSE',
+  fallback = 'US',
 }: FieldProps) {
   return (
     <TemplatableField

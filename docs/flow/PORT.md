@@ -591,15 +591,16 @@ those files.
   trigger does not fire, and a Telegram Alert node stops with "Telegram is
   not set up". Phase C replaces that item when it connects them.
 
-### Bundle note: a manual chunk this phase could not add
+### Bundle note: React Flow's own chunk (applied in Follow-up 3)
 
-`vite.config.ts` is outside WP8's files, so this was reported, not
-changed. Its `manualChunks` rule `id.includes('/react/')` also matches
-`node_modules/@xyflow/react/`, so React Flow lands in `vendor-react`, the
-chunk every page loads: `vendor-react` grows from 220.54 kB to 358.34 kB
+First reported (`vite.config.ts` was outside WP8's files), then applied
+with the coordinator's authorization (Follow-up 3 below). Before it, the
+`manualChunks` rule `id.includes('/react/')` also matched
+`node_modules/@xyflow/react/`, so React Flow landed in `vendor-react`, the
+chunk every page loads: `vendor-react` grew from 220.54 kB to 358.34 kB
 (minified) with a 15.87 kB stylesheet, and because React Flow imports
 `d3-zoom`/`d3-drag`/`d3-selection` (the `vendor-charts` rule), the entry
-now also preloads `vendor-charts` (247.33 kB) on every page. Measured with
+also preloaded `vendor-charts` (247.33 kB) on every page. Measured with
 a copy of the config outside the repository, these two rules put React
 Flow in a `vendor-flow` chunk (136.49 kB + 15.87 kB CSS) that only the
 `/flow/editor` route loads, return `vendor-react` to 220.55 kB, and take
@@ -650,15 +651,10 @@ The first rule matters: without it Rollup's CommonJS helpers land in
   saved after 1:30 PM ET (2:30 PM in summer) shows the next day's date,
   and the Execution Log's times are 24-hour (`ExecutionLogPanel.tsx`).
   CLAUDE.md asks for America/New_York, 12-hour with AM/PM: plan Task D4.
-- **New nodes carry upstream's NSE defaults.** Every node defaults to
-  exchange NSE. A new Start node defaults to a daily 09:15 run with "Only
-  during market hours" on, a window of 09:15–15:15 and the calendar NSE;
-  Time Window defaults to 09:15–15:30. In this app a node's window replaces
-  a side of the US session (`nodes/timing.rs`), so a default Start node's
-  09:15 ET run passes the gate before the 9:30 AM ET open, and its 15:15
-  end shuts the last 45 minutes. The spec fixes market hours at 9:30 AM to
-  4:00 PM ET; the default schedule time, window, calendar and exchange are
-  the user's to choose.
+- **New nodes carried upstream's NSE defaults** (exchange NSE, a 09:15
+  daily schedule gated 09:15–15:15 on NSE, a 09:15–15:30 Time Window,
+  which in this app let a default schedule run before the 9:30 AM ET open)
+  until Follow-up 2 below gave them this app's US defaults.
 - **The carried Flow UI keeps upstream's styling, not this app's design
   tokens.** The Flow editor CSS block has literal colors (handle and node
   glow `#e879f9`/`#22d3ee`, edges `#888888`, the hovered edge `#ffffff`),
@@ -702,3 +698,72 @@ files, opened to this phase for it):
   neither its log nor its event carries it; nested keys are masked. The
   test-only `handlers::emitted` records what the handlers emit on the
   test's thread (a headless state has no window).
+
+### Follow-up 2: US defaults for new nodes (coordinator-decided)
+
+The defaults a new node gets in the editor, and the ones the run reads for
+a field a saved node lacks, are this app's US market now (the coordinator's
+decision under the user's delegation):
+
+- **Start**: `time: '09:35'`, `marketHoursOnly: true`, `marketHoursStart:
+  '09:30'`, `marketHoursEnd: '16:00'`, `marketHoursExchange: 'US'` (was a
+  09:15 run gated 09:15–15:15 on NSE, which in this app let a default
+  schedule run before the 9:30 AM ET open). **Time Window**: 09:30 to 16:00.
+- **Equity and order nodes** whose default exchange was `NSE` start on `US`:
+  Price Alert, Place Order, Smart Order, Split Order, Close Positions,
+  Position Check, Price Condition, Get Quote, Get Depth, Multi Quotes,
+  History, Indicator, Prior Period OHLC, Bar Offset, Open Position, Symbol,
+  and the four streaming nodes. They store no product: it follows the
+  exchange, so `US` reads CNC (`defaultProductForExchange`), on the face and
+  in the panel as in the run.
+- **Kept as upstream** until Phase D's US lookups (Task D2): the option and
+  index nodes (`optionsOrder`/`optionsMultiOrder` NSE_INDEX with NRML,
+  `optionSymbol`, `optionChain`, `syntheticFuture` NSE_INDEX, `expiry` NFO)
+  and Margin (NSE: it needs an Indian broker). The Indian exchanges stay
+  selectable beside the US venues.
+- **The editor's fallbacks for a missing field** (`src/lib/flow/constants.ts`
+  defaults, `ConfigPanel.tsx`'s Time, Start, End, Calendar, Start Time, End
+  Time and every equity or order node's Exchange, `OrderFields.tsx`'s
+  `ExchangeField` fallback, the Product control and the node faces'
+  exchange, time and product) read the same values.
+- **The run's fallbacks** read them too: `flow::node_contracts::{
+  default_exchange, default_schedule_time, default_time_window}` replace the
+  literal `"NSE"` of the 17 equity and order node fallbacks (`nodes/data.rs`,
+  `history.rs`, `streaming.rs`, `conditions.rs`, `triggers.rs`,
+  `symbols.rs`, `indicator.rs`, `orders.rs`), the scheduler's `"09:15"`
+  (`triggers/scheduler.rs`) and the Time Window's `"09:15"`/`"15:30"`
+  (`nodes/timing.rs`). Margin's fallback stays `"NSE"`. Under test, a run
+  replaying OpenAlgo web (market zone set to IST, as the goldens and the
+  tests ported from the web set it) reads the web's NSE, 09:15 and
+  09:15–15:30, so that evidence holds unchanged: all six golden families
+  still match.
+- **Help** (`flowHelp.ts`): a new node starts on the US exchange, product
+  CNC, with the Indian exchanges still in the list; a new Schedule runs at
+  9:35 AM ET held to the session, and a new Time Window covers it.
+- **Tests added**: `src/lib/flow/usDefaults.test.ts` (a new Start node's
+  defaults, Time Window, every equity or order node on US with CNC, the
+  option/index/margin nodes unchanged, Indian exchanges selectable);
+  `src/components/flow/usDefaults.test.tsx` (the panel and the faces for a
+  node saved without its exchange, times or product); Rust
+  `node_contracts::us_default_tests`, `nodes::data_tests::us_defaults`
+  (Get Quote with no exchange asks for US),
+  `scheduler::market_time_tests::a_daily_schedule_without_a_time_runs_at_0935_eastern`,
+  `timing::tests::eastern::a_time_window_without_times_is_the_us_regular_session`.
+- **Carried tests updated** (they pinned upstream's defaults): frontend
+  `constants.pinned.test.ts` (new-node defaults), `marketHoursDefaults.test.ts`,
+  `orderNodeDefaults.test.ts`, `nodeFaces.pinned.test.tsx`,
+  `nodeFaces.data.pinned.test.tsx`, `ConfigPanel.{data, desktop, indicator,
+  logic, orders, streaming, triggers}.test.tsx` and `OrderFields.test.tsx`
+  (the unset value read as US, 09:35, 09:30–16:00 or CNC; "stores the
+  window edited" now types 09:45, since 09:30 is the default and React
+  fires no change for it; the desktop test reads `default_exchange()` in
+  `history.rs` instead of the literal); Rust `nodes/streaming/tests.rs` and
+  `nodes/triggers/tests.rs` (ported from the web, their harnesses now set
+  the IST web replay, as the other ported tests do).
+
+### Follow-up 3: React Flow's own chunk
+
+`vite.config.ts` gains the two rules in the bundle note above
+(`commonjsHelpers` → `vendor-react` before the `node_modules` check,
+`/@xyflow/` → `vendor-flow` before the React rule), with the coordinator's
+authorization.

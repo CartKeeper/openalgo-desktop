@@ -345,11 +345,13 @@ export function ConfigPanel() {
   // the node and always wins; with none stored the node follows its exchange,
   // so a derivative segment reads NRML and cash reads MIS. Options nodes trade
   // a derivative whatever their underlying's exchange field happens to be.
+  // This app (WP8): a US venue reads CNC, and a node saved without an
+  // exchange is on US, as the run resolves it (node_contracts::default_exchange).
   const nodeProduct =
     (nodeData.product as string) ||
     (nodeType === 'optionsOrder' || nodeType === 'optionsMultiOrder'
       ? OPTION_NODE_PRODUCT
-      : defaultProductForExchange(nodeData.exchange as string | undefined))
+      : defaultProductForExchange((nodeData.exchange as string) || 'US'))
   const basketOrders = nodeData.orders as string | BasketOrderItem[] | undefined
   const nodeTitle = NODE_TITLES[nodeType] || nodeInfo?.label || nodeType
 
@@ -412,7 +414,7 @@ export function ConfigPanel() {
                     <Input
                       type="time"
                       className="h-8"
-                      value={(nodeData.time as string) || '09:15'}
+                      value={(nodeData.time as string) || '09:35'}
                       onChange={(e) => handleDataChange('time', e.target.value)}
                     />
                   </div>
@@ -535,7 +537,7 @@ export function ConfigPanel() {
                         <Input
                           type="time"
                           className="h-8"
-                          value={(nodeData.marketHoursStart as string) || '09:15'}
+                          value={(nodeData.marketHoursStart as string) || '09:30'}
                           onChange={(e) => handleDataChange('marketHoursStart', e.target.value)}
                         />
                       </div>
@@ -544,14 +546,14 @@ export function ConfigPanel() {
                         <Input
                           type="time"
                           className="h-8"
-                          value={(nodeData.marketHoursEnd as string) || '15:15'}
+                          value={(nodeData.marketHoursEnd as string) || '16:00'}
                           onChange={(e) => handleDataChange('marketHoursEnd', e.target.value)}
                         />
                       </div>
                     </div>
                     <ExchangeField
                       label="Calendar"
-                      value={(nodeData.marketHoursExchange as string) || 'NSE'}
+                      value={(nodeData.marketHoursExchange as string) || 'US'}
                       onChange={(v) => handleDataChange('marketHoursExchange', v)}
                     />
                     <p className="text-[10px] text-muted-foreground">
@@ -577,7 +579,7 @@ export function ConfigPanel() {
                   />
                 </div>
                 <ExchangeField
-                  value={(nodeData.exchange as string) || 'NSE'}
+                  value={(nodeData.exchange as string) || 'US'}
                   onChange={(v) => handleDataChange('exchange', v)}
                 />
                 <div className="space-y-2">
@@ -868,7 +870,7 @@ export function ConfigPanel() {
                   />
                 </div>
                 <ExchangeField
-                  value={(nodeData.exchange as string) || 'NSE'}
+                  value={(nodeData.exchange as string) || 'US'}
                   onChange={(v) => handleDataChange('exchange', v)}
                 />
                 <ActionField
@@ -922,7 +924,7 @@ export function ConfigPanel() {
                   />
                 </div>
                 <ExchangeField
-                  value={(nodeData.exchange as string) || 'NSE'}
+                  value={(nodeData.exchange as string) || 'US'}
                   onChange={(v) => handleDataChange('exchange', v)}
                 />
                 <ActionField
@@ -1465,7 +1467,7 @@ export function ConfigPanel() {
                   />
                 </div>
                 <ExchangeField
-                  value={(nodeData.exchange as string) || 'NSE'}
+                  value={(nodeData.exchange as string) || 'US'}
                   onChange={(v) => handleDataChange('exchange', v)}
                 />
                 <ActionField
@@ -1575,7 +1577,7 @@ export function ConfigPanel() {
                 {Boolean(nodeData.symbol) && (
                   <>
                     <ExchangeField
-                      value={(nodeData.exchange as string) || 'NSE'}
+                      value={(nodeData.exchange as string) || 'US'}
                       onChange={(v) => handleDataChange('exchange', v)}
                     />
                     <ProductField
@@ -1643,7 +1645,7 @@ export function ConfigPanel() {
                   />
                 </div>
                 <ExchangeField
-                  value={(nodeData.exchange as string) || 'NSE'}
+                  value={(nodeData.exchange as string) || 'US'}
                   onChange={(v) => handleDataChange('exchange', v)}
                 />
                 <div className="space-y-2">
@@ -1671,7 +1673,7 @@ export function ConfigPanel() {
                   />
                 </div>
                 <ExchangeField
-                  value={(nodeData.exchange as string) || 'NSE'}
+                  value={(nodeData.exchange as string) || 'US'}
                   onChange={(v) => handleDataChange('exchange', v)}
                 />
                 <div className="space-y-2">
@@ -1731,7 +1733,7 @@ export function ConfigPanel() {
                   />
                 </div>
                 <ExchangeField
-                  value={(nodeData.exchange as string) || 'NSE'}
+                  value={(nodeData.exchange as string) || 'US'}
                   onChange={(v) => handleDataChange('exchange', v)}
                 />
                 <ProductField
@@ -1763,7 +1765,7 @@ export function ConfigPanel() {
                   />
                 </div>
                 <ExchangeField
-                  value={(nodeData.exchange as string) || 'NSE'}
+                  value={(nodeData.exchange as string) || 'US'}
                   onChange={(v) => handleDataChange('exchange', v)}
                 />
                 <div className="space-y-2">
@@ -1881,7 +1883,7 @@ export function ConfigPanel() {
                       />
                     </div>
                     <ExchangeField
-                      value={(nodeData.exchange as string) || 'NSE'}
+                      value={(nodeData.exchange as string) || 'US'}
                       onChange={(v) => handleDataChange('exchange', v)}
                     />
                     <div className="space-y-2">
@@ -2032,7 +2034,7 @@ export function ConfigPanel() {
                   />
                 </div>
                 <ExchangeField
-                  value={(nodeData.exchange as string) || 'NSE'}
+                  value={(nodeData.exchange as string) || 'US'}
                   onChange={(v) => handleDataChange('exchange', v)}
                 />
                 <div className="space-y-2">
@@ -2095,7 +2097,7 @@ export function ConfigPanel() {
                   />
                 </div>
                 <ExchangeField
-                  value={(nodeData.exchange as string) || 'NSE'}
+                  value={(nodeData.exchange as string) || 'US'}
                   onChange={(v) => handleDataChange('exchange', v)}
                 />
                 <div className="space-y-2">
@@ -2208,7 +2210,7 @@ export function ConfigPanel() {
                   />
                 </div>
                 <ExchangeField
-                  value={(nodeData.exchange as string) || 'NSE'}
+                  value={(nodeData.exchange as string) || 'US'}
                   onChange={(v) => handleDataChange('exchange', v)}
                 />
                 <div className="space-y-2">
@@ -2621,7 +2623,7 @@ export function ConfigPanel() {
                   />
                 </div>
                 <ExchangeField
-                  value={(nodeData.exchange as string) || 'NSE'}
+                  value={(nodeData.exchange as string) || 'US'}
                   onChange={(v) => handleDataChange('exchange', v)}
                 />
                 <div className="space-y-2">
@@ -2649,7 +2651,7 @@ export function ConfigPanel() {
                   />
                 </div>
                 <ExchangeField
-                  value={(nodeData.exchange as string) || 'NSE'}
+                  value={(nodeData.exchange as string) || 'US'}
                   onChange={(v) => handleDataChange('exchange', v)}
                 />
                 <div className="space-y-2">
@@ -2679,7 +2681,7 @@ export function ConfigPanel() {
                   />
                 </div>
                 <ExchangeField
-                  value={(nodeData.exchange as string) || 'NSE'}
+                  value={(nodeData.exchange as string) || 'US'}
                   onChange={(v) => handleDataChange('exchange', v)}
                 />
                 <div className="space-y-2">
@@ -2726,7 +2728,7 @@ export function ConfigPanel() {
                   />
                 </div>
                 <ExchangeField
-                  value={(nodeData.exchange as string) || 'NSE'}
+                  value={(nodeData.exchange as string) || 'US'}
                   onChange={(v) => handleDataChange('exchange', v)}
                 />
               </>
@@ -3064,7 +3066,7 @@ export function ConfigPanel() {
                   <Input
                     type="time"
                     className="h-8"
-                    value={(nodeData.startTime as string) || '09:15'}
+                    value={(nodeData.startTime as string) || '09:30'}
                     onChange={(e) => handleDataChange('startTime', e.target.value)}
                   />
                 </div>
@@ -3073,7 +3075,7 @@ export function ConfigPanel() {
                   <Input
                     type="time"
                     className="h-8"
-                    value={(nodeData.endTime as string) || '15:30'}
+                    value={(nodeData.endTime as string) || '16:00'}
                     onChange={(e) => handleDataChange('endTime', e.target.value)}
                   />
                 </div>
@@ -3167,7 +3169,7 @@ export function ConfigPanel() {
                   />
                 </div>
                 <ExchangeField
-                  value={(nodeData.exchange as string) || 'NSE'}
+                  value={(nodeData.exchange as string) || 'US'}
                   onChange={(v) => handleDataChange('exchange', v)}
                 />
                 <div className="space-y-2">
@@ -3279,7 +3281,7 @@ export function ConfigPanel() {
                   />
                 </div>
                 <ExchangeField
-                  value={(nodeData.exchange as string) || 'NSE'}
+                  value={(nodeData.exchange as string) || 'US'}
                   onChange={(v) => handleDataChange('exchange', v)}
                 />
                 <ProductField
