@@ -9,22 +9,9 @@
 //! `run_scheduled`), so nothing here waits on wall time; run times are
 //! read back as stored (UTC).
 
+use super::support::eastern;
 use super::*;
 use crate::flow::store::executions;
-
-/// The harness in Eastern time, signed in, with the app's own trigger side
-/// stopped: its start-up restore runs on a task of its own and would
-/// register the workflows saved below a second time.
-async fn eastern(now: &str) -> crate::state::testing::TestCtx {
-    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::America::New_York);
-    let t = crate::state::testing::build(
-        crate::brokers::BrokerRegistry::new(),
-        now.parse().unwrap(),
-    );
-    t.ctx.flow.triggers().stop().await;
-    crate::flow::support::testkit::sign_in(&t.ctx);
-    t
-}
 
 fn utc(s: &str) -> chrono::DateTime<chrono::Utc> {
     s.parse().unwrap()

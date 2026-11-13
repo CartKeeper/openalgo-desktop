@@ -182,14 +182,21 @@ impl TriggerSide {
         };
         let client = AppFlowClient::new(Arc::downgrade(&app), key);
         drop(app);
-        for alert in self.alerts.to_check() {
-            self.check_alert(&client, alert).await;
-        }
+        self.check_alerts(&client).await;
         false
     }
 
+    /// Every armed alert against a quote from `client`: the app's own
+    /// `/api/v1/quotes` (`QuotesService::get_quote`, in process) in the poll,
+    /// a scripted client in the tests.
+    pub(crate) async fn check_alerts(self: &Arc<Self>, client: &dyn FlowClient) {
+        for alert in self.alerts.to_check() {
+            self.check_alert(client, alert).await;
+        }
+    }
+
     /// One alert (`_check_alert`).
-    async fn check_alert(self: &Arc<Self>, client: &AppFlowClient, alert: Alert) {
+    async fn check_alert(self: &Arc<Self>, client: &dyn FlowClient, alert: Alert) {
         let id = alert.workflow_id;
         if alert.expired(self.now()) {
             tracing::info!(

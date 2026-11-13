@@ -579,6 +579,7 @@ mod eastern;
 mod lifecycle;
 mod monitor_runs;
 mod price_logs;
+mod price_poll;
 mod restart;
 mod schedule_logs;
 mod service_logs;

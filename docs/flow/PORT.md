@@ -829,3 +829,30 @@ Live-mode confirmation on activation.
   Tests that capture with `flow::support::testkit::capture_logs` (outside
   Phase C's files) get the same protection once any `logged()` has run in
   the process.
+
+### Task C2: price alerts on the quote poll
+
+- The price monitor was carried: every 5 s while an alert is armed, each
+  alert asks for its quote through this app's own `/api/v1/quotes` in
+  process (`QuotesService::get_quote` on the broker session; Alpaca reads
+  the symbol and ignores the venue, so `US` works) and applies its
+  condition; while signed out the poll pauses (logged once); with no broker
+  logged in each quote fails at debug level and nothing fires.
+- **Hand edit** (`triggers/drive.rs`): `check_alerts(client: &dyn
+  FlowClient)` split out of `check_prices` (and `check_alert` takes any
+  `FlowClient`), so a test scripts the quotes. The poll's behaviour is
+  unchanged.
+- Tests (`triggers/tests/price_poll.rs`, Eastern time): "crosses above 190"
+  on AAPL fires once when the quote goes 189 -> 191, not again at 192, and
+  the one-time alert stands its workflow down; an every-time alert fires on
+  each new cross and never while the price stays above; one run at a time
+  per workflow (a second cross while the first run is queued is dropped);
+  an alert past its one-hour window stands down without asking for a quote.
+- Against the plan: the poll keeps upstream's in-process `/api/v1/quotes`
+  call instead of calling `QuotesService::get_quote` directly; the handler
+  calls it, with the key check, the rate limit and the reply shape the
+  monitor reads.
+- Not changed: `price_monitor::Alert::from_node` keeps upstream's `NSE` for
+  a node with no exchange. It cannot be reached here: the strict validator
+  refuses a Price Alert without an exchange before activation, and a new
+  node stores `US`.

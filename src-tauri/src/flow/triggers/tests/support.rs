@@ -97,3 +97,18 @@ pub(super) fn keyed() -> crate::state::testing::TestCtx {
     crate::flow::support::testkit::sign_in(&t.ctx);
     t
 }
+
+/// The harness in this app's market zone (America/New_York) at `now`,
+/// signed in, with the app's own trigger side stopped: its start-up restore
+/// runs on a task of its own and would register the workflows a test saves
+/// a second time (WP8 Phase C).
+pub(super) async fn eastern(now: &str) -> crate::state::testing::TestCtx {
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::America::New_York);
+    let t = crate::state::testing::build(
+        crate::brokers::BrokerRegistry::new(),
+        now.parse().unwrap(),
+    );
+    t.ctx.flow.triggers().stop().await;
+    crate::flow::support::testkit::sign_in(&t.ctx);
+    t
+}
