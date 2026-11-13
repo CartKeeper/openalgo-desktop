@@ -456,7 +456,15 @@ impl Schedule {
                 }
                 let step = every.num_seconds().max(1);
                 let k = ((t - *start).num_seconds() + step - 1) / step;
-                Some(*start + Duration::seconds(k * step))
+                let next = *start + Duration::seconds(k * step);
+                // Whole seconds truncate a fraction: a `t` a few ms past a
+                // fire (the tick's `now + 1 ms`) gave that fire back, and the
+                // driver fired it again every 50 ms for a second (WP8 Phase C).
+                Some(if next < t {
+                    next + Duration::seconds(step)
+                } else {
+                    next
+                })
             }
             Schedule::Once { at } => (*at >= t).then_some(*at),
             _ => {

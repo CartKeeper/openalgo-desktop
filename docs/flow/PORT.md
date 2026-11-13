@@ -767,3 +767,65 @@ decision under the user's delegation):
 (`commonjsHelpers` → `vendor-react` before the `node_modules` check,
 `/@xyflow/` → `vendor-flow` before the React rule), with the coordinator's
 authorization.
+
+## Phase C — triggers and Telegram alerts (`wp8c-flow-triggers`)
+
+Phase A carried the trigger side (scheduler, price monitor, order-update
+monitor, start-up restore) and installs it at app start (`flow::start` ->
+`TriggerSide::install`). Phase C proves it in Eastern time, fixes what the
+proof found, connects what this app lacked (the public webhook route, an
+order-book poller in place of upstream's event bus, Telegram), and adds the
+Live-mode confirmation on activation.
+
+### Task C1: schedules in Eastern time
+
+- `triggers/tests/eastern.rs` (new): the plan's C1 list on the headless
+  harness, market zone `America/New_York`, a manual clock, each fire stepped
+  as the driver steps it (`Scheduler::tick`, then `run_scheduled`), so no
+  test waits on wall time. Every 1 minute activated at 10:00:30 AM ET runs at
+  10:01:02 and 10:02:02 AM ET (upstream's alignment, the minute plus 2 s) and
+  not between; a daily 9:35 AM ET schedule runs once a day, at 13:35Z while
+  the zone is EDT and 14:35Z after 2026-11-01 (Review Focus 2); a one-time
+  10:05 AM ET schedule runs once and stands its workflow down; a fire while
+  signed out is recorded with the reason and the next fire after sign-in
+  runs; reopening the app (`AppState::open` on the same folder) registers an
+  active schedule again and records its next fire.
+- **Fix, hand edit to a carried file** (`triggers/scheduler.rs`,
+  `Schedule::next_at_or_after`): an interval's next fire was computed on
+  whole seconds, so for a time a few milliseconds after a fire (the tick asks
+  from `now + 1 ms`) it answered that same fire. The driver, which re-ticks
+  at most every 50 ms while something is due, then fired an interval
+  schedule again and again for the first second after each fire: a short
+  run ran again, and a Place Order node sent again. The answer is now never
+  before the time asked. Test `a_fire_moves_an_interval_job_a_whole_interval_on`
+  (failed first: the next fire stayed `15:03:02Z`).
+- Against the plan: the "tokio 1 s tick task owned by `FlowModule::spawn`"
+  is upstream's driver instead (sleeps until the next fire, at most 60 s,
+  woken when a job is added, owned by `TriggerSide`, stopped by
+  `TriggerHooks::stop`); and a signed-out fire is recorded as upstream
+  records it (status `failed`, error "Skipped: OpenAlgo was signed out when
+  this schedule fired, …"), not with a `skipped` status the run history
+  does not know.
+- Times: run records are stored in UTC (`flow_workflow_executions.started_at`
+  and `completed_at`, `flow_workflows.next_run_at`); the lines inside a run's
+  log carry market time (upstream's `iso_market`). Showing them in Eastern
+  12-hour time is Phase D's Task D4.
+
+### The flaky `lifecycle::a_monitor_run_logs_its_result`
+
+- Cause, found from the failing run's own log: the run had finished (its
+  one-shot watch was retired) and only two lines were missing, both
+  `drive.rs` call sites the test thread itself reached. tracing-core caches,
+  for the whole process, whether any subscriber wants a call site and the
+  highest level any wants; while at most one subscriber is registered it
+  asks only the current thread's, so a line first logged on a thread with
+  no subscriber (another test's task) was cached as off everywhere until
+  the next registration. A longer wait could never have seen it.
+- Fix (`triggers/tests/support.rs`, `triggers/tests/lifecycle.rs`):
+  `logged()` installs once per test process a global subscriber that wants
+  every line and prints none (a bare `tracing_subscriber::registry()`), so
+  no call site is cached off; and the test waits on the side's run tasks
+  (`settle`, a join, no time bound) instead of polling the log for 5 s.
+  Tests that capture with `flow::support::testkit::capture_logs` (outside
+  Phase C's files) get the same protection once any `logged()` has run in
+  the process.
