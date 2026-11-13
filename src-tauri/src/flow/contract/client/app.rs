@@ -106,12 +106,82 @@ fn with_broker_cause(app: &AppState, mut out: Value) -> Value {
     out
 }
 
+/// The brokers whose contracts and margin service the web's Indian
+/// lookups read (this app's Indian adapters).
+const INDIAN_BROKERS: &[&str] = &["zerodha", "angel", "fyers"];
+
+/// The calls that read an Indian broker's option contracts when their
+/// exchange is an Indian one (an index's options, expiries, chain).
+const CONTRACT_LOOKUPS: &[&str] = &[
+    "optionsorder",
+    "optionsmultiorder",
+    "optionsymbol",
+    "optionchain",
+    "syntheticfuture",
+    "expiry",
+];
+
+/// The node's error for a call that needs an Indian broker while another
+/// broker is logged in (WP8 Global Constraints: margin and index lookups
+/// that need an Indian broker answer a clear node error, never an empty
+/// list or a margin of zero). `None` lets the call through: an Indian
+/// broker, no broker at all (the handlers name that cause), or a US or
+/// crypto exchange.
+fn needs_an_indian_broker(app: &AppState, call: &ApiCall) -> Option<Value> {
+    let session = app.get_broker_session()?;
+    if INDIAN_BROKERS.contains(&session.broker_id.as_str()) {
+        return None;
+    }
+    let broker = app
+        .brokers
+        .get(&session.broker_id)
+        .map(|b| b.name().to_string())
+        .unwrap_or(session.broker_id);
+    let tail = format!(
+        "log in to Zerodha, Angel One or Fyers. The broker logged in now ({}) trades US markets in this app.",
+        broker
+    );
+    let refusal = |message: String| json!({"status": "error", "error": message, "code": 400});
+    if call.endpoint == "margin" {
+        return Some(refusal(format!(
+            "Margin needs an Indian broker's margin calculator: {}",
+            tail
+        )));
+    }
+    if !CONTRACT_LOOKUPS.contains(&call.endpoint) {
+        return None;
+    }
+    let field = |k: &str| {
+        call.payload
+            .get(k)
+            .and_then(Value::as_str)
+            .map(|v| v.trim().to_uppercase())
+            .unwrap_or_default()
+    };
+    let exchange = field("exchange");
+    if exchange.is_empty() || exchange == "CRYPTO" || crate::flow::support::is_us_venue(&exchange) {
+        return None;
+    }
+    let mut what = field("underlying");
+    if what.is_empty() {
+        what = field("symbol");
+    }
+    Some(refusal(format!(
+        "{} on {} needs an Indian broker: {}",
+        what, exchange, tail
+    )))
+}
+
 #[async_trait]
 impl FlowClient for AppFlowClient {
     async fn api(&self, call: ApiCall) -> Value {
         let Some(app) = self.app.upgrade() else {
             return json!({"status": "error", "error": "OpenAlgo is shutting down.", "code": 503});
         };
+        if let Some(refusal) = needs_an_indian_broker(&app, &call) {
+            tracing::info!("Flow {}: {}", call.method, refusal["error"]);
+            return refusal;
+        }
         // Strike-mode legs and a scoped close: the public schemas cannot
         // carry them, so they take Flow's internal entry (nodes-orders).
         if let Some(which) = crate::flow::nodes::internal::route(&call) {
@@ -263,6 +333,138 @@ mod tests {
             .await;
         assert_eq!(out["status"], "error", "{}", out);
         assert_eq!(out["error"], crate::flow::support::NO_BROKER_SESSION, "{}", out);
+    }
+
+    /// The harness with `broker` logged in (no call reaches the broker in
+    /// these tests: the handlers they reach read only the app).
+    fn logged_in(broker: &str) -> (TestCtx, AppFlowClient) {
+        let (t, client) = harness(false);
+        t.ctx.set_broker_session(Some(crate::state::BrokerSession {
+            broker_id: broker.into(),
+            auth_token: "key:secret".into(),
+            feed_token: None,
+            user_id: "ACCOUNT1".into(),
+            user_name: None,
+            authenticated_at: chrono::Utc::now(),
+        }));
+        (t, client)
+    }
+
+    /// Task D2 (Global Constraints): margin needs an Indian broker's margin
+    /// calculator. With a US broker logged in the node reads one sentence
+    /// naming what to log in to, never a margin of zero.
+    #[tokio::test]
+    async fn margin_with_a_us_broker_names_the_indian_broker_it_needs() {
+        let (_t, client) = logged_in("alpaca");
+        let out = client
+            .api(ApiCall::new(
+                "margin",
+                "margin",
+                json!({"positions": [{"symbol": "AAPL", "exchange": "NASDAQ", "action": "BUY",
+                       "quantity": 1, "product": "CNC", "pricetype": "MARKET"}]}),
+            ))
+            .await;
+        assert_eq!(out["status"], "error", "{}", out);
+        assert_eq!(
+            out["error"],
+            "Margin needs an Indian broker's margin calculator: log in to Zerodha, Angel One or Fyers. The broker logged in now (Alpaca Markets) trades US markets in this app.",
+            "{}",
+            out
+        );
+    }
+
+    /// Task D2: an index's option lookup (here its expiries on NFO) needs an
+    /// Indian broker's contracts; with a US broker logged in the node says
+    /// so instead of answering an empty list.
+    #[tokio::test]
+    async fn an_index_lookup_with_a_us_broker_names_the_indian_broker_it_needs() {
+        let (_t, client) = logged_in("alpaca");
+        let out = client
+            .api(ApiCall::new(
+                "expiry",
+                "expiry",
+                json!({"symbol": "NIFTY", "exchange": "NFO", "instrumenttype": "options"}),
+            ))
+            .await;
+        assert_eq!(out["status"], "error", "{}", out);
+        assert_eq!(
+            out["error"],
+            "NIFTY on NFO needs an Indian broker: log in to Zerodha, Angel One or Fyers. The broker logged in now (Alpaca Markets) trades US markets in this app.",
+            "{}",
+            out
+        );
+    }
+
+    /// Every index contract call with a non-Indian broker logged in reads
+    /// the same sentence (a broker this registry does not have, so no call
+    /// could ever reach a broker here).
+    #[tokio::test]
+    async fn every_index_contract_call_names_the_indian_broker_it_needs() {
+        let (_t, client) = logged_in("examplebroker");
+        let calls = [
+            (
+                "optionsorder",
+                json!({"underlying": "NIFTY", "exchange": "NSE_INDEX"}),
+            ),
+            (
+                "optionsmultiorder",
+                json!({"underlying": "NIFTY", "exchange": "NSE_INDEX"}),
+            ),
+            (
+                "optionsymbol",
+                json!({"underlying": "BANKNIFTY", "exchange": "NFO"}),
+            ),
+            (
+                "optionchain",
+                json!({"underlying": "SENSEX", "exchange": "BSE_INDEX"}),
+            ),
+            (
+                "syntheticfuture",
+                json!({"underlying": "GOLDM", "exchange": "MCX"}),
+            ),
+        ];
+        for (endpoint, payload) in calls {
+            let underlying = payload["underlying"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let exchange = payload["exchange"].as_str().unwrap_or_default().to_string();
+            let out = client.api(ApiCall::new(endpoint, endpoint, payload)).await;
+            assert_eq!(out["status"], "error", "{endpoint}: {out}");
+            assert_eq!(
+                out["error"],
+                format!(
+                    "{underlying} on {exchange} needs an Indian broker: log in to Zerodha, Angel One or Fyers. The broker logged in now (examplebroker) trades US markets in this app."
+                ),
+                "{endpoint}"
+            );
+        }
+    }
+
+    /// The gate stops only what needs an Indian broker: an Indian broker's
+    /// margin reaches the handler, and so does a US expiry lookup with a US
+    /// broker (both answered by the app, no broker call).
+    #[tokio::test]
+    async fn the_gate_lets_through_what_does_not_need_an_indian_broker() {
+        let (_t, client) = logged_in("zerodha");
+        let margin = client
+            .api(ApiCall::new(
+                "margin",
+                "margin",
+                json!({"positions": [{"symbol": "NIFTY28AUG26FUT", "exchange": "NFO",
+                       "action": "BUY", "quantity": 75, "product": "NRML", "pricetype": "MARKET"}]}),
+            ))
+            .await;
+        assert_eq!(margin["status"], "success", "{}", margin);
+        let (_t, client) = logged_in("alpaca");
+        let expiry = client
+            .api(ApiCall::new(
+                "expiry",
+                "expiry",
+                json!({"symbol": "AAPL", "exchange": "NASDAQ", "instrumenttype": "options"}),
+            ))
+            .await;
+        assert_eq!(expiry["status"], "success", "{}", expiry);
     }
 
     #[test]

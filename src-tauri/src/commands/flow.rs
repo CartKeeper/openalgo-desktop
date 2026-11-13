@@ -420,6 +420,70 @@ mod tests {
         assert_eq!(get_workflow(&t.ctx, id).await.status, 404);
     }
 
+    /// A symbol as a broker's master contract loads it into the app's cache.
+    fn listed(symbol: &str, exchange: &str, lot_size: i32) -> crate::state::SymbolInfo {
+        crate::state::SymbolInfo {
+            symbol: symbol.into(),
+            token: format!("{exchange}-{symbol}"),
+            exchange: exchange.into(),
+            name: symbol.into(),
+            lot_size,
+            tick_size: 0.01,
+            instrument_type: "EQ".into(),
+            brsymbol: Some(symbol.into()),
+            brexchange: Some("US".into()),
+            fractionable: true,
+        }
+    }
+
+    /// Task D2: the lot sizes come from the app's symbol cache, 1 for a US
+    /// stock on any US label (AAPL is AAPL on every US venue), and none for
+    /// a symbol the cache does not hold.
+    #[tokio::test]
+    async fn us_lot_sizes_come_from_the_symbol_cache_on_any_us_label() {
+        let t = app();
+        t.ctx.load_symbol_cache(vec![
+            listed("AAPL", "NASDAQ", 1),
+            listed("MSFT", "NASDAQ", 1),
+        ]);
+        let r = symbol_lot_sizes(
+            &t.ctx,
+            json!({"symbols": [
+                {"symbol": "AAPL", "exchange": "NASDAQ"},
+                {"symbol": "AAPL", "exchange": "US"},
+                {"symbol": "msft", "exchange": "nyse"},
+                {"symbol": "AAPL", "exchange": "NSE"},
+                {"symbol": "ZZZZ", "exchange": "US"},
+            ]}),
+        );
+        assert_eq!(r.status, 200, "{}", r.body);
+        assert_eq!(
+            r.body["lotSizes"],
+            json!({
+                "NASDAQ:AAPL": 1, "US:AAPL": 1, "NYSE:MSFT": 1,
+                "NSE:AAPL": null, "US:ZZZZ": null,
+            })
+        );
+    }
+
+    /// Task D2: the index lookup reads the app's symbol cache: an Indian
+    /// broker's master contract sizes NIFTY; a US broker's (equities only)
+    /// lists no index underlying.
+    #[tokio::test]
+    async fn index_lot_sizes_come_from_the_symbol_cache() {
+        let t = app();
+        t.ctx.load_symbol_cache(vec![listed("AAPL", "NASDAQ", 1)]);
+        assert_eq!(index_symbols(&t.ctx).body["data"], json!([]));
+        let mut nifty = listed("NIFTY", "NFO", 75);
+        nifty.instrument_type = "FUT".into();
+        t.ctx.load_symbol_cache(vec![nifty]);
+        let r = index_symbols(&t.ctx);
+        assert_eq!(
+            r.body["data"],
+            json!([{"value": "NIFTY", "label": "NIFTY", "exchange": "NFO", "lotSize": 75}])
+        );
+    }
+
     /// The strike lookup reads the web's query keys, `optionType` and
     /// `expiryType` included (the plan's three named arguments dropped them).
     #[tokio::test]
@@ -433,8 +497,8 @@ mod tests {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-        // No option chain in this app yet (Phase D): the lookup answers, it
-        // does not panic, and the query it read is upstream's.
+        // No expiry is listed for NIFTY in an empty symbol cache: the lookup
+        // answers (404, it does not panic), and the query it read is upstream's.
         let r = option_strikes(&t.ctx, params.clone()).await;
         assert!(r.status >= 200, "{}", r.body);
         let q = StrikeQuery::from_params(&params);

@@ -9,6 +9,13 @@
 //! the strike ladder from the desktop's own expiry and option-chain
 //! services, in process. The ladder is the chain's structure only (one
 //! underlying quote, no per-strike quotes), as the web asks for it.
+//!
+//! US semantics (WP8 Phase D, Task D2): a US stock's lot size is the cache's
+//! (1), found under any US label, since a US ticker is the same on every US
+//! venue; a US underlying's strikes are asked where it trades (its US
+//! venue), never on NFO, and this app's symbol cache lists no US option
+//! expiries, so for a US underlying an empty expiry list is not a refusal
+//! (the chain is asked without one).
 
 use crate::flow::support::underlying::extract_underlying;
 use crate::flow::contract::pyfmt;
@@ -16,7 +23,7 @@ use crate::flow::node_contracts::{
     format_expiry_for_api, parse_underlying_symbol, select_expiry, VALID_EXPIRY_TYPES,
 };
 use crate::flow::nodes::options::{resolve_option_exchanges, MCX_OPTION_UNDERLYINGS};
-use crate::flow::support::Reply;
+use crate::flow::support::{is_us_venue, Reply};
 use crate::state::AppState;
 use async_trait::async_trait;
 use chrono::NaiveDate;
@@ -123,11 +130,27 @@ pub fn symbol_lot_sizes(app: &AppState, body: Option<&Value>) -> Reply {
         .map(|(symbol, exchange)| {
             let lot = snap
                 .by_symbol(exchange, symbol)
+                .or_else(|| on_a_us_venue(&snap, exchange, symbol))
                 .and_then(|r| whole_lot(&snap, r));
             (format!("{}:{}", exchange, symbol), json!(lot))
         })
         .collect();
     Reply::new(200, json!({"status": "success", "lotSizes": sizes}))
+}
+
+/// For a US label, `symbol`'s row on whichever US venue the cache lists it
+/// (a US ticker is the same on every US venue).
+fn on_a_us_venue<'a>(
+    snap: &'a crate::flow::support::symbols::SymbolGeneration,
+    exchange: &str,
+    symbol: &str,
+) -> Option<&'a crate::flow::support::symbols::SymToken> {
+    if !is_us_venue(exchange) {
+        return None;
+    }
+    snap.rows()
+        .iter()
+        .find(|r| r.symbol.eq_ignore_ascii_case(symbol) && is_us_venue(&r.exchange))
 }
 
 /// A row's lot size as a whole number of units, or `None`: a size counts
@@ -161,6 +184,11 @@ pub trait StrikeSource: Send + Sync {
     ) -> Result<Value, Reply>;
     /// Today, market time: the month the monthly expiry types count from.
     fn today(&self) -> NaiveDate;
+    /// The US venue the symbol cache lists `underlying` on, if any (a query
+    /// that names no exchange: the leg builder sends none).
+    fn us_venue(&self, _underlying: &str) -> Option<String> {
+        None
+    }
 }
 
 /// The desktop's services.
@@ -191,6 +219,12 @@ impl StrikeSource for AppStrikes {
 
     fn today(&self) -> NaiveDate {
         crate::flow::support::options::today_market(&self.0)
+    }
+
+    fn us_venue(&self, underlying: &str) -> Option<String> {
+        let snap = self.0.symbols.snapshot();
+        let row = on_a_us_venue(&snap, "US", underlying)?;
+        Some(row.exchange.clone())
     }
 }
 
@@ -239,9 +273,15 @@ pub async fn option_strikes_from(src: &dyn StrikeSource, has_key: bool, q: &Stri
     if !has_key {
         return refusal(401, "API key not configured. Generate one at /apikey");
     }
-    let (_, fo_exchange) = resolve_option_exchanges(&q.underlying, &q.exchange);
+    let us = us_venue_of(src, q);
+    let (base, fo_exchange) = match &us {
+        Some(venue) => (q.underlying.clone(), venue.clone()),
+        None => {
+            let (_, fo_exchange) = resolve_option_exchanges(&q.underlying, &q.exchange);
+            (parse_underlying_symbol(&q.underlying).0, fo_exchange)
+        }
+    };
     let fo_exchange = fo_exchange.as_str();
-    let (base, _) = parse_underlying_symbol(&q.underlying);
     let listed_reply = src.expiries(&base, fo_exchange).await;
     if listed_reply.status != 200 {
         return listed_reply;
@@ -251,11 +291,17 @@ pub async fn option_strikes_from(src: &dyn StrikeSource, has_key: bool, q: &Stri
         _ => Vec::new(),
     };
     let expiries = sorted_expiry_codes(&listed);
-    let Some(nearest) = expiries.first().cloned() else {
-        return refusal(
-            404,
-            &format!("No option expiries found for {} on {}", base, fo_exchange),
-        );
+    let nearest = match expiries.first() {
+        Some(e) => e.clone(),
+        // This app's chain service takes a US underlying without an expiry,
+        // and its symbol cache lists no US option expiries.
+        None if us.is_some() => String::new(),
+        None => {
+            return refusal(
+                404,
+                &format!("No option expiries found for {} on {}", base, fo_exchange),
+            )
+        }
     };
     let listed_text: Vec<String> = listed
         .iter()
@@ -316,6 +362,24 @@ pub async fn option_strikes_from(src: &dyn StrikeSource, has_key: bool, q: &Stri
             "underlyingSymbol": field("underlying_symbol"),
         }}),
     )
+}
+
+/// The US venue a strike query is answered on: its exchange when that is a
+/// US label; else, when it names none and the underlying is not one of the
+/// editor's index or commodity underlyings (NIFTY, SENSEX, GOLD on MCX...;
+/// Barrick's GOLD is a US ticker too), the venue the symbol cache lists it
+/// on. `None` keeps the web's resolution (NFO, BFO, MCX).
+fn us_venue_of(src: &dyn StrikeSource, q: &StrikeQuery) -> Option<String> {
+    if is_us_venue(&q.exchange) {
+        return Some(q.exchange.clone());
+    }
+    let listed_by_the_editor = NSE_INDICES.contains(&q.underlying.as_str())
+        || BSE_INDICES.contains(&q.underlying.as_str())
+        || MCX_OPTION_UNDERLYINGS.contains(&q.underlying.as_str());
+    if !q.exchange.is_empty() || listed_by_the_editor {
+        return None;
+    }
+    src.us_venue(&q.underlying)
 }
 
 /// `_sorted_expiry_codes`: the listed expiries as DDMMMYY, each once,

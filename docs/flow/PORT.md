@@ -1127,3 +1127,54 @@ send into the app's client, and writes the user guide.
   "needs a hook"). Every golden that is replayed matches; the three web
   evidence only and two not applicable here are set aside with their
   reasons in `docs/flow/parity.md`, which is now the final table.
+
+### Task D2: the editor's lookups with US semantics
+
+- `flow_index_symbols` and `flow_symbol_lotsizes` already read this app's
+  symbol cache (`AppState::symbols` is loaded with `symbol_cache` in
+  `load_symbol_cache`): an Indian broker's master contract sizes NIFTY, a
+  US broker's (equities only) lists no index underlying. **Hand edit**
+  (`flow/lookups.rs`): a lot-size pair on a US label finds the symbol on
+  whichever US venue the cache lists it (`AAPL` on `US` or `NYSE` is the
+  cache's `NASDAQ:AAPL`, lot 1), since a US ticker is the same on every US
+  venue; Indian labels stay exact.
+- `flow_option_strikes`: `support::options::{expiry, option_chain_structure}`
+  (Phase A's 501 stubs and `LOOKUPS_NOT_AVAILABLE`, removed) answer from
+  this app's `SymbolService::get_expiry_dates` and
+  `OptionsService::get_option_chain`. `chain_structure` turns the app's
+  chain into upstream's structure (`chain: [{strike, ce, pe}]`, labels ATM,
+  ITMn, OTMn from the strike nearest the chain's ATM, `strike_count` either
+  side), keeping only positive strikes and leaving out a contract the
+  chain names for more than one strike. **Hand edit** (`flow/lookups.rs`):
+  a US underlying (a US label in the query, or no exchange and the cache
+  lists it on a US venue, unless it is one of the editor's index or MCX
+  underlyings; Barrick's `GOLD` stays MCX `GOLD`) is asked on its US venue,
+  never NFO, and an empty expiry list is not a refusal for it (the app's
+  chain takes no expiry). `StrikeSource::us_venue` is new (default `None`).
+- Limits, recorded for the user's check: this app's chain service centres
+  a ladder of 21 strikes on the quote at its default 50-point spacing for
+  an underlying it does not know (AAPL among them), and a US broker's
+  symbol cache holds no US option contracts, so for AAPL the lookup lists
+  that ladder's positive strikes with no contract symbols, not the listed
+  AAPL strikes; and the editor's options nodes offer only the web's index
+  and MCX underlyings (`INDEX_SYMBOLS`), so no screen asks the lookup for
+  AAPL yet. Listed US strikes need a broker contract source in
+  `services/options_service.rs`, outside WP8's files.
+- **Hand edit** (`flow/contract/client/app.rs`, the Global Constraints'
+  "margin lookups that need an Indian broker"): with a broker logged in
+  that is not one of this app's Indian adapters (Zerodha, Angel One,
+  Fyers), a Margin call, and an option, expiry, chain or synthetic-future
+  call on an Indian exchange, answer the node at once with one sentence:
+  "Margin needs an Indian broker's margin calculator: log in to Zerodha,
+  Angel One or Fyers. The broker logged in now (Alpaca Markets) trades US
+  markets in this app." or "NIFTY on NFO needs an Indian broker: ...",
+  where before a margin of zero or an empty expiry list came back. With no
+  broker logged in the handlers' own no-broker answer stands; a US or
+  crypto exchange goes through.
+- Tests: `nodes/data_tests/us_lookups.rs` (a seeded fake chain: AAPL on
+  NASDAQ, on `US`, and with no exchange; GOLD stays MCX),
+  `support/options.rs` (the app's chain as the leg builder's structure;
+  the ladder below zero and one contract for every strike left out),
+  `commands/flow.rs` (lot sizes on any US label; the index lookup from the
+  cache), `contract/client/app.rs` (margin and index lookups with a US
+  broker; every index contract call; what the gate lets through).

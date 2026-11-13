@@ -63,6 +63,13 @@ pub const FLOW_EXCHANGES: &[&str] = &[
 /// whose default product is `CNC`.
 pub const US_EXCHANGES: &[&str] = &["NYSE", "NASDAQ", "AMEX", "ARCA", "BATS", "OTC", "US"];
 
+/// Whether `label` (any case) is one of this app's US venues.
+pub fn is_us_venue(label: &str) -> bool {
+    US_EXCHANGES
+        .iter()
+        .any(|v| v.eq_ignore_ascii_case(label.trim()))
+}
+
 /// What a broker-backed call answers while no broker is logged in
 /// (upstream's `strategy::dispatch::NO_BROKER_SESSION`).
 pub const NO_BROKER_SESSION: &str =
