@@ -246,6 +246,17 @@ export async function getWorkflowExecutions(id: number, limit = 20): Promise<Wor
 }
 
 /**
+ * Delete chosen runs from a workflow's history, in one call (this app, WP8
+ * Phase D: the run-history screen). Refused while any of them is still going.
+ */
+export async function deleteWorkflowExecutions(
+  id: number,
+  ids: number[]
+): Promise<{ status: string; deleted: number }> {
+  return flowReply(flow('flow_delete_executions', { id, ids }))
+}
+
+/**
  * Get webhook configuration for a workflow
  */
 export async function getWebhookInfo(id: number): Promise<WebhookInfo> {

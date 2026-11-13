@@ -10,6 +10,7 @@ import {
   Copy,
   Eye,
   EyeOff,
+  History,
   Loader2,
   MoreVertical,
   Pause,
@@ -21,7 +22,7 @@ import {
   Webhook,
   XCircle,
 } from 'lucide-react'
-import { useState } from 'react'
+import { type MouseEvent, useCallback, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 import {
   activateWorkflow,
@@ -30,7 +31,10 @@ import {
   deleteWorkflow,
   disableWebhook,
   enableWebhook,
+  executeWorkflow,
+  exportWorkflow,
   flowQueryKeys,
+  getWorkflow,
   importWorkflow,
   listWorkflows,
   regenerateWebhook,
@@ -45,7 +49,16 @@ import {
   DeleteWorkflowDialog,
   RegenerateWebhookDialog,
 } from '@/components/desktop/FlowConfirmDialogs'
-import { useLiveActivation } from '@/components/desktop/FlowLiveActivation'
+import { useLiveActivation, useLiveRun } from '@/components/desktop/FlowLiveActivation'
+import { FlowRunHistory } from '@/components/desktop/FlowRunHistory'
+import {
+  BUTTON_32,
+  counted,
+  DeleteManyDialog,
+  type MenuEntry,
+  SelectionActionBar,
+  SelectionMenu,
+} from '@/components/desktop/FlowSelectionParts'
 import { FlowWebhookReachability } from '@/components/desktop/FlowWebhookReachability'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -68,10 +81,16 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { useListSelection } from '@/hooks/useListSelection'
+import { copyLater } from '@/lib/flow/clipboard'
 import { listDate } from '@/lib/flow/listDate'
 import { cn } from '@/lib/utils'
 import { showToast } from '@/utils/toast'
 import { FLOW_INDEX_HELP } from './flowHelp'
+
+/** Desktop (WP8 Phase D): the selection's word for a workflow. */
+const WORKFLOW_NOUN: [string, string] = ['workflow', 'workflows']
+const MOVE_REASON = 'Workflows have no folders'
 
 function StatusIcon({ status }: { status: string | null }) {
   switch (status) {
@@ -88,7 +107,28 @@ function StatusIcon({ status }: { status: string | null }) {
   }
 }
 
-function WorkflowCard({ workflow }: { workflow: WorkflowListItem }) {
+/**
+ * Desktop (WP8 Phase D, decision 6b): what a card needs from the page's
+ * selection (CLAUDE.md's TABLE INTERACTION DESIGN SPEC). A click selects;
+ * double-click and the Open button open the editor; the card's own buttons
+ * stop their clicks, so they never select.
+ */
+interface CardSelection {
+  selected: boolean
+  focused: boolean
+  onSelect: (e: MouseEvent) => void
+  onCheck: (e: MouseEvent) => void
+  onOpen: () => void
+  onMenu: (e: MouseEvent) => void
+}
+
+function WorkflowCard({
+  workflow,
+  selection,
+}: {
+  workflow: WorkflowListItem
+  selection: CardSelection
+}) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [isWebhookOpen, setIsWebhookOpen] = useState(false)
@@ -96,6 +136,8 @@ function WorkflowCard({ workflow }: { workflow: WorkflowListItem }) {
   // Desktop: Delete and Regenerate are confirmed first (FlowConfirmDialogs).
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmRegenerate, setConfirmRegenerate] = useState(false)
+  // Desktop (WP8 Phase D): the workflow's run history, from the card's menu.
+  const [historyOpen, setHistoryOpen] = useState(false)
 
   const activateMutation = useMutation({
     mutationFn: () => activateWorkflow(workflow.id),
@@ -110,6 +152,29 @@ function WorkflowCard({ workflow }: { workflow: WorkflowListItem }) {
 
   // Desktop: in Live mode, activation asks first (FlowLiveActivation).
   const liveActivation = useLiveActivation(() => activateMutation.mutate())
+
+  // Desktop (WP8 Phase D): Run Now from the run history's empty state, which
+  // asks first in Live mode (FlowLiveActivation).
+  const runMutation = useMutation({
+    mutationFn: () => executeWorkflow(workflow.id),
+    onSuccess: (data) => {
+      if (data.status === 'success') {
+        showToast.success(data.message || 'Execution completed', 'flow')
+      } else if (data.status === 'accepted') {
+        showToast.info(data.message, 'flow')
+      } else {
+        showToast.error(data.message || 'Execution failed', 'flow')
+      }
+    },
+    onError: (error: Error) => {
+      showToast.error(error.message, 'flow')
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: flowQueryKeys.executions(workflow.id) })
+      queryClient.invalidateQueries({ queryKey: flowQueryKeys.workflows(), exact: true })
+    },
+  })
+  const liveRun = useLiveRun(() => runMutation.mutate())
 
   const deactivateMutation = useMutation({
     mutationFn: () => deactivateWorkflow(workflow.id),
@@ -192,119 +257,170 @@ function WorkflowCard({ workflow }: { workflow: WorkflowListItem }) {
 
   return (
     <>
-      {/* The click target was a bare div: no role, no tab stop, no key handler.
-          The actions menu offered a keyboard route to the same page, so this was
-          a redundant-affordance gap rather than a dead end - but the card is the
-          primary affordance and should carry it. */}
+      {/* Desktop (WP8 Phase D, decision 6b): a card is a selectable row of the
+          page's grid. A click selects it (the table spec bans a click that
+          opens); double-click, Enter on the list, or the Open button opens the
+          editor. */}
       <Card
-        role="link"
-        tabIndex={0}
-        aria-label={`Open workflow ${workflow.name}`}
+        id={`flow-card-${workflow.id}`}
+        role="row"
+        aria-label={`Workflow ${workflow.name}`}
+        aria-selected={selection.selected}
+        data-selectable="true"
+        data-selected={selection.selected}
+        data-item-id={String(workflow.id)}
         className={cn(
-          'group cursor-pointer transition-all duration-200 hover:border-primary/50',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          'group cursor-pointer transition-colors duration-150',
+          selection.selected
+            ? 'bg-primary/8 shadow-[inset_3px_0_0_var(--color-primary)]'
+            : 'hover:bg-primary/4',
+          selection.focused && 'ring-2 ring-ring',
           workflow.is_active && 'border-green-500/30'
         )}
-        onClick={() => navigate(`/flow/editor/${workflow.id}`)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault()
-            navigate(`/flow/editor/${workflow.id}`)
-          }
+        onClick={(e) => {
+          // The second click of a double-click is the open, not a toggle.
+          if (e.detail > 1) return
+          selection.onSelect(e)
         }}
+        onDoubleClick={selection.onOpen}
+        onContextMenu={selection.onMenu}
       >
-        <CardHeader className="pb-3">
-          <div className="flex items-start justify-between">
-            <div className="flex items-center gap-3">
-              <div
-                className={cn(
-                  'h-2 w-2 rounded-full',
-                  workflow.is_active ? 'bg-green-500' : 'bg-muted-foreground'
-                )}
-              />
-              <CardTitle className="text-base">{workflow.name}</CardTitle>
-            </div>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+        {/* The row's one cell: the card's content, laid out as the card lays out its parts. */}
+        {/* biome-ignore lint/a11y/useSemanticElements: a cell of the cards' grid, not a table cell */}
+        <div role="gridcell" tabIndex={-1} className="flex flex-col gap-6 outline-none">
+          <CardHeader className="pb-3">
+            <div className="flex items-start justify-between">
+              <div className="flex min-w-0 items-center gap-3">
+                <input
+                  type="checkbox"
+                  aria-label={`Select workflow ${workflow.name}`}
+                  className="size-4 shrink-0 cursor-pointer accent-primary"
+                  checked={selection.selected}
+                  onChange={() => {}}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    selection.onCheck(e)
+                  }}
+                  onDoubleClick={(e) => e.stopPropagation()}
+                />
+                <div
+                  className={cn(
+                    'h-2 w-2 rounded-full',
+                    workflow.is_active ? 'bg-green-500' : 'bg-muted-foreground'
+                  )}
+                />
+                <CardTitle className="truncate text-base">{workflow.name}</CardTitle>
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
                 <Button
                   variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  aria-label="Workflow actions"
+                  size="sm"
+                  className={BUTTON_32}
+                  aria-label={`Open workflow ${workflow.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    selection.onOpen()
+                  }}
+                  onDoubleClick={(e) => e.stopPropagation()}
                 >
-                  <MoreVertical className="h-4 w-4" />
+                  Open
                 </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    navigate(`/flow/editor/${workflow.id}`)
-                  }}
-                >
-                  Edit
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setIsWebhookOpen(true)
-                  }}
-                >
-                  <Webhook className="mr-2 h-4 w-4" />
-                  Webhook
-                </DropdownMenuItem>
-                {workflow.is_active ? (
-                  <DropdownMenuItem
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      deactivateMutation.mutate()
-                    }}
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    asChild
+                    onClick={(e) => e.stopPropagation()}
+                    onDoubleClick={(e) => e.stopPropagation()}
                   >
-                    <Pause className="mr-2 h-4 w-4" />
-                    Deactivate
-                  </DropdownMenuItem>
-                ) : (
-                  <DropdownMenuItem
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      liveActivation.request()
-                    }}
-                  >
-                    <Play className="mr-2 h-4 w-4" />
-                    Activate
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  className="text-destructive"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setConfirmDelete(true)
-                  }}
-                >
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-          {workflow.description && (
-            <CardDescription className="line-clamp-2">{workflow.description}</CardDescription>
-          )}
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <StatusIcon status={workflow.last_execution_status} />
-              <span>
-                {workflow.last_execution_status
-                  ? `Last: ${workflow.last_execution_status}`
-                  : 'No executions'}
-              </span>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      aria-label="Workflow actions"
+                    >
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        navigate(`/flow/editor/${workflow.id}`)
+                      }}
+                    >
+                      Edit
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setIsWebhookOpen(true)
+                      }}
+                    >
+                      <Webhook className="mr-2 h-4 w-4" />
+                      Webhook
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setHistoryOpen(true)
+                      }}
+                    >
+                      <History className="mr-2 h-4 w-4" />
+                      Run history
+                    </DropdownMenuItem>
+                    {workflow.is_active ? (
+                      <DropdownMenuItem
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          deactivateMutation.mutate()
+                        }}
+                      >
+                        <Pause className="mr-2 h-4 w-4" />
+                        Deactivate
+                      </DropdownMenuItem>
+                    ) : (
+                      <DropdownMenuItem
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          liveActivation.request()
+                        }}
+                      >
+                        <Play className="mr-2 h-4 w-4" />
+                        Activate
+                      </DropdownMenuItem>
+                    )}
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      className="text-destructive"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setConfirmDelete(true)
+                      }}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Delete
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
             </div>
-            <span className="text-xs text-muted-foreground">{listDate(workflow.updated_at)}</span>
-          </div>
-        </CardContent>
+            {workflow.description && (
+              <CardDescription className="line-clamp-2">{workflow.description}</CardDescription>
+            )}
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <StatusIcon status={workflow.last_execution_status} />
+                <span>
+                  {workflow.last_execution_status
+                    ? `Last: ${workflow.last_execution_status}`
+                    : 'No executions'}
+                </span>
+              </div>
+              <span className="text-xs text-muted-foreground">{listDate(workflow.updated_at)}</span>
+            </div>
+          </CardContent>
+        </div>
       </Card>
 
       {/* Webhook Settings Dialog */}
@@ -569,6 +685,14 @@ Chartink payload (sent as-is):
 
       {/* Desktop: confirmations the web does not ask for. */}
       {liveActivation.dialog}
+      {liveRun.dialog}
+      <FlowRunHistory
+        workflowId={workflow.id}
+        workflowName={workflow.name}
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        onRunNow={() => liveRun.request()}
+      />
       <DeleteWorkflowDialog
         name={workflow.name}
         isActive={workflow.is_active}
@@ -613,6 +737,109 @@ export default function FlowIndex() {
     queryKey: flowQueryKeys.workflows(),
     queryFn: listWorkflows,
   })
+
+  // Desktop (WP8 Phase D, decision 6b): the cards carry CLAUDE.md's table
+  // selection system (src/hooks/useListSelection.ts). Copy, Duplicate and
+  // Delete act on the chosen workflows one call each (no command takes
+  // several), with one toast for all.
+  const list = workflows ?? []
+  const ids = useMemo(() => (workflows ?? []).map((w) => String(w.id)), [workflows])
+  const openEditor = useCallback((id: string) => navigate(`/flow/editor/${id}`), [navigate])
+  const selection = useListSelection(ids, { noun: WORKFLOW_NOUN, onOpen: openEditor })
+  const chosen = list.filter((w) => selection.isSelected(String(w.id)))
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const [askingDelete, setAskingDelete] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  const copyChosen = async () => {
+    try {
+      const picked = [...chosen]
+      // The clipboard write is made now, inside the click, with the text to
+      // come (lib/flow/clipboard): WebKit refuses one made after the awaits.
+      await copyLater(
+        (async () => {
+          const exports = []
+          for (const w of picked) exports.push(await exportWorkflow(w.id))
+          return JSON.stringify(exports.length === 1 ? exports[0] : exports, null, 2)
+        })()
+      )
+      showToast.success(`${counted(picked.length, WORKFLOW_NOUN)} copied`, 'clipboard')
+    } catch (error) {
+      showToast.error(
+        error instanceof Error ? error.message : 'The workflows could not be copied',
+        'clipboard'
+      )
+    }
+  }
+
+  const duplicateChosen = async () => {
+    const made: string[] = []
+    const failures: string[] = []
+    for (const w of chosen) {
+      try {
+        const source = await getWorkflow(w.id)
+        const copy = await createWorkflow({
+          name: `${source.name} (copy)`,
+          description: source.description ?? undefined,
+          nodes: source.nodes,
+          edges: source.edges,
+        })
+        made.push(copy.name)
+      } catch (error) {
+        failures.push(`${w.name}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    queryClient.invalidateQueries({ queryKey: flowQueryKeys.workflows(), exact: true })
+    if (failures.length > 0) {
+      showToast.error(
+        `${counted(made.length, WORKFLOW_NOUN)} duplicated; ${failures.length} could not be: ${failures.join('; ')}`,
+        'flow'
+      )
+    } else if (made.length === 1) {
+      showToast.success(`Workflow duplicated: ${made[0]}`, 'flow')
+    } else {
+      showToast.success(`${counted(made.length, WORKFLOW_NOUN)} duplicated`, 'flow')
+    }
+  }
+
+  const deleteChosen = async () => {
+    setBusy(true)
+    let deleted = 0
+    const failures: string[] = []
+    for (const w of chosen) {
+      try {
+        await deleteWorkflow(w.id)
+        deleted++
+      } catch (error) {
+        failures.push(`${w.name}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    setBusy(false)
+    setAskingDelete(false)
+    selection.clear()
+    queryClient.invalidateQueries({ queryKey: flowQueryKeys.workflows() })
+    if (failures.length > 0) {
+      showToast.error(
+        `${counted(deleted, WORKFLOW_NOUN)} deleted; ${failures.length} could not be: ${failures.join('; ')}`,
+        'flow'
+      )
+    } else {
+      showToast.success(`${counted(deleted, WORKFLOW_NOUN)} deleted`, 'flow')
+    }
+  }
+
+  const single = selection.count === 1 ? selection.selectedIds[0] : null
+  const menuEntries: MenuEntry[] = [
+    { label: 'Copy', onSelect: copyChosen },
+    { label: 'Move to…', disabledReason: MOVE_REASON },
+    { label: 'Delete', onSelect: () => setAskingDelete(true), danger: true },
+    { label: 'Select All', onSelect: selection.selectAll, separatorBefore: true },
+    { label: 'Deselect All', onSelect: selection.clear },
+    single === null
+      ? { label: 'Open', disabledReason: 'Choose one workflow to open', separatorBefore: true }
+      : { label: 'Open', onSelect: () => openEditor(single), separatorBefore: true },
+    { label: 'Duplicate', onSelect: duplicateChosen },
+  ]
 
   const createMutation = useMutation({
     mutationFn: createWorkflow,
@@ -739,10 +966,90 @@ export default function FlowIndex() {
           <Button onClick={() => refetch()}>Retry</Button>
         </Card>
       ) : workflows && workflows.length > 0 ? (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {workflows.map((workflow) => (
-            <WorkflowCard key={workflow.id} workflow={workflow} />
-          ))}
+        <div className="space-y-4">
+          <div className="flex min-h-12 items-center gap-4">
+            <label className="flex h-8 shrink-0 cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                data-select-all="true"
+                aria-label="Select all workflows"
+                className="size-4 cursor-pointer accent-primary"
+                checked={selection.allSelected}
+                ref={(el) => {
+                  if (el) el.indeterminate = selection.someSelected
+                }}
+                onChange={selection.toggleAll}
+              />
+              Select all
+            </label>
+            {selection.count > 0 && (
+              <SelectionActionBar
+                className="min-w-0 flex-1"
+                count={selection.count}
+                noun={WORKFLOW_NOUN}
+                onClear={selection.clear}
+                onCopy={copyChosen}
+                moveDisabledReason={MOVE_REASON}
+                onDelete={() => setAskingDelete(true)}
+              />
+            )}
+          </div>
+          <span aria-live="polite" aria-atomic="true" className="sr-only">
+            {selection.announcement}
+          </span>
+          {/* biome-ignore lint/a11y/useSemanticElements: a grid of selectable cards (CLAUDE.md's table spec), not a data table */}
+          <div
+            role="grid"
+            tabIndex={0}
+            aria-label="Workflows"
+            aria-multiselectable="true"
+            aria-activedescendant={
+              selection.focusedId === null ? undefined : `flow-card-${selection.focusedId}`
+            }
+            // Keys meant for the list only: never a key typed in a card's
+            // controls or in a dialog a card opens (useListSelection).
+            onKeyDown={selection.onKeyDown}
+            className="grid gap-4 rounded-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:grid-cols-2 lg:grid-cols-3"
+          >
+            {workflows.map((workflow) => {
+              const id = String(workflow.id)
+              return (
+                <WorkflowCard
+                  key={workflow.id}
+                  workflow={workflow}
+                  selection={{
+                    selected: selection.isSelected(id),
+                    focused: selection.focusedId === id,
+                    onSelect: (e) => selection.select(id, e),
+                    onCheck: (e) => selection.check(id, e),
+                    onOpen: () => openEditor(id),
+                    onMenu: (e) => {
+                      e.preventDefault()
+                      selection.contextSelect(id)
+                      setMenu({ x: e.clientX, y: e.clientY })
+                    },
+                  }}
+                />
+              )
+            })}
+          </div>
+          {menu && (
+            <SelectionMenu
+              at={menu}
+              label="Selected workflows"
+              entries={menuEntries}
+              onClose={() => setMenu(null)}
+            />
+          )}
+          <DeleteManyDialog
+            open={askingDelete}
+            onOpenChange={setAskingDelete}
+            count={selection.count}
+            noun={WORKFLOW_NOUN}
+            detail="Each goes with its schedule, its webhook address and its run history; an active one is stopped first."
+            busy={busy}
+            onConfirm={deleteChosen}
+          />
         </div>
       ) : (
         <Card className="flex flex-col items-center justify-center py-16">

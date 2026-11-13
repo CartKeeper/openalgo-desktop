@@ -29,7 +29,8 @@ pub const API_BASE: &str = "https://api.telegram.org";
 pub const SEND_TIMEOUT: Duration = Duration::from_secs(15);
 /// What a send answers while the token or the chat id is missing (the
 /// sentence a Telegram Alert node has answered since Phase A).
-pub const NOT_SET_UP: &str = crate::flow::contract::client::app::TELEGRAM_NOT_SET_UP;
+pub const NOT_SET_UP: &str =
+    "Telegram is not set up: add the bot token and chat id on the Telegram page";
 
 /// The settings as stored.
 pub struct Settings {

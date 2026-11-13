@@ -10,6 +10,7 @@ use parking_lot::Mutex;
 
 // The log lines and run rules the wave-6 sweep asked to pin.
 mod market_time;
+mod round_trips;
 mod rules_w6;
 
 /// R-35, one row per branch.

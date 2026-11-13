@@ -112,6 +112,7 @@ impl std::io::Write for Writer {
 }
 
 pub fn capture_logs() -> LogCapture {
+    every_line_stays_on();
     let buf = Arc::new(Mutex::new(Vec::new()));
     let w = buf.clone();
     let sub = tracing_subscriber::fmt()
@@ -123,4 +124,21 @@ pub fn capture_logs() -> LogCapture {
         buf,
         _guard: tracing::subscriber::set_default(sub),
     }
+}
+
+/// Keep every log line's call site on for the whole test process: a bare
+/// global subscriber that wants every line and prints none, installed once.
+/// tracing-core caches, per call site and for the whole process, whether
+/// any subscriber wants it, and while at most one subscriber is registered
+/// it asks only the current thread's: a line first logged on another test's
+/// thread, with no subscriber there, was cached off for every thread, so a
+/// capture here missed it (`store::executions::tests::
+/// runs_are_logged_as_the_web_logs_them` in a filtered run, WP8 Phase D).
+/// The trigger tests' `logged()` installs the same (WP8 Phase C); whichever
+/// comes first stays.
+fn every_line_stays_on() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry());
+    });
 }

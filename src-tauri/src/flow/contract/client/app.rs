@@ -6,8 +6,10 @@
 //!
 //! Upstream reaches its handlers through `mcp::dispatch::run_as` with the
 //! trader's API key, and sends its alerts through its Telegram and WhatsApp
-//! services. Here the alerts are answered by WP8 Phase C (Telegram) and
-//! refused with one sentence (WhatsApp, not available in this app).
+//! services. Here a Telegram alert goes through the app's own Telegram
+//! settings and the Bot API (`crate::messaging::telegram`, WP8 Phase C; the
+//! send moved here in Phase D), and a WhatsApp alert is refused with one
+//! sentence (not available in this app).
 
 use super::{handle_response, ApiCall, FlowClient, UNKNOWN_OUTCOME};
 use crate::flow::support::dispatch::{self, Raw, Transport};
@@ -23,24 +25,47 @@ use std::time::Duration;
 /// is told the outcome is unknown.
 pub const CALL_TIMEOUT: Duration = dispatch::SDK_TIMEOUT;
 
-/// What a Telegram alert answers until the Telegram settings exist (WP8
-/// Phase C, Task C5 replaces this with the real send).
-pub const TELEGRAM_NOT_SET_UP: &str =
-    "Telegram is not set up: add the bot token and chat id on the Telegram page";
-
 /// What a WhatsApp alert answers in this app.
 pub const WHATSAPP_NOT_AVAILABLE: &str = "WhatsApp alerts are not available in this app";
 
 /// The real client for one run: the app and the run's credential (the
-/// internal token).
+/// internal token), and the workflow whose run it serves, if any.
 pub struct AppFlowClient {
     app: Weak<AppState>,
     api_key: Secret,
+    workflow_id: Option<i64>,
 }
 
 impl AppFlowClient {
     pub fn new(app: Weak<AppState>, api_key: Secret) -> Self {
-        Self { app, api_key }
+        Self {
+            app,
+            api_key,
+            workflow_id: None,
+        }
+    }
+
+    /// The client of a run of `workflow_id`: the orders it places are
+    /// remembered as that workflow's own, which its order-update watch
+    /// skips (WP8 Phase D, decision 6d).
+    pub fn for_workflow(mut self, workflow_id: i64) -> Self {
+        self.workflow_id = Some(workflow_id);
+        self
+    }
+
+    /// Remember the orders a placing call's reply names as the run's
+    /// workflow's own.
+    fn remember_orders(&self, app: &AppState, endpoint: &str, reply: &Value) {
+        let Some(workflow_id) = self.workflow_id else {
+            return;
+        };
+        if !crate::flow::triggers::own_orders::PLACING.contains(&endpoint) {
+            return;
+        }
+        let ids = crate::flow::triggers::own_orders::order_ids(reply);
+        if !ids.is_empty() {
+            app.flow.own_orders.record(workflow_id, ids);
+        }
     }
 }
 
@@ -106,52 +131,124 @@ fn with_broker_cause(app: &AppState, mut out: Value) -> Value {
     out
 }
 
+/// The brokers whose contracts and margin service the web's Indian
+/// lookups read (this app's Indian adapters).
+const INDIAN_BROKERS: &[&str] = &["zerodha", "angel", "fyers"];
+
+/// The calls that read an Indian broker's option contracts when their
+/// exchange is an Indian one (an index's options, expiries, chain).
+const CONTRACT_LOOKUPS: &[&str] = &[
+    "optionsorder",
+    "optionsmultiorder",
+    "optionsymbol",
+    "optionchain",
+    "syntheticfuture",
+    "expiry",
+];
+
+/// The node's error for a call that needs an Indian broker while another
+/// broker is logged in (WP8 Global Constraints: margin and index lookups
+/// that need an Indian broker answer a clear node error, never an empty
+/// list or a margin of zero). `None` lets the call through: an Indian
+/// broker, no broker at all (the handlers name that cause), or a US or
+/// crypto exchange.
+fn needs_an_indian_broker(app: &AppState, call: &ApiCall) -> Option<Value> {
+    let session = app.get_broker_session()?;
+    if INDIAN_BROKERS.contains(&session.broker_id.as_str()) {
+        return None;
+    }
+    let broker = app
+        .brokers
+        .get(&session.broker_id)
+        .map(|b| b.name().to_string())
+        .unwrap_or(session.broker_id);
+    let tail = format!(
+        "log in to Zerodha, Angel One or Fyers. The broker logged in now ({}) trades US markets in this app.",
+        broker
+    );
+    let refusal = |message: String| json!({"status": "error", "error": message, "code": 400});
+    if call.endpoint == "margin" {
+        return Some(refusal(format!(
+            "Margin needs an Indian broker's margin calculator: {}",
+            tail
+        )));
+    }
+    if !CONTRACT_LOOKUPS.contains(&call.endpoint) {
+        return None;
+    }
+    let field = |k: &str| {
+        call.payload
+            .get(k)
+            .and_then(Value::as_str)
+            .map(|v| v.trim().to_uppercase())
+            .unwrap_or_default()
+    };
+    let exchange = field("exchange");
+    if exchange.is_empty() || exchange == "CRYPTO" || crate::flow::support::is_us_venue(&exchange) {
+        return None;
+    }
+    let mut what = field("underlying");
+    if what.is_empty() {
+        what = field("symbol");
+    }
+    Some(refusal(format!(
+        "{} on {} needs an Indian broker: {}",
+        what, exchange, tail
+    )))
+}
+
 #[async_trait]
 impl FlowClient for AppFlowClient {
     async fn api(&self, call: ApiCall) -> Value {
         let Some(app) = self.app.upgrade() else {
             return json!({"status": "error", "error": "OpenAlgo is shutting down.", "code": 503});
         };
+        if let Some(refusal) = needs_an_indian_broker(&app, &call) {
+            tracing::info!("Flow {}: {}", call.method, refusal["error"]);
+            return refusal;
+        }
         // Strike-mode legs and a scoped close: the public schemas cannot
         // carry them, so they take Flow's internal entry (nodes-orders).
+        let endpoint = call.endpoint;
         if let Some(which) = crate::flow::nodes::internal::route(&call) {
             let key = self.api_key.expose();
-            return match crate::flow::nodes::internal::run(&app, key, which, call.payload).await {
+            let out = match crate::flow::nodes::internal::run(&app, key, which, call.payload).await
+            {
                 Ok(raw) => with_broker_cause(&app, shaped(raw)),
                 Err(t) => transport_failure(t),
             };
+            // A scoped close places its order through the same path.
+            self.remember_orders(&app, "placeorder", &out);
+            return out;
         }
         let req = match dispatch::post_request(self.api_key.expose(), call.endpoint, call.payload) {
             Ok(r) => r,
             Err(t) => return transport_failure(t),
         };
-        match dispatch::run(&app, req, CALL_TIMEOUT).await {
+        let out = match dispatch::run(&app, req, CALL_TIMEOUT).await {
             Ok(raw) => with_broker_cause(&app, shaped(raw)),
             Err(t) => {
                 tracing::warn!("Flow {} got no answer: {:?}", call.method, t);
                 transport_failure(t)
             }
-        }
+        };
+        self.remember_orders(&app, endpoint, &out);
+        out
     }
 
-    async fn telegram(&self, _message: &str) -> Value {
-        json!({"status": "error", "error": TELEGRAM_NOT_SET_UP})
+    /// The app's Telegram settings and the Bot API: the saved chat gets the
+    /// message stamped in Eastern time, or the node reads why not (not set
+    /// up, or Telegram's own refusal).
+    async fn telegram(&self, message: &str) -> Value {
+        let Some(app) = self.app.upgrade() else {
+            return json!({"status": "error", "error": "OpenAlgo is shutting down.", "code": 503});
+        };
+        crate::messaging::telegram::send_alert(&app, message).await
     }
 
     async fn whatsapp(&self, _message: &str, _to: Option<&str>) -> Value {
         json!({"status": "error", "error": WHATSAPP_NOT_AVAILABLE})
     }
-}
-
-/// The web's Telegram alert text: a 21-character rule under "Flow Alert",
-/// stamped in market time on any machine (the web wrote the host's local
-/// time). Phase C's send uses it.
-pub fn telegram_text(now: chrono::DateTime<chrono::Utc>, message: &str) -> String {
-    let time = now
-        .with_timezone(&crate::flow::contract::time::market_tz())
-        .format("%H:%M:%S");
-    let rule = "\u{2500}".repeat(21);
-    format!("*Flow Alert*\n{}\n{}\n\nTime: {}", rule, message, time)
 }
 
 #[cfg(test)]
@@ -265,11 +362,184 @@ mod tests {
         assert_eq!(out["error"], crate::flow::support::NO_BROKER_SESSION, "{}", out);
     }
 
-    #[test]
-    fn the_alert_text_is_stamped_in_market_time() {
-        // 2026-10-30 13:30:05Z is 09:30:05 in New York.
-        let text = telegram_text("2026-10-30T13:30:05Z".parse().unwrap(), "hello");
-        assert!(text.starts_with("*Flow Alert*\n"));
-        assert!(text.ends_with("hello\n\nTime: 09:30:05"), "{}", text);
+    /// The harness with `broker` logged in (no call reaches the broker in
+    /// these tests: the handlers they reach read only the app).
+    fn logged_in(broker: &str) -> (TestCtx, AppFlowClient) {
+        let (t, client) = harness(false);
+        t.ctx.set_broker_session(Some(crate::state::BrokerSession {
+            broker_id: broker.into(),
+            auth_token: "key:secret".into(),
+            feed_token: None,
+            user_id: "ACCOUNT1".into(),
+            user_name: None,
+            authenticated_at: chrono::Utc::now(),
+        }));
+        (t, client)
+    }
+
+    /// Task D2 (Global Constraints): margin needs an Indian broker's margin
+    /// calculator. With a US broker logged in the node reads one sentence
+    /// naming what to log in to, never a margin of zero.
+    #[tokio::test]
+    async fn margin_with_a_us_broker_names_the_indian_broker_it_needs() {
+        let (_t, client) = logged_in("alpaca");
+        let out = client
+            .api(ApiCall::new(
+                "margin",
+                "margin",
+                json!({"positions": [{"symbol": "AAPL", "exchange": "NASDAQ", "action": "BUY",
+                       "quantity": 1, "product": "CNC", "pricetype": "MARKET"}]}),
+            ))
+            .await;
+        assert_eq!(out["status"], "error", "{}", out);
+        assert_eq!(
+            out["error"],
+            "Margin needs an Indian broker's margin calculator: log in to Zerodha, Angel One or Fyers. The broker logged in now (Alpaca Markets) trades US markets in this app.",
+            "{}",
+            out
+        );
+    }
+
+    /// Task D2: an index's option lookup (here its expiries on NFO) needs an
+    /// Indian broker's contracts; with a US broker logged in the node says
+    /// so instead of answering an empty list.
+    #[tokio::test]
+    async fn an_index_lookup_with_a_us_broker_names_the_indian_broker_it_needs() {
+        let (_t, client) = logged_in("alpaca");
+        let out = client
+            .api(ApiCall::new(
+                "expiry",
+                "expiry",
+                json!({"symbol": "NIFTY", "exchange": "NFO", "instrumenttype": "options"}),
+            ))
+            .await;
+        assert_eq!(out["status"], "error", "{}", out);
+        assert_eq!(
+            out["error"],
+            "NIFTY on NFO needs an Indian broker: log in to Zerodha, Angel One or Fyers. The broker logged in now (Alpaca Markets) trades US markets in this app.",
+            "{}",
+            out
+        );
+    }
+
+    /// Every index contract call with a non-Indian broker logged in reads
+    /// the same sentence (a broker this registry does not have, so no call
+    /// could ever reach a broker here).
+    #[tokio::test]
+    async fn every_index_contract_call_names_the_indian_broker_it_needs() {
+        let (_t, client) = logged_in("examplebroker");
+        let calls = [
+            (
+                "optionsorder",
+                json!({"underlying": "NIFTY", "exchange": "NSE_INDEX"}),
+            ),
+            (
+                "optionsmultiorder",
+                json!({"underlying": "NIFTY", "exchange": "NSE_INDEX"}),
+            ),
+            (
+                "optionsymbol",
+                json!({"underlying": "BANKNIFTY", "exchange": "NFO"}),
+            ),
+            (
+                "optionchain",
+                json!({"underlying": "SENSEX", "exchange": "BSE_INDEX"}),
+            ),
+            (
+                "syntheticfuture",
+                json!({"underlying": "GOLDM", "exchange": "MCX"}),
+            ),
+        ];
+        for (endpoint, payload) in calls {
+            let underlying = payload["underlying"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let exchange = payload["exchange"].as_str().unwrap_or_default().to_string();
+            let out = client.api(ApiCall::new(endpoint, endpoint, payload)).await;
+            assert_eq!(out["status"], "error", "{endpoint}: {out}");
+            assert_eq!(
+                out["error"],
+                format!(
+                    "{underlying} on {exchange} needs an Indian broker: log in to Zerodha, Angel One or Fyers. The broker logged in now (examplebroker) trades US markets in this app."
+                ),
+                "{endpoint}"
+            );
+        }
+    }
+
+    /// The gate stops only what needs an Indian broker: an Indian broker's
+    /// margin reaches the handler, and so does a US expiry lookup with a US
+    /// broker (both answered by the app, no broker call).
+    #[tokio::test]
+    async fn the_gate_lets_through_what_does_not_need_an_indian_broker() {
+        let (_t, client) = logged_in("zerodha");
+        let margin = client
+            .api(ApiCall::new(
+                "margin",
+                "margin",
+                json!({"positions": [{"symbol": "NIFTY28AUG26FUT", "exchange": "NFO",
+                       "action": "BUY", "quantity": 75, "product": "NRML", "pricetype": "MARKET"}]}),
+            ))
+            .await;
+        assert_eq!(margin["status"], "success", "{}", margin);
+        let (_t, client) = logged_in("alpaca");
+        let expiry = client
+            .api(ApiCall::new(
+                "expiry",
+                "expiry",
+                json!({"symbol": "AAPL", "exchange": "NASDAQ", "instrumenttype": "options"}),
+            ))
+            .await;
+        assert_eq!(expiry["status"], "success", "{}", expiry);
+    }
+
+    const TELEGRAM_TOKEN: &str = "123456789:AAFlowTestTokenNotARealOneWXYZ";
+
+    /// WP8 Phase D (6g): a run's Telegram alert goes through the app's own
+    /// Telegram settings and the Bot API (a fake on the test thread here).
+    #[tokio::test]
+    async fn a_telegram_alert_goes_through_the_apps_telegram_settings() {
+        let (t, client) = harness(false);
+        crate::messaging::telegram::save(
+            &t.ctx.sqlite,
+            &t.ctx.security,
+            Some(TELEGRAM_TOKEN),
+            "987654321",
+        )
+        .unwrap();
+        let http = crate::messaging::telegram::fake::FakeHttp::delivering();
+        crate::messaging::telegram::send_through_for_tests(http.clone());
+        let out = client.telegram("AAPL crossed 190").await;
+        assert_eq!(
+            out,
+            json!({"status": "success", "data": {"message": "Telegram alert sent"}})
+        );
+        let sent = http.calls();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].1["chat_id"], "987654321");
+        assert!(
+            sent[0].1["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("AAPL crossed 190")),
+            "{:?}",
+            sent[0]
+        );
+    }
+
+    /// Not set up: the sentence that names the Telegram page, and nothing
+    /// is sent.
+    #[tokio::test]
+    async fn a_telegram_alert_without_settings_names_the_telegram_page() {
+        let (_t, client) = harness(false);
+        let http = crate::messaging::telegram::fake::FakeHttp::delivering();
+        crate::messaging::telegram::send_through_for_tests(http.clone());
+        let out = client.telegram("AAPL crossed 190").await;
+        assert_eq!(out["status"], "error", "{out}");
+        assert_eq!(
+            out["error"],
+            "Telegram is not set up: add the bot token and chat id on the Telegram page"
+        );
+        assert!(http.calls().is_empty());
     }
 }

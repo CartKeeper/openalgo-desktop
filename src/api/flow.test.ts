@@ -23,6 +23,7 @@ import {
   deleteWorkflow,
   disableWebhook,
   enableWebhook,
+  deleteWorkflowExecutions,
   executeWorkflow,
   exportWorkflow,
   FlowApiError,
@@ -81,6 +82,13 @@ describe('the commands the editor invokes', () => {
       () => getWorkflowExecutions(7, 50),
       'flow_list_executions',
       { id: 7, limit: 50 },
+    ],
+    // This app (WP8 Phase D): the run-history screen deletes chosen runs in one call.
+    [
+      'delete chosen runs',
+      () => deleteWorkflowExecutions(7, [31, 30]),
+      'flow_delete_executions',
+      { id: 7, ids: [31, 30] },
     ],
     ['webhook settings', () => getWebhookInfo(7), 'flow_webhook_info', { id: 7 }],
     ['enable the webhook', () => enableWebhook(7), 'flow_webhook_enable', { id: 7 }],

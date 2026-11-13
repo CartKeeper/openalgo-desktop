@@ -22,6 +22,7 @@ import {
   ArrowLeft,
   Download,
   FileJson,
+  History,
   Keyboard,
   Loader2,
   MoreVertical,
@@ -43,7 +44,8 @@ import {
 import { FlowEditorAccountControls } from '@/components/desktop/FlowEditorAccountControls'
 import { HelpButton } from '@/components/HelpButton'
 import { FlowLeaveGuard, useGuardedNavigate } from '@/components/desktop/FlowLeaveGuard'
-import { useLiveActivation } from '@/components/desktop/FlowLiveActivation'
+import { useLiveActivation, useLiveRun } from '@/components/desktop/FlowLiveActivation'
+import { FlowRunHistory } from '@/components/desktop/FlowRunHistory'
 import { edgeTypes } from '@/components/flow/edges'
 // Import Flow components
 import { nodeTypes } from '@/components/flow/nodes'
@@ -139,6 +141,8 @@ function FlowEditorContent() {
   const [showLogPanel, setShowLogPanel] = useState(false)
   const [executionLogs, setExecutionLogs] = useState<LogEntry[]>([])
   const [executionStatus, setExecutionStatus] = useState<ExecutionStatus>('idle')
+  // Desktop (WP8 Phase D): the workflow's run history, from the ... menu.
+  const [showHistory, setShowHistory] = useState(false)
 
   const {
     isLoading,
@@ -335,7 +339,14 @@ function FlowEditorContent() {
       setExecutionLogs(failedRunLog(error))
       showToast.error(error.message, 'flow')
     },
+    // Desktop (WP8 Phase D): the run history reads the finished run at once.
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: flowQueryKeys.executions(Number(id)) })
+    },
   })
+
+  // Desktop: in Live mode, Run Now asks first too (FlowLiveActivation).
+  const liveRun = useLiveRun(() => executeMutation.mutate())
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -343,6 +354,11 @@ function FlowEditorContent() {
       // Don't trigger shortcuts when typing in inputs
       const target = event.target as HTMLElement
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        return
+      }
+      // Desktop (WP8 Phase D): nor from inside a dialog (Run history,
+      // Replace from JSON): Delete there never deletes the canvas's node.
+      if (target.closest?.('[role="dialog"], [role="alertdialog"]')) {
         return
       }
 
@@ -631,6 +647,14 @@ function FlowEditorContent() {
 
       <HelpButton items={FLOW_EDITOR_HELP} pageTitle="Flow Editor" />
       {liveActivation.dialog}
+      {liveRun.dialog}
+      <FlowRunHistory
+        workflowId={Number(id)}
+        workflowName={name}
+        open={showHistory}
+        onOpenChange={setShowHistory}
+        onRunNow={() => liveRun.request()}
+      />
       <Dialog open={showReplaceDialog} onOpenChange={setShowReplaceDialog}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
@@ -754,14 +778,20 @@ function FlowEditorContent() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem
-                onClick={() => executeMutation.mutate()}
-                disabled={executeMutation.isPending || saveMutation.isPending}
+                onClick={() => liveRun.request()}
+                disabled={
+                  executeMutation.isPending || saveMutation.isPending || liveRun.checking
+                }
               >
                 Run Now
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => setShowLogPanel(!showLogPanel)}>
                 <Terminal className="mr-2 h-4 w-4" />
                 {showLogPanel ? 'Hide Logs' : 'Show Logs'}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setShowHistory(true)}>
+                <History className="mr-2 h-4 w-4" />
+                Run history
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleExport}>
                 <Download className="mr-2 h-4 w-4" />

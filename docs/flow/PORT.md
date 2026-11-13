@@ -1101,3 +1101,495 @@ head `69758baf`, this branch's base). On the branch head:
 | `npx vitest run` | `Test Files  4 failed \| 119 passed (123)`, `Tests  40 failed \| 2441 passed \| 1 skipped (2482)` | the base's 40: `MobileBottomNav.test.tsx` (13) and `ui/button.test.tsx` (20) have no jsdom pragma, `ui/page-loader.test.tsx` (4) and `config/navigation.test.ts` (3 stale assertions) |
 | `npm run build` | exit 2 on the base's seven `tsc` errors (`src/api/trading.ts` 384-388, `PlaceOrderDialog.tsx:552`, `Historify.tsx:570`); `npx vite build` alone: `✓ built in 32.18s` | the base's |
 | `npm run lint` | exit 1: `Found 2 errors.` (`backtest/TradeTable.tsx:402`, `trading/ActionReviewModal.test.tsx:764`), 152 warnings, 21 infos; every file Phase C touched lints clean | the base's |
+
+## Phase D — parity and extras (`wp8d-flow-parity`)
+
+Phase D finishes the parity table, gives the editor's lookups US meaning,
+proves the import and export round trips, shows every Flow time in Eastern
+12-hour time, adds a run-history screen and the selection system on the
+Flow cards, closes two ways a trigger could re-run itself, rate-limits the
+public webhook, matches the US venues as one market, moves the Telegram
+send into the app's client, and writes the user guide.
+
+### Task D1: the goldens' `app` hook
+
+- **Hand edit** (`flow/goldens/replay.rs`): `HOOKS` gains `app`, and a
+  golden marked `special` (the three `core` scenarios `already_running`,
+  `workflow_missing`, `no_execution_record`) is replayed by
+  `replay_with_app`: the app's own executor on the headless harness, with
+  the store arranged as the scenario says (another run holds the claim; the
+  id names nothing stored; a trigger refuses the run's record), on a thread
+  and runtime of its own in real time (the harness starts the trigger
+  side's drivers; the goldens' clock is paused). The answer and the record
+  are compared with the web's; a run with no record made no call, logged
+  nothing and set no variable. `golden_clock` is split out of `context`.
+- Result: `core` 61 of 61 match (upstream's harness reported those three
+  "needs a hook"). Every golden that is replayed matches; the three web
+  evidence only and two not applicable here are set aside with their
+  reasons in `docs/flow/parity.md`, which is now the final table.
+
+### Task D2: the editor's lookups with US semantics
+
+- `flow_index_symbols` and `flow_symbol_lotsizes` already read this app's
+  symbol cache (`AppState::symbols` is loaded with `symbol_cache` in
+  `load_symbol_cache`): an Indian broker's master contract sizes NIFTY, a
+  US broker's (equities only) lists no index underlying. **Hand edit**
+  (`flow/lookups.rs`): a lot-size pair on a US label finds the symbol on
+  whichever US venue the cache lists it (`AAPL` on `US` or `NYSE` is the
+  cache's `NASDAQ:AAPL`, lot 1), since a US ticker is the same on every US
+  venue; Indian labels stay exact.
+- `flow_option_strikes`: `support::options::{expiry, option_chain_structure}`
+  (Phase A's 501 stubs and `LOOKUPS_NOT_AVAILABLE`, removed) answer from
+  this app's `SymbolService::get_expiry_dates` and
+  `OptionsService::get_option_chain`. `chain_structure` turns the app's
+  chain into upstream's structure (`chain: [{strike, ce, pe}]`, labels ATM,
+  ITMn, OTMn from the strike nearest the chain's ATM, `strike_count` either
+  side), keeping only positive strikes and leaving out a contract the
+  chain names for more than one strike. **Hand edit** (`flow/lookups.rs`):
+  a US underlying (a US label in the query, or no exchange and the cache
+  lists it on a US venue, unless it is one of the editor's index or MCX
+  underlyings; Barrick's `GOLD` stays MCX `GOLD`) is asked on its US venue,
+  never NFO, and an empty expiry list is not a refusal for it (the app's
+  chain takes no expiry). `StrikeSource::us_venue` is new (default `None`).
+- Limits, recorded for the user's check: this app's chain service centres
+  a ladder of 21 strikes on the quote at its default 50-point spacing for
+  an underlying it does not know (AAPL among them), and a US broker's
+  symbol cache holds no US option contracts, so for AAPL the lookup lists
+  that ladder's positive strikes with no contract symbols, not the listed
+  AAPL strikes; and the editor's options nodes offer only the web's index
+  and MCX underlyings (`INDEX_SYMBOLS`), so no screen asks the lookup for
+  AAPL yet. Listed US strikes need a broker contract source in
+  `services/options_service.rs`, outside WP8's files.
+- **Hand edit** (`flow/contract/client/app.rs`, the Global Constraints'
+  "margin lookups that need an Indian broker"): with a broker logged in
+  that is not one of this app's Indian adapters (Zerodha, Angel One,
+  Fyers), a Margin call, and an option, expiry, chain or synthetic-future
+  call on an Indian exchange, answer the node at once with one sentence:
+  "Margin needs an Indian broker's margin calculator: log in to Zerodha,
+  Angel One or Fyers. The broker logged in now (Alpaca Markets) trades US
+  markets in this app." or "NIFTY on NFO needs an Indian broker: ...",
+  where before a margin of zero or an empty expiry list came back. With no
+  broker logged in the handlers' own no-broker answer stands; a US or
+  crypto exchange goes through.
+- Tests: `nodes/data_tests/us_lookups.rs` (a seeded fake chain: AAPL on
+  NASDAQ, on `US`, and with no exchange; GOLD stays MCX),
+  `support/options.rs` (the app's chain as the leg builder's structure;
+  the ladder below zero and one contract for every strike left out),
+  `commands/flow.rs` (lot sizes on any US label; the index lookup from the
+  cache), `contract/client/app.rs` (margin and index lookups with a US
+  broker; every index contract call; what the gate lets through).
+
+### Task D3: web and US round trips
+
+- Fixtures (`tests/fixtures/flow/`): `web-8.6-nifty-custom-iron-fly.json`
+  carried byte for byte from upstream's `e2e/flow/fixtures/`, and this
+  app's `us-schedule-quote-order.json` (Schedule daily 9:35 AM ET held to
+  the session, Get Quote AAPL, Price Condition ltp > 100, Place Order 1
+  share MARKET CNC, Telegram Alert with the quote and the order id), on
+  exchange `US`, the app's default since Phase B, where the plan named
+  NASDAQ.
+- Tests (`flow/service/tests/round_trips.rs`): the iron fly passes the
+  validator unchanged and imports as "NIFTY Custom Iron Fly (imported)",
+  inactive, with the Eastern-time note; run with a US broker logged in it
+  stops at the options node, whose expiry lookup the app answers with
+  "NIFTY on NFO needs an Indian broker: ..." (Task D2), a line the run's
+  log keeps, before the node's own failure, the web's "Could not resolve
+  expiry for current_week". The US workflow imports with the Eastern-time
+  note and exports its nodes, edges and description byte for byte (keys
+  sorted), named "AAPL morning buy (imported)"; and its graph runs end to
+  end in analyzer mode on the harness: the quote is scripted (no broker in
+  tests), the condition passes, one AAPL share goes to the sandbox through
+  the app's own `/api/v1/placeorder` (BUY, 1, MARKET, CNC, `US`), and the
+  Telegram alert reaches the saved chat through the app's send (a fake Bot
+  API) with the quote and the sandbox's order id filled in.
+
+### Task D4: run times in Eastern 12-hour time
+
+- `src/lib/flow/listDate.ts` (carried, rewritten): every Flow time is
+  America/New_York, 12-hour with AM/PM and "ET", whatever this computer's
+  zone, built from `Intl.DateTimeFormat` parts (so no ICU's narrow space
+  before AM/PM can creep in). `listDate` (the cards' last change): `Nov 12,
+  2026, 2:35 PM ET`, where upstream showed an IST date. New beside it:
+  `runTime` for a run's start or end (`Nov 12, 2:35:02 PM ET`, a dash for
+  none) and `logTime` for a log line (`9:20:05 AM ET`). Workflow and run
+  times are stored as naive UTC and read as UTC; a log line's `time` is
+  naive Eastern already (`iso_market`) and is shown as it is, never
+  shifted; a line the editor writes itself (`failedRunLog`, with a `Z`) is
+  converted; unreadable text still shows "Invalid Date".
+- **Hand edit** (`src/components/flow/panels/ExecutionLogPanel.tsx`): the
+  panel's 24-hour `formatTime` is replaced by `logTime`. This closes the
+  first "Known deviation after Phase B" above.
+- Tests: `src/lib/flow/listDate.test.ts` (rewritten: EST and EDT dates,
+  the evening date, zones kept, midnight and noon; the run times; the log
+  times under two other computer zones; the editor's own `Z` lines);
+  carried tests updated: `ExecutionLogPanel.pinned.test.tsx` ("shows the
+  time as Eastern 12-hour time with ET") and `FlowIndex.test.tsx` ("dates
+  each workflow in Eastern time").
+
+### Run Now asks first in Live mode (coordinator decision 6c)
+
+- Run Now places the workflow's orders at once, through the API order
+  path that skips the app's per-order Live/Paper confirmation, so in Live
+  mode it asks first, the way Activate does: "Run in Live mode?" / "This
+  run will place real orders on the live account without asking for each
+  order.", with Cancel and Run. The mode is read from the backend
+  (`settingsCommands.getAnalyzeMode`) when Run Now is chosen, and a mode
+  that cannot be read counts as Live; in Analyze mode Run Now stays one
+  click.
+- `src/components/desktop/FlowLiveActivation.tsx`: the dialog takes its
+  words (`LiveQuestion`), `useLiveQuestion` is the shared guard, and
+  `useLiveRun` is `useLiveActivation`'s sibling for a run (the activation
+  dialog's look, sizes and reduced-motion behaviour are unchanged).
+- **Hand edit** (`src/pages/flow/FlowEditor.tsx`): the ... menu's Run Now
+  calls the guard (disabled while the mode is read) and its dialog renders
+  beside the activation one. The run-history screen's empty state uses the
+  same guard (decision 6a, below).
+- Tests: `src/pages/flow/flowLiveRun.test.tsx` (Live asks and Run runs
+  once; Cancel runs nothing; an unreadable mode asks; the mode is read at
+  the click; Analyze runs at once). The carried
+  `FlowEditor.w6.test.tsx`, whose two Run Now tests are about the run
+  itself, reads the app as Analyze mode through a partial
+  `@/api/tauri-client` mock, as Phase C did for activation.
+
+### The run-history screen (coordinator decision 6a)
+
+- Phase C's Definition of Done reads "a run appears each minute in its
+  history", but no screen listed a workflow's runs (`flow_list_executions`
+  and `getWorkflowExecutions` had no caller). `src/components/desktop/
+  FlowRunHistory.tsx` (new) is that screen: a dialog of fixed size (75% of
+  the window high, up to 896 px wide, 16 px radius, a fixed header with the
+  title, the workflow's name and Close; the body scrolls), opened from
+  **Run history** in the workflow card's ... menu on the Flow page and in
+  the editor's ... menu (a dialog, not a route: `src/App.tsx` is outside
+  WP8 Phase D's files).
+- Each row: when the run started (`Nov 12, 2:35:02 PM ET`, `runTime`), its
+  status (Completed, Failed, Running, Pending), its duration
+  (`runDuration`: `3s`, `1m 5s`, a dash while it runs) and its error.
+  Opening a run (double-click, Enter, or its Open button) shows its log
+  lines with `logTime` (Eastern 12-hour; a stored line's naive Eastern
+  time shown as it is) and Back to runs. It reads the newest 200 runs (the
+  read's cap; the store keeps the newest 500 and 30 days, `executions::
+  prune`) again every 10 seconds and when the window gets focus while it is
+  open (the backend sends no event when a run ends), and at once when a Run
+  Now from the page or the editor ends.
+- States: a skeleton of the rows while loading; "No runs yet" with a Run
+  Now button that goes through decision 6c's question; an inline error
+  with a danger border and Retry.
+- Selection (CLAUDE.md's TABLE INTERACTION DESIGN SPEC), from
+  `src/hooks/useListSelection.ts` (new, shared with the Flow cards): a click
+  anywhere on a row selects it (the checkbox shows it); the header checkbox
+  selects all, indeterminate for some (from some it selects all, the spec's
+  rule, where `TradeTable` cleared); Shift+click ranges from the anchor;
+  Cmd/Ctrl+click toggles; a row's checkbox adds or takes away; Cmd/Ctrl+A,
+  arrows, Shift+arrows, Shift+Home/End, Shift+Page Up/Down, Space, Enter;
+  Escape closes the right-click menu, then clears a selection, and only
+  then closes the window. The action bar (`src/components/desktop/
+  FlowSelectionParts.tsx`, new, shared): the count, Clear selection, Copy,
+  Move (disabled: "Runs stay with their workflow"), Delete rightmost in the
+  danger colour. The right-click menu: Copy, Move to… (disabled, with the
+  reason), Delete, Select All, Deselect All, Open (one run), Duplicate
+  (disabled: "Runs can't be duplicated"); a right-click on an unselected row
+  selects only it. `aria-selected` rows, an `aria-live` count, and
+  `data-selectable`, `data-selected`, `data-item-id`, `data-select-all`,
+  `data-action-bar`. Not built: the spec's long-press for touch (this is a
+  desktop app).
+- Copy puts the chosen runs on the clipboard as text: per run its start in
+  ET, status and duration, its error, then each log line (time, level,
+  message), runs apart by a blank line. Delete always asks first ("Delete 3
+  runs?" / "This can't be undone."), then deletes them in one call.
+- Backend: `flow::store::executions::delete(conn, workflow_id, ids)`
+  deletes only that workflow's rows and refuses the whole call when one of
+  them is still going (`Deleted::StillRunning`), since its end would have
+  no row; `flow::service::delete_runs` answers 400 for an empty choice, 404
+  for an unknown workflow, 409 "Run N is still going, so nothing was
+  deleted. Delete it once it has ended." and 200 `{status, deleted}`;
+  `flow_delete_executions(id, ids)` is the command (WP8 handler anchor,
+  after the other `flow_*` lines), `deleteWorkflowExecutions` its wrapper.
+- **Hand edits**: `src/pages/flow/FlowIndex.tsx` (the card's menu item, its
+  dialog, a Run Now mutation guarded by `useLiveRun` that refreshes the
+  card list and the history), `src/pages/flow/FlowEditor.tsx` (the menu
+  item and dialog; Run Now refreshes the history when it ends),
+  `src/api/flow.ts` (the wrapper); carried pinned tests updated for the new
+  menu item (`FlowIndex.pinned.test.tsx`, `FlowEditorMenu.pinned.test.tsx`).
+- Tests: `src/hooks/useListSelection.test.ts`,
+  `src/components/desktop/FlowRunHistory.test.tsx`,
+  `src/pages/flow/flowRunHistory.test.tsx`, `src/api/flow.test.ts` (the
+  command and its arguments), `src/lib/flow/listDate.test.ts`
+  (`runDuration`), Rust `flow/store/executions/delete_tests.rs` and
+  `commands/flow.rs::chosen_runs_are_deleted_in_one_call`.
+
+### The Flow cards' selection system (coordinator decision 6b)
+
+- The carried card opened the editor on a click (`FlowIndex.tsx`, a
+  `role="link"` card), which CLAUDE.md's table spec bans. Each card is now
+  a selectable row of the page's grid (`role="grid"` "Workflows", each card
+  `role="row"` "Workflow <name>" with one grid cell): a click anywhere on
+  the card selects it, with a visible checkbox; double-click, Enter on the
+  list, or the card's new **Open** button opens the editor; the card's ...
+  menu, its items, the checkbox and the Open button stop their clicks, so
+  they never select. The page's toolbar holds **Select all** (indeterminate
+  for some) and, while anything is selected, the shared action bar: the
+  count, Clear selection, Copy, Move (disabled: "Workflows have no
+  folders"), Delete rightmost in the danger colour. Keys on the list:
+  Cmd/Ctrl+A, arrows, Shift+arrows, Shift+Home/End, Shift+Page Up/Down,
+  Space, Enter, Escape (only when the list itself has the focus, never a
+  key typed in a card's control or a dialog a card opens). The right-click
+  menu: Copy, Move to… (disabled, with the reason), Delete, Select All,
+  Deselect All, Open (one workflow), Duplicate.
+- Copy puts the chosen workflows' export JSON on the clipboard, the format
+  Export Workflow writes (two-space JSON; several as one array).
+  Duplicate makes "<name> (copy)" for each chosen workflow through the
+  create command with the copied graph: a new workflow, inactive, with its
+  own webhook address and its webhook off. Delete always asks first ("Delete
+  2 workflows?" / "This can't be undone. Each goes with its schedule, its
+  webhook address and its run history; an active one is stopped first.")
+  and then deletes them one call each (no command takes several), with one
+  toast for all, naming any that failed.
+- **Hand edit** (`flow/service/mod.rs`, `delete`): an active workflow is
+  recorded inactive after its registrations are removed and before its row
+  is deleted, so a delete the store refuses leaves it stood down (inactive,
+  nothing registered) rather than showing Active with no trigger, and a
+  restart restores nothing for it. Rust tests
+  (`triggers/tests/delete_stops.rs`): deleting active workflows leaves no
+  schedule, price alert, order watch or webhook (the old token answers 404);
+  a refused delete leaves the workflow inactive with nothing registered.
+  `commands/flow.rs::a_duplicate_is_a_new_inactive_workflow_with_its_webhook_off`.
+- **Hand edits** to carried tests: `FlowIndex.pinned.test.tsx` (the cards
+  are rows named "Workflow <name>"; "a click selects, a double-click opens"
+  and "Space selects, Enter opens" replace "a focusable link that opens on a
+  click" and "opens on the Space key"), `FlowIndex.test.tsx` (opens by the
+  Open button), `FlowIndex.w6.test.tsx` (the card lookup). New:
+  `src/pages/flow/flowCardSelection.test.tsx`. Help (`flowHelp.ts`, "New
+  Workflow"): a click selects a card; double-click or Open opens it.
+
+### Two triggers that re-ran themselves (coordinator decision 6d)
+
+Two departures from the web, each recorded in the doc comment of the file
+it changes ("Departures from the web"):
+
+- **An order-update watch never fires on an order its own workflow
+  placed.** `flow/triggers/own_orders.rs` (new): `OwnOrders` keeps, per
+  workflow, the newest 200 order ids its runs placed, in memory
+  (`FlowModule::own_orders`). The app's client of a run
+  (`AppFlowClient::for_workflow`, set by the executor) takes them from the
+  replies to its order calls (`placeorder`, `placesmartorder`,
+  `basketorder`, `splitorder`, `optionsorder`, `optionsmultiorder`, and a
+  scoped close: every `orderid` in the reply). **Hand edits**:
+  `order_monitor.rs` (`Watches::claim_except`: a matching watch whose
+  workflow placed the order is skipped, with the line "Order-update watch
+  of workflow N skipped order X (complete): its own run placed it"; `claim`
+  is `claim_except` with no exception), `drive.rs` (`on_order_update`
+  passes the app's `OwnOrders`), `executor/mod.rs` (the run's client knows
+  its workflow), `contract/client/app.rs` (the record). Without this an
+  every-time watch on AAPL whose run buys AAPL re-ran itself on each of its
+  own fills. Test `triggers/tests/own_orders.rs`: another workflow's AAPL
+  order runs the watching workflow, whose run buys AAPL; that order's fill
+  does not run it again (and the line says why); the other workflow's next
+  AAPL order runs it again. Unit tests: the ids in an order reply; the
+  bound per workflow.
+- **An every-time price alert with a level condition fires when its
+  condition becomes true, and again only after a poll where it was
+  false.** **Hand edit** (`triggers/price_monitor.rs`): `Alert::held` (the
+  condition held on the previous poll) and `Alert::fires_on_change` (an
+  every-time alert whose condition is not `crossing_up` or `crossing_down`:
+  greater than, less than, at the level, inside or outside a channel, and
+  the moving conditions, which can all stay true across polls). The
+  crossings already fire once per crossing and are unchanged, and so are
+  one-time alerts (their latch). The web re-ran a "greater than" alert
+  every 5 seconds while the price stayed above the level. Tests
+  (`triggers/tests/price_poll.rs`): every-time "greater than 100" over 101,
+  102, 103 runs once, then 99 and 101 run it a second time; every-time
+  "inside the channel" 95 to 105 over 100, 101, 110, 100 runs twice.
+
+### The public webhook's rate limits (coordinator decision 6e)
+
+- Carried from upstream (`server/ratelimit.rs`, rows `FlowWebhook` and
+  `WebhookFail`; `server/routes/flow/triggers.rs`, `admit` and
+  `rate_limited`) as `flow/service/webhook_limits.rs` (new), held on
+  `FlowModule::webhook_limits`, so every router the app builds shares one
+  table: 100 requests a minute per caller address, checked before the body
+  is read; 100 a minute per token, once the token names a workflow (an
+  invented token never gets a window: it is a failed authentication); 10
+  failed authentications (an unknown token or a wrong secret) a minute per
+  caller. Over a limit the answer is upstream's JSON 429, `{"status":
+  "error", "message": "Rate limit exceeded. Please slow down your
+  requests.", "limit": "100 per 1 minute", "retry_after": 60}`, with
+  `Retry-After: 60`, for either kind of limit, as upstream answered.
+- One departure, to keep upstream's intent ("never a valid webhook
+  address") with this app's addresses: once a caller has spent its
+  failures, its unknown tokens and its wrong or missing secrets are answered
+  429 at once (upstream refused only unknown tokens), and a wrong one is
+  still counted by the lockout; an alert with the workflow's right secret
+  goes on. Every sender behind a local tunnel (ngrok forwarding to
+  127.0.0.1) reaches this app from 127.0.0.1, so a stranger guessing tokens
+  through the public URL must not be able to shut out TradingView's alerts;
+  and the per-address limit of 100 a minute is, through a tunnel, one
+  limit for all senders together (upstream exempted its built-in tunnel's
+  traffic from the per-address limit; this app cannot tell a tunnel's
+  traffic from a local program's).
+- With the lockout (`webhook_guard`: 10 wrong secrets in 10 minutes lock a
+  webhook for 15 minutes): the 10th wrong secret from a caller within a
+  minute both spends that caller's failure budget and locks the webhook.
+  The 11th wrong secret within the minute is answered 429 (the limit comes
+  first) and still counted by the lockout; the right secret, from that
+  caller or any other, is answered 403 with the lock's sentence until the
+  lock ends or the webhook's URL and secret are regenerated (or the webhook
+  turned off and on); after the minute, a wrong secret is answered 403
+  locked again. Ten wrong secrets spread over more than a minute lock the
+  webhook without a 429.
+- `webhook/server.rs` (this app's file, for 6e only): the listener serves
+  `into_make_service_with_connect_info::<SocketAddr>()`, so each request
+  carries its caller's address; the Flow routes stay outside the `/api/v1`
+  limiter; the refusal is logged as "Flow webhook: the caller at <address>
+  is over its limit; answered 429", never with the token, and a token's
+  window is keyed by a keyed hash. `flow/service/webhooks.rs`:
+  `secret_given` reads a call's secret against its workflow's without
+  touching the call or the lockout; `token_known` (Phase C's, unused until
+  now) is the limits' known-token check.
+- Tests (`webhook/server.rs`, `flow_webhook_tests`): the 101st call in a
+  minute from one address answers 429 (another address is not held); the
+  101st on one token from addresses that sent nothing; the 11th wrong secret
+  in a minute answers 429 and the right one is then 403 locked from any
+  address; ten unknown tokens from 127.0.0.1 spend that address's failures
+  (the 11th is 429) but the right secret from it still runs the workflow;
+  no line logged while limiting carries the token. Unit tests in
+  `webhook_limits.rs`: the moving window, the per-token window, the
+  failure budget, the token kept as a hash, the full table.
+
+### US exchanges as one market when matching (coordinator decision 6f)
+
+- What this app really writes: the Alpaca adapter puts `US` in every order
+  (`map_alpaca_orders`, the order and trade books) and every quote
+  (`get_quote`, `get_market_depth`); positions keep Alpaca's own label or
+  `US`; the master contract maps assets to `NASDAQ`, `NYSE`, `ARCA`,
+  `BATS`, `OTC`, `AMEX` or `US`. The sandbox keeps the exchange an order was
+  placed on: `US` for a new node (Phase B's default) or the venue the
+  trader picked. So a watch on NASDAQ never heard an Alpaca order (`US`),
+  and a watch on `US` never heard a sandbox order placed on NASDAQ.
+- `flow::support::same_market` (new): two labels are one market when they
+  are equal, or both US labels (`NYSE, NASDAQ, AMEX, ARCA, BATS, OTC, US`),
+  a US ticker being the same on every US venue. **Hand edit**
+  (`triggers/order_monitor.rs`, `Watch::matches`, and its "Departures from
+  the web"): a watch's exchange is matched with it. Indian and crypto
+  labels still match only themselves. A price alert asks for its quote on
+  its own label and reads only the price, so it already fires on Alpaca's
+  `US` quotes (pinned by a test).
+- Tests (`triggers/tests/us_markets.rs`), through the poller's own diff
+  (`Book::changes`): a NASDAQ watch hears Alpaca's `US` order; a `US`
+  watch hears an order on every US venue and every US watch hears `US`;
+  NSE, BSE and CRYPTO match only themselves; a sandbox order placed on
+  NASDAQ, filled between two reads of the book, runs a workflow watching
+  `US`; a NASDAQ alert fires on Alpaca's `US` quote.
+
+### The Telegram send in the app's client (coordinator decision 6g)
+
+- `AppFlowClient::telegram` (`flow/contract/client/app.rs`) sends through
+  `messaging::telegram::send_alert`: the app's saved bot token and chat id,
+  the message stamped in Eastern 12-hour time, Telegram's own refusal or
+  the not-set-up sentence as the node's error. **Hand edit**
+  (`flow/nodes/alerts.rs`): the Telegram Alert node hands its text to the
+  run's client only, as upstream's node did; Phase C's fork (the app's
+  send when the context had an app, the client otherwise) is gone, and its
+  `app_tests` run the node over an `AppFlowClient`.
+- Removed, after a grep showed no other use: the client's not-set-up stub
+  (`TELEGRAM_NOT_SET_UP` in `contract/client/app.rs`; its sentence is now
+  `messaging::telegram::NOT_SET_UP`'s own literal) and `telegram_text`
+  (upstream's Markdown alert text, unused since Phase C: the send formats
+  its own, `messaging::telegram::alert_text`) with its test. This closes the
+  last "Recorded, not changed" item of Phase C's review fixes above.
+- Kept: `webhooks::token_known` and `triggers::store::token_exists`, which
+  Phase C left unused: the webhook's limits use them now (decision 6e, the
+  per-token window is for known tokens only).
+- Tests (`contract/client/app.rs`): a run's Telegram alert goes through the
+  app's settings to the saved chat (a fake Bot API); without settings it
+  answers the sentence that names the Telegram page and sends nothing.
+
+### Task D5: the user guide and the in-app help
+
+- `docs/flow/user-guide.md` (new): upstream's chapter 21 adapted to this
+  app: US examples (AAPL on `US`, whole shares, CNC), Eastern time
+  throughout, no built-in tunnel (the Ngrok/Public URL on Admin → Server
+  Settings, Enable API Server), Telegram only (WhatsApp, Strategy P&L and
+  the Indian-broker lookups are named as not available), and Phase D's
+  additions: the card selection, Run history, Run Now's Live-mode question,
+  the guards against triggers that re-ran themselves, the webhook's limits,
+  US venues as one market. The Delay (5 minutes), Wait Until (30 minutes),
+  HTTP Request (public addresses, no redirect, 5 MB) and run-history (500
+  runs, 30 days) limits it states were checked against the carried code.
+  Upstream's Semi-Auto, Action Center, Agent and built-in-tunnel sections
+  are left out (not in this app).
+- The app cannot open a file of this repository, so no link to the guide
+  was added (the plan's "link it from the Help content"). Instead the
+  in-app help (`src/pages/flow/flowHelp.ts`, the Help button on the three
+  Flow pages) carries its how-tos briefly: new items on the Flow page,
+  "Selecting workflows", "Run history", "Webhook limits" (with how they meet
+  the lock) and "Not available in this app"; the price-alert item says an
+  every-time level alert runs when its condition becomes true, the order
+  update item that a watch never runs on its own workflow's order and that
+  the US venues are one market; on the editor, Run Now's "Run in Live
+  mode?" question, the log's Eastern 12-hour times and a "Run history"
+  item; the shortcuts page says a card opens on a double-click or its Open
+  button. `src/pages/flow/flowHelp.test.tsx` asserts those facts.
+
+### Review fixes (after the whole-branch review)
+
+A fresh reviewer read the whole branch (b2a0a85d..35311e8e): "with fixes",
+no critical finding. Each fix below was first reproduced by a test that
+failed.
+
+- **Own-order follow-up** (`triggers/drive.rs`, `run_order_update`): an
+  update kept as an every-time watch's follow-up while its run went on can
+  be that run's own order, recorded only after the reply; the guard is
+  checked again when the follow-up would run. Test
+  `own_orders::a_follow_up_for_the_watchers_own_order_does_not_run`.
+- **A level alert's lost rise** (`triggers/drive.rs`, `price_monitor.rs`,
+  `Alerts::release_held`): when an every-time fire cannot be queued (one run
+  at a time) or its run does not execute, the alert forgets that its
+  condition held, so the next check where it holds runs it. Test
+  `price_poll::a_level_alert_that_becomes_true_while_its_run_is_queued_runs_after`.
+- **The tunnel's address** (`service/webhook_limits.rs`,
+  `WebhookLimits::admit_caller`): this computer's own address (loopback,
+  every sender behind a local tunnel) has no per-address window, so a
+  stranger's flood through the tunnel never holds a real alert; each
+  webhook's 100 a minute and the failure budget still apply. Test
+  `flow_webhook_tests::a_flood_through_the_tunnel_address_never_holds_a_real_alert`.
+  Help and guide reworded (the per-address limit spans all webhooks).
+- **No listed contract, no strikes** (`support/options.rs`,
+  `listed_structure`): when none of the app's chain's strikes has a listed
+  contract (every US underlying today), the strike lookup refuses with "No
+  listed option contracts for AAPL in this app's symbol list, so there are no
+  strikes to choose from. A typed strike still works." instead of listing the
+  chain service's 50-point ladder. Test
+  `options::a_chain_without_one_listed_contract_is_refused`.
+- **The list keys after a click** (`src/hooks/useListSelection.ts`,
+  `keyIsForTheList`): a key belongs to the list when typed on the list or on
+  an item's body (a card's cell, a row's cell), never on an item's own
+  control (a checkbox, an Open button) or in a dialog an item opens. A mouse
+  click on a card's content focuses its cell, where the cards' keys did
+  nothing; and in the run history Space on "Select all" and Enter on a row's
+  Open button acted on the focused row. Tests in
+  `flowCardSelection.test.tsx` and `FlowRunHistory.test.tsx`.
+- **Copy of several workflows in WebKit** (`src/lib/flow/clipboard.ts`,
+  `copyLater`, used by the cards' Copy): the clipboard write is made inside
+  the click with a `ClipboardItem` whose text is a promise, since WebKit (the
+  app's webview on a Mac) refuses a write made after the exports were read;
+  without `ClipboardItem` the text is written when ready. Test
+  `src/lib/flow/clipboard.test.ts`. Not provable without the app: the user
+  copies workflows once on the Flow page.
+- **The editor's keys under a dialog** (`src/pages/flow/FlowEditor.tsx`,
+  re-graded from minor): the editor's window shortcuts (Delete, Backspace,
+  `?`, Ctrl+S, Escape) no longer act from inside a dialog; Delete pressed in
+  Run history had deleted the canvas's selected node. Test in
+  `flowRunHistory.test.tsx`.
+
+### Gates (Phase D, 2026-11-13)
+
+`git merge feat/historify-desktop-backend`: already up to date (integration
+head `b2a0a85d`, this branch's base). On the branch head:
+
+| Gate | Result | Whose |
+| --- | --- | --- |
+| `cd src-tauri && cargo test --lib` | `test result: ok. 1448 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 57.45s` (no compiler warnings; base 1398) | passes |
+| `npx vitest run` | `Test Files  4 failed \| 125 passed (129)`, `Tests  40 failed \| 2507 passed \| 1 skipped (2548)` | the base's 40: `MobileBottomNav.test.tsx` (13) and `ui/button.test.tsx` (20) have no jsdom pragma, `ui/page-loader.test.tsx` (4) and `config/navigation.test.ts` (3 stale assertions) |
+| `npm run build` | exit 2 on the base's seven `tsc` errors (`src/api/trading.ts` 384-388, `PlaceOrderDialog.tsx:552`, `Historify.tsx:570`); `npx vite build` alone: `✓ built in 30.76s` | the base's |
+| `npm run lint` | exit 1: `Found 2 errors.` (`backtest/TradeTable.tsx:402`, `trading/ActionReviewModal.test.tsx:764`), 152 warnings, 21 infos; every file Phase D touched lints clean | the base's |

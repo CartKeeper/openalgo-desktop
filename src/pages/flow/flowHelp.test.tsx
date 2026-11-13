@@ -121,9 +121,39 @@ describe('the Flow page', () => {
       'Order Update triggers',
       'Telegram alerts',
       'Test in analyzer mode first',
+      // WP8 Phase D: the selection on the cards, the run history, the
+      // webhook's limits, and what needs an Indian broker.
+      'Selecting workflows',
+      'Run history',
+      'Webhook limits',
+      'Not available in this app',
     ]) {
       expect(within(panel).getByText(title)).toBeInTheDocument()
     }
+    expect(
+      within(panel).getByText(/A click selects a card \(its checkbox shows it\)/)
+    ).toBeInTheDocument()
+    expect(within(panel).getByText(/Duplicate \(an inactive copy/)).toBeInTheDocument()
+    const history = within(panel).getByText(/newest 500 runs of each workflow, up to 30 days/)
+    expect(history.textContent).toMatch(/in Eastern time/)
+    expect(history.textContent).toMatch(/every 10 seconds/)
+    expect(history.textContent).toMatch(/asks first in Live mode/)
+    // Decision 6d: the two triggers that re-ran themselves.
+    expect(
+      within(panel).getByText(/becomes true, and again only after a check where it was false/)
+    ).toBeInTheDocument()
+    expect(
+      within(panel).getByText(/never runs on an order its own workflow placed/)
+    ).toBeInTheDocument()
+    // Decision 6e: upstream's limits, and how they meet the lock.
+    const limits = within(panel).getByText(/One address may send 100 alerts a minute/)
+    expect(limits.textContent).toMatch(/each webhook takes 100 a minute/)
+    expect(limits.textContent).toMatch(/10 failed attempts/)
+    expect(limits.textContent).toMatch(/429/)
+    expect(limits.textContent).toMatch(/the right secret still runs the workflow/)
+    // The review's fix: every sender through a tunnel arrives from 127.0.0.1.
+    expect(limits.textContent).toMatch(/127\.0\.0\.1\) has no per-address limit/)
+    expect(within(panel).getByText(/need an Indian broker logged in/)).toBeInTheDocument()
     // A US broker's sidebar has no Sandbox page; in analyzer mode the
     // Orderbook shows the sandbox's orders (get_order_book routes there).
     expect(within(panel).getByText(/the Orderbook shows the sandbox's orders/)).toBeInTheDocument()
@@ -166,9 +196,13 @@ describe('the Flow editor', () => {
       'Times are Eastern',
       'Export and Replace from JSON',
       'Keyboard shortcuts',
+      'Run history',
     ]) {
       expect(within(panel).getByText(title)).toBeInTheDocument()
     }
+    // Decision 6c: Run Now asks first in Live mode, as Activate does.
+    expect(within(panel).getByText(/"Run in Live mode\?"/)).toBeInTheDocument()
+    expect(within(panel).getByText(/Eastern 12-hour time/)).toBeInTheDocument()
     expect(within(panel).getByText(/America\/New_York/)).toBeInTheDocument()
     expect(within(panel).getByText(/AAPL on NASDAQ/)).toBeInTheDocument()
     expect(within(panel).getByText(/In Live mode it asks first/)).toBeInTheDocument()
@@ -190,6 +224,8 @@ describe('the keyboard shortcuts page', () => {
     await screen.findByRole('heading', { level: 1, name: 'Keyboard Shortcuts' })
     const panel = await openHelp('Keyboard Shortcuts')
     expect(within(panel).getByText('Back to the editor')).toBeInTheDocument()
+    // WP8 Phase D: a click on a card selects it; it opens on a double-click.
+    expect(within(panel).getByText(/double-click/)).toBeInTheDocument()
     expect(within(panel).getByText('Open this page from the editor')).toBeInTheDocument()
   })
 })

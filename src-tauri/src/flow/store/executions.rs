@@ -141,6 +141,55 @@ fn read(conn: &Connection, workflow_id: i64, limit: i64) -> rusqlite::Result<Vec
     Ok(rows)
 }
 
+/// What [`delete`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Deleted {
+    /// That many of the workflow's runs were deleted.
+    Removed(usize),
+    /// These runs are still going: nothing was deleted.
+    StillRunning(Vec<i64>),
+}
+
+/// Delete the runs `ids` of `workflow_id` (the run-history screen, WP8
+/// Phase D). Only that workflow's rows are touched: an id of another
+/// workflow's run is left alone. A run still going (`running`, `pending`)
+/// refuses the whole delete, since its end would have no row to be written
+/// to; nothing is deleted then.
+pub fn delete(conn: &Connection, workflow_id: i64, ids: &[i64]) -> Result<Deleted> {
+    if ids.is_empty() {
+        return Ok(Deleted::Removed(0));
+    }
+    let list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+    let mut going: Vec<i64> = {
+        let mut st = conn.prepare(&format!(
+            "SELECT id FROM flow_workflow_executions
+              WHERE workflow_id = ?1 AND id IN ({}) AND status IN ('running', 'pending')",
+            list
+        ))?;
+        let rows = st
+            .query_map(params![workflow_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?;
+        rows
+    };
+    if !going.is_empty() {
+        going.sort_unstable();
+        return Ok(Deleted::StillRunning(going));
+    }
+    let removed = conn.execute(
+        &format!(
+            "DELETE FROM flow_workflow_executions WHERE workflow_id = ?1 AND id IN ({})",
+            list
+        ),
+        params![workflow_id],
+    )?;
+    tracing::info!(
+        "Deleted {} run(s) from the history of workflow {}",
+        removed,
+        workflow_id
+    );
+    Ok(Deleted::Removed(removed))
+}
+
 /// Close the runs a quit or crash left `running`: they are failed with
 /// [`INTERRUPTED`], so the history never shows a run as still going that
 /// nothing is running. How many there were.
@@ -162,5 +211,7 @@ pub fn close_interrupted(conn: &Connection, now: DateTime<Utc>) -> Result<usize>
     )?)
 }
 
+#[cfg(test)]
+mod delete_tests;
 #[cfg(test)]
 mod tests;

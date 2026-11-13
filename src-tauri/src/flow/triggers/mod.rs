@@ -32,6 +32,7 @@ pub mod drive;
 pub mod feed;
 pub mod order_monitor;
 pub mod order_poll;
+pub mod own_orders;
 pub mod price_monitor;
 pub mod restore;
 pub mod runs;

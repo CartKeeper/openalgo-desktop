@@ -89,6 +89,12 @@ pub async fn list_executions(app: &Arc<AppState>, id: i64, limit: Option<u32>) -
     svc::history(app, id, limit.as_deref()).await.into()
 }
 
+/// Delete chosen runs from a workflow's history (WP8 Phase D: the
+/// run-history screen; no upstream route).
+pub async fn delete_executions(app: &Arc<AppState>, id: i64, ids: Vec<i64>) -> FlowReply {
+    svc::delete_runs(app, id, ids).await.into()
+}
+
 /// `GET /flow/api/workflows/{id}/export`.
 pub async fn export_workflow(app: &Arc<AppState>, id: i64) -> FlowReply {
     transfer::export(app, id).await.into()
@@ -234,6 +240,15 @@ pub async fn flow_list_executions(
     limit: Option<u32>,
 ) -> Result<FlowReply, AppError> {
     Ok(list_executions(&state.root(), id, limit).await)
+}
+
+#[tauri::command]
+pub async fn flow_delete_executions(
+    state: State<'_, AppState>,
+    id: i64,
+    ids: Vec<i64>,
+) -> Result<FlowReply, AppError> {
+    Ok(delete_executions(&state.root(), id, ids).await)
 }
 
 #[tauri::command]
@@ -420,6 +435,148 @@ mod tests {
         assert_eq!(get_workflow(&t.ctx, id).await.status, 404);
     }
 
+    /// Decision 6a: the run-history screen deletes chosen runs of one
+    /// workflow in one call; a run still going, an unknown workflow and an
+    /// empty choice are refused with a sentence.
+    #[tokio::test]
+    async fn chosen_runs_are_deleted_in_one_call() {
+        let t = app();
+        let created = create_workflow(&t.ctx, manual_quote_log()).await.unwrap();
+        let id = created.body["id"].as_i64().expect("an id");
+        let run = |status: crate::flow::contract::model::RunStatus| {
+            let conn = t.ctx.sqlite.conn().unwrap();
+            let run = crate::flow::store::executions::create(&conn, id, t.ctx.now()).unwrap();
+            if status != crate::flow::contract::model::RunStatus::Running {
+                crate::flow::store::executions::finish(&conn, run, status, None, &[], t.ctx.now())
+                    .unwrap();
+            }
+            run
+        };
+        use crate::flow::contract::model::RunStatus;
+        let (first, second, going) = (
+            run(RunStatus::Completed),
+            run(RunStatus::Failed),
+            run(RunStatus::Running),
+        );
+
+        let refused = delete_executions(&t.ctx, id, vec![second, going]).await;
+        assert_eq!(refused.status, 409, "{}", refused.body);
+        assert_eq!(
+            refused.body["error"],
+            format!(
+                "Run {} is still going, so nothing was deleted. Delete it once it has ended.",
+                going
+            )
+        );
+
+        let deleted = delete_executions(&t.ctx, id, vec![first, second]).await;
+        assert_eq!(deleted.status, 200, "{}", deleted.body);
+        assert_eq!(deleted.body, json!({"status": "success", "deleted": 2}));
+        let left = list_executions(&t.ctx, id, Some(50)).await;
+        assert_eq!(left.body.as_array().map(Vec::len), Some(1));
+        assert_eq!(left.body[0]["id"], json!(going));
+
+        let none = delete_executions(&t.ctx, id, vec![]).await;
+        assert_eq!(none.status, 400, "{}", none.body);
+        assert_eq!(none.body["error"], "Choose at least one run to delete.");
+        let unknown = delete_executions(&t.ctx, id + 100, vec![first]).await;
+        assert_eq!(unknown.status, 404, "{}", unknown.body);
+    }
+
+    /// Decision 6b: the Flow page's Duplicate is a create with the copied
+    /// graph and "<name> (copy)": a new workflow, inactive, with its own
+    /// webhook address and its webhook off, whatever the original's.
+    #[tokio::test]
+    async fn a_duplicate_is_a_new_inactive_workflow_with_its_webhook_off() {
+        let t = app();
+        let original = create_workflow(&t.ctx, manual_quote_log()).await.unwrap();
+        let id = original.body["id"].as_i64().expect("an id");
+        assert_eq!(webhook_enable(&t.ctx, id).await.status, 200);
+        let source = get_workflow(&t.ctx, id).await.body;
+        assert_eq!(source["webhook_enabled"], true);
+        let copy = create_workflow(
+            &t.ctx,
+            json!({
+                "name": "Quote and log (copy)",
+                "description": source["description"],
+                "nodes": source["nodes"],
+                "edges": source["edges"],
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(copy.status, 201, "{}", copy.body);
+        assert_eq!(copy.body["name"], "Quote and log (copy)");
+        assert_eq!(copy.body["is_active"], false);
+        assert_eq!(copy.body["webhook_enabled"], false);
+        assert_ne!(copy.body["webhook_token"], source["webhook_token"]);
+        assert_eq!(copy.body["nodes"], source["nodes"]);
+    }
+
+    /// A symbol as a broker's master contract loads it into the app's cache.
+    fn listed(symbol: &str, exchange: &str, lot_size: i32) -> crate::state::SymbolInfo {
+        crate::state::SymbolInfo {
+            symbol: symbol.into(),
+            token: format!("{exchange}-{symbol}"),
+            exchange: exchange.into(),
+            name: symbol.into(),
+            lot_size,
+            tick_size: 0.01,
+            instrument_type: "EQ".into(),
+            brsymbol: Some(symbol.into()),
+            brexchange: Some("US".into()),
+            fractionable: true,
+        }
+    }
+
+    /// Task D2: the lot sizes come from the app's symbol cache, 1 for a US
+    /// stock on any US label (AAPL is AAPL on every US venue), and none for
+    /// a symbol the cache does not hold.
+    #[tokio::test]
+    async fn us_lot_sizes_come_from_the_symbol_cache_on_any_us_label() {
+        let t = app();
+        t.ctx.load_symbol_cache(vec![
+            listed("AAPL", "NASDAQ", 1),
+            listed("MSFT", "NASDAQ", 1),
+        ]);
+        let r = symbol_lot_sizes(
+            &t.ctx,
+            json!({"symbols": [
+                {"symbol": "AAPL", "exchange": "NASDAQ"},
+                {"symbol": "AAPL", "exchange": "US"},
+                {"symbol": "msft", "exchange": "nyse"},
+                {"symbol": "AAPL", "exchange": "NSE"},
+                {"symbol": "ZZZZ", "exchange": "US"},
+            ]}),
+        );
+        assert_eq!(r.status, 200, "{}", r.body);
+        assert_eq!(
+            r.body["lotSizes"],
+            json!({
+                "NASDAQ:AAPL": 1, "US:AAPL": 1, "NYSE:MSFT": 1,
+                "NSE:AAPL": null, "US:ZZZZ": null,
+            })
+        );
+    }
+
+    /// Task D2: the index lookup reads the app's symbol cache: an Indian
+    /// broker's master contract sizes NIFTY; a US broker's (equities only)
+    /// lists no index underlying.
+    #[tokio::test]
+    async fn index_lot_sizes_come_from_the_symbol_cache() {
+        let t = app();
+        t.ctx.load_symbol_cache(vec![listed("AAPL", "NASDAQ", 1)]);
+        assert_eq!(index_symbols(&t.ctx).body["data"], json!([]));
+        let mut nifty = listed("NIFTY", "NFO", 75);
+        nifty.instrument_type = "FUT".into();
+        t.ctx.load_symbol_cache(vec![nifty]);
+        let r = index_symbols(&t.ctx);
+        assert_eq!(
+            r.body["data"],
+            json!([{"value": "NIFTY", "label": "NIFTY", "exchange": "NFO", "lotSize": 75}])
+        );
+    }
+
     /// The strike lookup reads the web's query keys, `optionType` and
     /// `expiryType` included (the plan's three named arguments dropped them).
     #[tokio::test]
@@ -433,8 +590,8 @@ mod tests {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-        // No option chain in this app yet (Phase D): the lookup answers, it
-        // does not panic, and the query it read is upstream's.
+        // No expiry is listed for NIFTY in an empty symbol cache: the lookup
+        // answers (404, it does not panic), and the query it read is upstream's.
         let r = option_strikes(&t.ctx, params.clone()).await;
         assert!(r.status >= 200, "{}", r.body);
         let q = StrikeQuery::from_params(&params);

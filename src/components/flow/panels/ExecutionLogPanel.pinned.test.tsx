@@ -115,7 +115,10 @@ describe('F-642 the log entries', () => {
     expect(classOf(error.closest('.rounded-lg')?.querySelector('svg'))).toContain('lucide-circle-x')
   })
 
-  it('shows the time as 24-hour hh:mm:ss', () => {
+  // This app (WP8 Phase D, Task D4): Eastern time, 12-hour with AM/PM and
+  // "ET" (CLAUDE.md), where upstream showed 24-hour hh:mm:ss. A run's line
+  // carries naive Eastern time (the engine's `iso_market`), shown as it is.
+  it('shows the time as Eastern 12-hour time with ET', () => {
     render(
       <ExecutionLogPanel
         logs={[
@@ -126,14 +129,13 @@ describe('F-642 the log entries', () => {
         onClose={() => {}}
       />
     )
-    expect(screen.getByText('09:20:05')).toBeInTheDocument()
-    expect(screen.getByText('15:04:09')).toBeInTheDocument()
+    expect(screen.getByText('9:20:05 AM ET')).toBeInTheDocument()
+    expect(screen.getByText('3:04:09 PM ET')).toBeInTheDocument()
   })
 
-  // The web's behaviour, carried as is: formatTime's catch, which would show
-  // the raw text, never runs, because an unparseable time is an Invalid Date
-  // and toLocaleTimeString formats that as the words "Invalid Date" rather
-  // than throwing. A bare time of day is unparseable too.
+  // The web's behaviour, kept: a time that cannot be read shows the words
+  // "Invalid Date" (formatTime's catch never ran on the web), and a bare
+  // time of day cannot be read either.
   it.each(['', 'not a time', '09:20:05'])(
     'shows the web\'s "Invalid Date" for the unparseable time %j',
     (time) => {

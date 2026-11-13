@@ -181,10 +181,10 @@ fn context(
 ) -> NodeCtx {
     let boundary = app.session_boundary();
     NodeCtx::new(NodeCtxParts {
-        client: Arc::new(AppFlowClient::new(
-            Arc::downgrade(app),
-            api_key.unwrap_or_else(|| Secret::new("")),
-        )),
+        client: Arc::new(
+            AppFlowClient::new(Arc::downgrade(app), api_key.unwrap_or_else(|| Secret::new("")))
+                .for_workflow(w.id),
+        ),
         clock: app.clock.clone(),
         cancel: stop,
         workflow_id: Some(w.id),

@@ -576,10 +576,12 @@ async fn an_expired_alert_stands_its_workflow_down() {
     );
 }
 
+mod delete_stops;
 mod eastern;
 mod lifecycle;
 mod monitor_runs;
 mod order_updates;
+mod own_orders;
 mod price_logs;
 mod price_poll;
 mod restart;
@@ -587,3 +589,4 @@ mod schedule_logs;
 mod service_logs;
 mod sign_out;
 mod support;
+mod us_markets;

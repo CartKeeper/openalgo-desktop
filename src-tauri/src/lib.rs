@@ -466,6 +466,7 @@ pub fn run() {
             commands::flow::flow_index_symbols,
             commands::flow::flow_symbol_lotsizes,
             commands::flow::flow_option_strikes,
+            commands::flow::flow_delete_executions,
             commands::telegram::telegram_get_settings,
             commands::telegram::telegram_save_settings,
             commands::telegram::telegram_send_test,

@@ -1,15 +1,15 @@
 //! Telegram Alert and WhatsApp Alert (the web's `execute_telegram_alert`
 //! and `execute_whatsapp_alert`, `flow_executor_service.py` 3059-3078).
 //!
-//! The node interpolates its text, sends it and logs the answer. In this
-//! app a Telegram alert goes through the app's own Telegram settings (the
-//! bot token and chat id on the Telegram page) and the Bot API
-//! (`crate::messaging::telegram`, WP8 Phase C); a context with no app (the
-//! node tests) hands it to the run's client, as upstream's did. WhatsApp is
-//! not available in this app (`contract::client::app`). The recipient of a
-//! Telegram alert is always the saved chat: a legacy `username` on the
-//! node is ignored. A failed send is the node's failure, so the branch
-//! below it stops, as on the web.
+//! The node interpolates its text, hands it to the run's client and logs
+//! the answer, as upstream's did. In this app the run's client
+//! (`contract::client::app::AppFlowClient::telegram`) sends it through the
+//! app's own Telegram settings (the bot token and chat id on the Telegram
+//! page) and the Bot API (`crate::messaging::telegram`, WP8 Phase C); the
+//! node no longer reaches past its client (WP8 Phase D). WhatsApp is not
+//! available in this app. The recipient of a Telegram alert is always the
+//! saved chat: a legacy `username` on the node is ignored. A failed send is
+//! the node's failure, so the branch below it stops, as on the web.
 
 use crate::flow::contract::node::{FlowNode, NodeCtx, NodeOutcome, ERROR, INFO};
 use crate::flow::contract::pyfmt;
@@ -41,15 +41,7 @@ impl FlowNode for TelegramAlert {
     async fn run(&self, ctx: &NodeCtx, data: &Map<String, Value>) -> NodeOutcome {
         let message = pyfmt::str(&text_field(ctx, data, "message"));
         ctx.info(format!("Sending Telegram alert: {}", message));
-        let result = match ctx.app() {
-            // In the app: its own Telegram settings and the Bot API (WP8
-            // Phase C, `crate::messaging::telegram`). The app's run client
-            // (`AppFlowClient::telegram`, outside Phase C's files) still
-            // answers only the not-set-up sentence; docs/flow/PORT.md.
-            Some(app) => crate::messaging::telegram::send_alert(&app, &message).await,
-            // A context with no app (the node tests): the run's client.
-            None => ctx.client.telegram(&message).await,
-        };
+        let result = ctx.client.telegram(&message).await;
         ctx.log(
             format!("Telegram result: {}", pyfmt::str(&result)),
             level_of(&result),
@@ -91,11 +83,12 @@ mod tests;
 #[cfg(test)]
 mod app_tests {
     //! WP8 Phase C: a Telegram Alert in this app sends through the app's
-    //! Telegram settings and the Bot API (`crate::messaging::telegram`).
+    //! Telegram settings and the Bot API (`crate::messaging::telegram`), by
+    //! the run's client, `AppFlowClient` (WP8 Phase D).
 
     use super::*;
     use crate::brokers::BrokerRegistry;
-    use crate::flow::contract::client::fake::FakeFlowClient;
+    use crate::flow::contract::client::app::AppFlowClient;
     use crate::flow::contract::env::NodeEnv;
     use crate::flow::contract::node::NodeCtxParts;
     use crate::flow::nodes::testkit::{answer, data, logs};
@@ -114,11 +107,15 @@ mod app_tests {
         )
     }
 
-    /// A run's context in `t`'s app, over a fake client.
-    fn ctx_in(t: &TestCtx) -> (Arc<FakeFlowClient>, NodeCtx) {
-        let client = Arc::new(FakeFlowClient::new());
-        let ctx = NodeCtx::new(NodeCtxParts {
-            client: client.clone(),
+    /// A run's context in `t`'s app, over the app's own client.
+    fn ctx_in(t: &TestCtx) -> NodeCtx {
+        let client = AppFlowClient::new(
+            Arc::downgrade(&t.ctx),
+            crate::security::Secret::new(t.ctx.internal_token.clone()),
+        )
+        .for_workflow(1);
+        NodeCtx::new(NodeCtxParts {
+            client: Arc::new(client),
             clock: t.clock.clone(),
             cancel: tokio_util::sync::CancellationToken::new(),
             workflow_id: Some(1),
@@ -127,8 +124,7 @@ mod app_tests {
             session_boundary: (3, 0),
             env: NodeEnv::default(),
             app: Arc::downgrade(&t.ctx),
-        });
-        (client, ctx)
+        })
     }
 
     /// With no bot token or chat id saved, the node fails with the sentence
@@ -138,7 +134,7 @@ mod app_tests {
         let t = app();
         let http = FakeHttp::delivering();
         telegram::send_through_for_tests(http.clone());
-        let (client, ctx) = ctx_in(&t);
+        let ctx = ctx_in(&t);
         let out = TelegramAlert
             .run(&ctx, &data(json!({"message": "AAPL crossed 190"})))
             .await;
@@ -148,7 +144,6 @@ mod app_tests {
             "Telegram is not set up: add the bot token and chat id on the Telegram page"
         );
         assert!(http.calls().is_empty());
-        assert!(client.alerts().is_empty());
     }
 
     /// Set up, the node sends its interpolated message to the saved chat,
@@ -159,7 +154,7 @@ mod app_tests {
         telegram::save(&t.ctx.sqlite, &t.ctx.security, Some(TOKEN), "987654321").unwrap();
         let http = FakeHttp::delivering();
         telegram::send_through_for_tests(http.clone());
-        let (client, ctx) = ctx_in(&t);
+        let ctx = ctx_in(&t);
         ctx.vars.set("sym", json!("AAPL"));
         let out = TelegramAlert
             .run(&ctx, &data(json!({"message": "{{sym}} crossed 190"})))
@@ -181,7 +176,6 @@ mod app_tests {
                 })
             )]
         );
-        assert!(client.alerts().is_empty(), "the app sends, not the run's client");
         assert_eq!(
             logs(&ctx)[1],
             (

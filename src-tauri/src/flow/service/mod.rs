@@ -11,11 +11,13 @@
 //! | `activation` | activate, deactivate, the monitors' status |
 //! | `webhooks` | the webhook settings and the public webhook |
 //! | `webhook_guard` | the public webhook's lockout after wrong secrets |
+//! | `webhook_limits` | the public webhook's request limits (WP8 Phase D) |
 
 pub mod activation;
 pub mod transfer;
 pub mod triggers;
 pub mod webhook_guard;
+pub mod webhook_limits;
 pub mod webhooks;
 
 use crate::error::Result;
@@ -368,7 +370,11 @@ fn merged_graph_refusal(data: &Map<String, Value>, existing: Option<&Workflow>) 
 }
 
 /// `DELETE /flow/api/workflows/<id>`: refused while a run holds the
-/// workflow; its feed subscriptions and trigger registrations go first.
+/// workflow; its feed subscriptions and trigger registrations go first,
+/// and an active workflow is recorded inactive before its row is deleted
+/// (WP8 Phase D, decision 6b): if the row cannot be deleted, the workflow
+/// stays stood down, as the page will show it, and a restart restores
+/// nothing for it.
 pub async fn delete(app: &Arc<AppState>, id: i64) -> Reply {
     let Some(_claim) = app.flow.try_claim(id) else {
         return Reply::new(
@@ -376,11 +382,11 @@ pub async fn delete(app: &Arc<AppState>, id: i64) -> Reply {
             json!({"error": "This workflow is still running. Try again when it finishes."}),
         );
     };
-    match load(app, id).await {
-        Ok(Some(_)) => {}
+    let was_active = match load(app, id).await {
+        Ok(Some(w)) => w.is_active,
         Ok(None) => return workflow_not_found(),
         Err(e) => return failed("delete workflow", e),
-    }
+    };
     let hooks = app.flow.triggers();
     app.flow.subscriptions.release(id, hooks.as_ref()).await;
     if app.flow.subscriptions.has(id) {
@@ -397,6 +403,21 @@ pub async fn delete(app: &Arc<AppState>, id: i64) -> Reply {
             id,
             e
         );
+    }
+    if was_active {
+        let now = app.now();
+        let stood_down = app
+            .blocking(move |c| {
+                crate::flow::triggers::store::deactivate(&*c.sqlite.conn()?, id, now)
+            })
+            .await;
+        if let Err(e) = stood_down {
+            tracing::warn!(
+                "Workflow {} could not be recorded inactive before it was deleted: {}",
+                id,
+                e
+            );
+        }
     }
     match app
         .blocking(move |c| workflows::delete(&*c.sqlite.conn()?, id))
@@ -506,6 +527,41 @@ pub async fn history(app: &Arc<AppState>, id: i64, limit: Option<&str>) -> Reply
             ),
         ),
         Err(_) => read_failed("read the run history"),
+    }
+}
+
+/// Delete chosen runs from a workflow's history (the run-history screen,
+/// WP8 Phase D; the web has no such route): one call for every run chosen.
+pub async fn delete_runs(app: &Arc<AppState>, id: i64, runs: Vec<i64>) -> Reply {
+    if runs.is_empty() {
+        return Reply::new(400, json!({"error": "Choose at least one run to delete."}));
+    }
+    match load(app, id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return workflow_not_found(),
+        Err(e) => return failed("delete runs", e),
+    }
+    let deleted = app
+        .blocking(move |c| executions::delete(&*c.sqlite.conn()?, id, &runs))
+        .await;
+    match deleted {
+        Ok(executions::Deleted::Removed(n)) => {
+            Reply::new(200, json!({"status": "success", "deleted": n}))
+        }
+        Ok(executions::Deleted::StillRunning(going)) => {
+            let which = match going.as_slice() {
+                [one] => format!("Run {} is", one),
+                more => format!(
+                    "Runs {} are",
+                    more.iter().map(i64::to_string).collect::<Vec<_>>().join(", ")
+                ),
+            };
+            Reply::new(
+                409,
+                json!({"error": format!("{} still going, so nothing was deleted. Delete it once it has ended.", which)}),
+            )
+        }
+        Err(e) => failed("delete runs", e),
     }
 }
 

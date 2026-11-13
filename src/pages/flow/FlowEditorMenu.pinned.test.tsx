@@ -273,7 +273,8 @@ describe('F-165 the toolbar while a request is out', () => {
 })
 
 describe('F-166 the actions menu', () => {
-  it('lists Run Now, Show Logs, Export Workflow, Replace from JSON and Keyboard Shortcuts, in that order', async () => {
+  // This app (WP8 Phase D, decision 6a): Run history after Show Logs.
+  it('lists Run Now, Show Logs, Run history, Export Workflow, Replace from JSON and Keyboard Shortcuts, in that order', async () => {
     renderEditor()
     await loaded()
     const menu = await openMenu(userEvent.setup())
@@ -284,6 +285,7 @@ describe('F-166 the actions menu', () => {
     ).toEqual([
       'Run Now',
       'Show Logs',
+      'Run history',
       'Export Workflow',
       'Replace from JSON',
       'Keyboard Shortcuts',
