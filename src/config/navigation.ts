@@ -28,6 +28,7 @@ import {
   TrendingUp,
   User,
   Users,
+  Workflow,
 } from 'lucide-react'
 
 export interface NavItem {
@@ -121,6 +122,7 @@ export const sidebarGroups: SidebarGroup[] = [
       { href: '/strategy', label: 'Strategies', icon: Code2, region: ['india'] },
       { href: '/python', label: 'Python', icon: Code2, region: ['india'] },
       { href: '/platforms', label: 'Platforms', icon: Layers, region: ['india'] },
+      { href: '/flow', label: 'Flow', icon: Workflow },
     ],
   },
   {
@@ -173,6 +175,9 @@ export const externalLinks = {
 export function isActiveRoute(pathname: string, href: string): boolean {
   if (href === '/strategy') {
     return pathname.startsWith('/strategy')
+  }
+  if (href === '/flow') {
+    return pathname === '/flow' || pathname.startsWith('/flow/')
   }
   if (href === '/python') {
     return pathname.startsWith('/python')

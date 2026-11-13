@@ -112,6 +112,74 @@ pub fn default_product_for_exchange(exchange: Option<&str>) -> &'static str {
     }
 }
 
+/// Whether a run reads OpenAlgo web's defaults: only under test, with the
+/// market zone set to IST (`set_market_tz_for_tests(Asia::Kolkata)`), as
+/// the goldens and the tests ported from the web set it, so the defaults
+/// they recorded hold. This app's runs read the US market's.
+fn replaying_the_web() -> bool {
+    #[cfg(test)]
+    if crate::flow::contract::time::market_tz() == chrono_tz::Asia::Kolkata {
+        return true;
+    }
+    false
+}
+
+/// The exchange an equity or order node reads when its `exchange` field is
+/// missing or empty: `US` (the web's `NSE` when replaying it), the default
+/// the editor gives a new node. The option, index and margin nodes keep the
+/// web's defaults until Phase D's US lookups.
+pub fn default_exchange() -> &'static str {
+    if replaying_the_web() {
+        "NSE"
+    } else {
+        "US"
+    }
+}
+
+/// A Schedule's time when it has none: 09:35 market time (the web's 09:15),
+/// as a new Start node is given.
+pub fn default_schedule_time() -> &'static str {
+    if replaying_the_web() {
+        "09:15"
+    } else {
+        "09:35"
+    }
+}
+
+/// A Time Window's start and end when it has none: the US regular session,
+/// 09:30 to 16:00 market time (the web's 09:15 to 15:30).
+pub fn default_time_window() -> (&'static str, &'static str) {
+    if replaying_the_web() {
+        ("09:15", "15:30")
+    } else {
+        ("09:30", "16:00")
+    }
+}
+
+#[cfg(test)]
+mod us_default_tests {
+    use super::*;
+    use crate::flow::contract::time::{set_market_tz_for_tests, DEFAULT_MARKET_TZ};
+
+    #[test]
+    fn a_missing_field_reads_this_apps_us_defaults() {
+        set_market_tz_for_tests(DEFAULT_MARKET_TZ);
+        assert_eq!(default_exchange(), "US");
+        assert_eq!(default_product_for_exchange(Some(default_exchange())), "CNC");
+        assert_eq!(default_schedule_time(), "09:35");
+        assert_eq!(default_time_window(), ("09:30", "16:00"));
+    }
+
+    #[test]
+    fn a_replay_of_the_web_reads_the_webs_defaults() {
+        set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
+        assert_eq!(default_exchange(), "NSE");
+        assert_eq!(default_schedule_time(), "09:15");
+        assert_eq!(default_time_window(), ("09:15", "15:30"));
+        set_market_tz_for_tests(DEFAULT_MARKET_TZ);
+    }
+}
+
 /// One master-contract expiry string as a date, or None if unreadable.
 pub fn parse_expiry_date(value: &str) -> Option<NaiveDate> {
     let upper = value.to_uppercase();

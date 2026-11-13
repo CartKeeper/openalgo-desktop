@@ -443,6 +443,28 @@ pub fn run() {
             commands::symbol_metadata::symbol_metadata_search,
             //
             // [wp-anchor] WP8 flow
+            commands::flow::flow_list_workflows,
+            commands::flow::flow_create_workflow,
+            commands::flow::flow_get_workflow,
+            commands::flow::flow_update_workflow,
+            commands::flow::flow_delete_workflow,
+            commands::flow::flow_execute_workflow,
+            commands::flow::flow_list_executions,
+            commands::flow::flow_export_workflow,
+            commands::flow::flow_import_workflow,
+            commands::flow::flow_replace_workflow,
+            commands::flow::flow_activate,
+            commands::flow::flow_deactivate,
+            commands::flow::flow_webhook_info,
+            commands::flow::flow_webhook_enable,
+            commands::flow::flow_webhook_disable,
+            commands::flow::flow_webhook_regenerate,
+            commands::flow::flow_webhook_regenerate_secret,
+            commands::flow::flow_webhook_set_auth_type,
+            commands::flow::flow_monitor_status,
+            commands::flow::flow_index_symbols,
+            commands::flow::flow_symbol_lotsizes,
+            commands::flow::flow_option_strikes,
             //
         ])
         .build(tauri::generate_context!())

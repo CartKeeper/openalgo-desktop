@@ -101,7 +101,7 @@ impl FlowNode for GetQuote {
 
     async fn run(&self, ctx: &NodeCtx, data: &Map<String, Value>) -> NodeOutcome {
         let symbol = ctx.get_str(data, "symbol", "");
-        let exchange = ctx.get_str(data, "exchange", "NSE");
+        let exchange = ctx.get_str(data, "exchange", crate::flow::node_contracts::default_exchange());
         ctx.info(format!("Getting quote for: {}", symbol));
         let result = ctx.client.get_quotes(&symbol, &exchange).await;
         ctx.info(shown("Quote result", &result));
@@ -120,7 +120,7 @@ impl FlowNode for GetDepth {
 
     async fn run(&self, ctx: &NodeCtx, data: &Map<String, Value>) -> NodeOutcome {
         let symbol = ctx.get_str(data, "symbol", "");
-        let exchange = ctx.get_str(data, "exchange", "NSE");
+        let exchange = ctx.get_str(data, "exchange", crate::flow::node_contracts::default_exchange());
         ctx.info(format!("Getting depth for: {}", symbol));
         let result = ctx.client.get_depth(&symbol, &exchange).await;
         ctx.info("Depth result received");
@@ -166,7 +166,7 @@ impl FlowNode for OpenPosition {
 
     async fn run(&self, ctx: &NodeCtx, data: &Map<String, Value>) -> NodeOutcome {
         let symbol = ctx.get_str(data, "symbol", "");
-        let exchange = ctx.get_str(data, "exchange", "NSE");
+        let exchange = ctx.get_str(data, "exchange", crate::flow::node_contracts::default_exchange());
         let product = ctx.get_str(
             data,
             "product",
@@ -210,7 +210,7 @@ impl FlowNode for MultiQuotes {
 
     async fn run(&self, ctx: &NodeCtx, data: &Map<String, Value>) -> NodeOutcome {
         let raw = ctx.get_str(data, "symbols", "");
-        let exchange = ctx.get_str(data, "exchange", "NSE");
+        let exchange = ctx.get_str(data, "exchange", crate::flow::node_contracts::default_exchange());
         let symbols: Vec<Value> = raw
             .split(',')
             .map(str::trim)

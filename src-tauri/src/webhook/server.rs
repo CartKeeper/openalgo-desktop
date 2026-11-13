@@ -11,7 +11,7 @@
 //! check, rate limiter, analyzer routing and Gate B as any API client.
 
 use crate::db::sqlite::WebhookConfig;
-use crate::flow::support::dispatch::INTERNAL_TOKEN_HEADER;
+use crate::flow::support::dispatch::{InProcessCall, INTERNAL_TOKEN_HEADER};
 use crate::state::AppState;
 use crate::webhook::handlers::{self, WebhookState};
 use crate::webhook::rate_limiter::{rate_limit_middleware, RateLimiterState};
@@ -160,12 +160,29 @@ pub fn router(state: AppState) -> Router {
         .layer(TraceLayer::new_for_http())
 }
 
+tokio::task_local! {
+    /// Set while the handlers serve a request `flow::support::dispatch::run`
+    /// sent in process with the right token: the one place the handlers
+    /// honor the internal token (`WebhookState::is_internal`).
+    static IN_PROCESS_CALL: ();
+}
+
+/// Whether the handler running now serves an in-process Flow call.
+pub(crate) fn in_process_call() -> bool {
+    IN_PROCESS_CALL.try_with(|_| ()).is_ok()
+}
+
 /// Flow's in-process calls carry the app's per-process token in
-/// `x-openalgo-internal-token`. A request with the right token has it
-/// written into its JSON body as `apikey`, where every `/api/v1` schema
-/// reads the key, so the handlers' key check, the rate limiter, analyzer
-/// routing and Gate B apply as for any API client; a wrong token is refused
-/// here. A request without the header passes untouched.
+/// `x-openalgo-internal-token`, and the `InProcessCall` mark only
+/// `flow::support::dispatch::run` puts on a request (a request from the
+/// network listener, or a public URL in front of it, cannot carry one).
+/// A marked request with the right token has the token written into its
+/// JSON body as `apikey`, where every `/api/v1` schema reads the key, and
+/// runs inside `IN_PROCESS_CALL`, so the handlers' key check, the rate
+/// limiter, analyzer routing and Gate B apply as for any API client. The
+/// header without the mark, or with a wrong token, is refused here as a
+/// wrong key. A request without the header passes untouched, and the token
+/// in its body is checked like any other key, and refused.
 async fn internal_trust(
     State(shared): State<Arc<WebhookState>>,
     req: Request,
@@ -179,13 +196,16 @@ async fn internal_trust(
     else {
         return next.run(req).await;
     };
+    if req.extensions().get::<InProcessCall>().is_none() {
+        return refused(StatusCode::FORBIDDEN, "Invalid openalgo apikey");
+    }
     let Some(app) = shared.get_app_state() else {
         return refused(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Internal error: AppState not available",
         );
     };
-    if !shared.is_internal(&given) {
+    if !shared.is_internal_token(&given) {
         return refused(StatusCode::FORBIDDEN, "Invalid openalgo apikey");
     }
     let (mut parts, body) = req.into_parts();
@@ -221,7 +241,11 @@ async fn internal_trust(
         None => return refused(StatusCode::BAD_REQUEST, "The request body must be a JSON object"),
     }
     parts.headers.remove(CONTENT_LENGTH);
-    next.run(Request::from_parts(parts, axum::body::Body::from(json.to_string())))
+    IN_PROCESS_CALL
+        .scope(
+            (),
+            next.run(Request::from_parts(parts, axum::body::Body::from(json.to_string()))),
+        )
         .await
 }
 
@@ -360,5 +384,192 @@ impl WebhookServer {
 impl Drop for WebhookServer {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    //! The `/api/v1` key (WP8 Phase B follow-up): never in a log line or a
+    //! frontend event, and the app's per-process internal token honored
+    //! only for in-process calls (`flow::support::dispatch::run`), never
+    //! for a request over the network listener or a public URL in front of
+    //! it.
+
+    use super::*;
+    use crate::brokers::BrokerRegistry;
+    use crate::flow::support::dispatch;
+    use crate::flow::support::testkit::capture_logs;
+    use crate::state::testing::{build, TestCtx};
+    use crate::webhook::handlers::emitted;
+    use axum::body::Body;
+    use serde_json::{json, Value};
+    use std::time::Duration;
+    use tower::ServiceExt;
+
+    /// A headless app in analyzer mode, so an order lands in the sandbox.
+    fn harness() -> TestCtx {
+        let t = build(BrokerRegistry::new(), chrono::Utc::now());
+        t.ctx.sqlite.set_analyze_mode(true).unwrap();
+        t
+    }
+
+    /// The router the network listener serves (`WebhookServer::start`
+    /// builds the same `router`; a public URL forwards to it).
+    fn listener(t: &TestCtx) -> Router {
+        router((*t.ctx).clone())
+    }
+
+    fn post(uri: &str, body: Value) -> Request {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    async fn answer(router: Router, req: Request) -> (u16, Value) {
+        let resp = router.oneshot(req).await.unwrap();
+        let status = resp.status().as_u16();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    fn order(apikey: &str) -> Value {
+        json!({
+            "apikey": apikey, "strategy": "test", "exchange": "NASDAQ", "symbol": "AAPL",
+            "action": "BUY", "quantity": 1, "pricetype": "MARKET", "product": "CNC"
+        })
+    }
+
+    fn with(mut body: Value, key: &str, value: Value) -> Value {
+        body[key] = value;
+        body
+    }
+
+    fn refused_as_a_wrong_key(status: u16, body: &Value) {
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(body["status"], "error", "{body}");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("Invalid openalgo apikey"),
+            "{body}"
+        );
+    }
+
+    /// Each order route logs its request before checking the key; the key
+    /// in that line is masked, whoever sent it.
+    #[tokio::test]
+    async fn a_logged_request_shows_no_apikey() {
+        let t = harness();
+        let logs = capture_logs();
+        let requests = [
+            ("/api/v1/placeorder", order("k-123")),
+            ("/api/v1/placesmartorder", with(order("k-123"), "position_size", json!(1))),
+            ("/api/v1/modifyorder", with(order("k-123"), "orderid", json!("1"))),
+            ("/api/v1/cancelorder", json!({"apikey": "k-123", "strategy": "test", "orderid": "1"})),
+            ("/api/v1/cancelallorder", json!({"apikey": "k-123", "strategy": "test"})),
+            ("/api/v1/closeposition", json!({"apikey": "k-123", "strategy": "test"})),
+        ];
+        for (uri, body) in requests {
+            let (status, body) = answer(listener(&t), post(uri, body)).await;
+            refused_as_a_wrong_key(status, &body);
+        }
+        let text = logs.text();
+        for line in [
+            "Place order request",
+            "Place smart order request",
+            "Modify order request",
+            "Cancel order request",
+            "Cancel all orders request",
+            "Close position request",
+        ] {
+            assert!(text.contains(line), "{line} is not logged:\n{text}");
+        }
+        assert!(!text.contains("k-123"), "the key is in the log:\n{text}");
+        assert!(text.contains("[redacted]"), "{text}");
+    }
+
+    /// A placed order's frontend event carries the request without its key:
+    /// the user's own API key here.
+    #[tokio::test]
+    async fn an_emitted_order_shows_no_apikey() {
+        let t = harness();
+        let (_, key) = t
+            .ctx
+            .sqlite
+            .create_api_key("sdk", "read,write", &t.ctx.security)
+            .unwrap();
+        emitted::take();
+        let (status, body) = answer(listener(&t), post("/api/v1/placeorder", order(&key))).await;
+        assert_eq!(status, 200, "{body}");
+        let events = emitted::take();
+        let (_, payload) = events
+            .iter()
+            .find(|(event, _)| event == "api_order")
+            .expect("the order's event");
+        assert_eq!(payload["apikey"], "[redacted]", "{payload}");
+        assert_eq!(payload["symbol"], "AAPL", "{payload}");
+        assert!(!payload.to_string().contains(&key), "{payload}");
+    }
+
+    /// The internal token in the header of a request over the listener is
+    /// refused, as a wrong key is.
+    #[tokio::test]
+    async fn the_listener_refuses_the_internal_token_in_a_header() {
+        let t = harness();
+        let mut req = post("/api/v1/placeorder", order(""));
+        req.headers_mut().insert(
+            dispatch::INTERNAL_TOKEN_HEADER,
+            t.ctx.internal_token.parse().unwrap(),
+        );
+        let (status, body) = answer(listener(&t), req).await;
+        refused_as_a_wrong_key(status, &body);
+        assert!(t.ctx.sqlite.get_sandbox_orders().unwrap().is_empty());
+    }
+
+    /// The internal token as the body's key over the listener is refused
+    /// with exactly what a wrong key gets.
+    #[tokio::test]
+    async fn the_listener_refuses_the_internal_token_in_a_body() {
+        let t = harness();
+        let wrong = answer(listener(&t), post("/api/v1/placeorder", order("not-a-key"))).await;
+        let token = answer(
+            listener(&t),
+            post("/api/v1/placeorder", order(&t.ctx.internal_token)),
+        )
+        .await;
+        refused_as_a_wrong_key(wrong.0, &wrong.1);
+        refused_as_a_wrong_key(token.0, &token.1);
+        assert!(t.ctx.sqlite.get_sandbox_orders().unwrap().is_empty());
+    }
+
+    /// Flow's own path keeps working: the order goes in process through
+    /// `dispatch::run` with the token, lands in the sandbox, and neither
+    /// the log nor the event carries the token.
+    #[tokio::test]
+    async fn the_in_process_order_path_takes_the_token_and_hides_it() {
+        let t = harness();
+        let logs = capture_logs();
+        emitted::take();
+        let mut payload = order("").as_object().unwrap().clone();
+        payload.remove("apikey");
+        let req = dispatch::post_request(&t.ctx.internal_token, "placeorder", payload).unwrap();
+        let raw = dispatch::run(&t.ctx, req, Duration::from_secs(30)).await.unwrap();
+        let out: Value = serde_json::from_str(&raw.text).unwrap();
+        assert_eq!(raw.status, 200, "{out}");
+        assert_eq!(out["status"], "success", "{out}");
+        assert!(out["orderid"].as_str().is_some_and(|id| !id.is_empty()), "{out}");
+        assert_eq!(t.ctx.sqlite.get_sandbox_orders().unwrap().len(), 1);
+        let token = t.ctx.internal_token.clone();
+        assert!(!logs.text().contains(&token), "the token is in the log");
+        let events = emitted::take();
+        let (_, event) = events
+            .iter()
+            .find(|(event, _)| event == "api_order")
+            .expect("the order's event");
+        assert!(!event.to_string().contains(&token), "{event}");
     }
 }

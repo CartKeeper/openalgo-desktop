@@ -21,6 +21,9 @@ async fn run_with(data: Value, vars: Value, trigger: RunTrigger) -> Run {
 
 /// One run of the node answering its quote with `quote`.
 async fn run_quoted(data: Value, vars: Value, trigger: RunTrigger, quote: Value) -> Run {
+    // Ported from the web: a node without an exchange reads the web's NSE,
+    // so these run as a web replay (`node_contracts::default_exchange`).
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
     let client = Arc::new(FakeFlowClient::new());
     client.reply("quotes", quote);
     let ctx = NodeCtx::bare(client.clone()).with_trigger(trigger);

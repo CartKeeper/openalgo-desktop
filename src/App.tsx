@@ -70,6 +70,11 @@ const NewChartinkStrategy = lazy(() => import('@/pages/chartink/NewChartinkStrat
 const ViewChartinkStrategy = lazy(() => import('@/pages/chartink/ViewChartinkStrategy'))
 const ConfigureChartinkSymbols = lazy(() => import('@/pages/chartink/ConfigureChartinkSymbols'))
 
+// Flow (WP8): the visual workflow builder
+const FlowIndex = lazy(() => import('@/pages/flow/FlowIndex'))
+const FlowEditor = lazy(() => import('@/pages/flow/FlowEditor'))
+const FlowKeyboardShortcuts = lazy(() => import('@/pages/flow/FlowKeyboardShortcuts'))
+
 // Admin pages
 const AdminIndex = lazy(() => import('@/pages/admin/AdminIndex'))
 const FreezeQty = lazy(() => import('@/pages/admin/FreezeQty'))
@@ -186,6 +191,9 @@ function App() {
                   path="/chartink/:strategyId/configure"
                   element={<ConfigureChartinkSymbols />}
                 />
+                {/* WP8: Flow */}
+                <Route path="/flow" element={<FlowIndex />} />
+                <Route path="/flow/shortcuts" element={<FlowKeyboardShortcuts />} />
                 {/* Phase 7: Admin */}
                 <Route path="/admin" element={<AdminIndex />} />
                 <Route path="/admin/freeze" element={<FreezeQty />} />
@@ -242,6 +250,8 @@ function App() {
                 <Route path="/historify" element={<Historify />} />
                 <Route path="/historify/charts" element={<HistorifyCharts />} />
                 <Route path="/historify/charts/:symbol" element={<HistorifyCharts />} />
+                {/* WP8: Flow editor (full width for the canvas) */}
+                <Route path="/flow/editor/:id" element={<FlowEditor />} />
               </Route>
 
               {/* 404 Not Found */}

@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   bottomNavItems,
+  filterSidebarGroups,
   isActiveRoute,
   mobileSheetItems,
   navItems,
   profileMenuItems,
+  sidebarGroups,
 } from './navigation'
 
 describe('Navigation Config', () => {
@@ -93,5 +95,32 @@ describe('Navigation Config', () => {
       expect(isActiveRoute('/dashboard/sub', '/dashboard')).toBe(false)
       expect(isActiveRoute('/orderbookextra', '/orderbook')).toBe(false)
     })
+  })
+})
+
+// WP8 Phase B: Flow (the visual workflow builder) in the sidebar.
+describe('Flow in the sidebar (WP8)', () => {
+  function strategyItems(brokerId: string | null) {
+    const group = filterSidebarGroups(sidebarGroups, brokerId).find((g) => g.label === 'Strategy')
+    return group?.items.map((item) => [item.label, item.href]) ?? []
+  }
+
+  it('is in the Strategy group for a US broker', () => {
+    expect(strategyItems('alpaca')).toContainEqual(['Flow', '/flow'])
+  })
+
+  it('is in the Strategy group in generic mode', () => {
+    expect(strategyItems('generic')).toContainEqual(['Flow', '/flow'])
+  })
+
+  it('is in the Strategy group for an Indian broker too', () => {
+    expect(strategyItems('zerodha')).toContainEqual(['Flow', '/flow'])
+  })
+
+  it('stays highlighted on the editor and the shortcuts page, like Strategies on its pages', () => {
+    expect(isActiveRoute('/flow', '/flow')).toBe(true)
+    expect(isActiveRoute('/flow/editor/7', '/flow')).toBe(true)
+    expect(isActiveRoute('/flow/shortcuts', '/flow')).toBe(true)
+    expect(isActiveRoute('/flows', '/flow')).toBe(false)
   })
 })

@@ -62,6 +62,9 @@ struct T {
 }
 
 fn t(feed: Feed, workflow: Option<i64>, subs: Arc<Subscriptions>) -> T {
+    // Ported from the web: a node without an exchange reads the web's NSE,
+    // so these run as a web replay (`node_contracts::default_exchange`).
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::Asia::Kolkata);
     let feed = Arc::new(feed);
     let client = Arc::new(FakeFlowClient::new());
     let env = NodeEnv {

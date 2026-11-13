@@ -39,13 +39,11 @@ fn registry_types() -> BTreeSet<String> {
 }
 
 #[test]
-#[ignore = "needs the Flow frontend sources (carried in WP8 Phase B)"]
 fn the_validator_matches_the_editor_registry() {
     assert_eq!(registry_types(), sorted(&VALID_NODE_TYPES));
 }
 
 #[test]
-#[ignore = "needs the Flow frontend sources (carried in WP8 Phase B)"]
 fn every_node_rendering_branch_handles_is_a_branching_type() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src/components/flow/nodes");
     let handle = regex::Regex::new(r#"id="(true|false|yes|no)""#).unwrap();
@@ -105,7 +103,6 @@ fn seeded_legs(strategy: &str) -> Vec<(String, String, String)> {
 }
 
 #[test]
-#[ignore = "needs the Flow frontend sources (carried in WP8 Phase B)"]
 fn every_seeded_template_is_a_basket_the_validator_accepts() {
     for strategy in ["iron_condor", "bull_call_spread", "bear_put_spread"] {
         let legs: Vec<Value> = seeded_legs(strategy)

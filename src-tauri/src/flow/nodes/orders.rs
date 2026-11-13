@@ -83,7 +83,7 @@ pub fn resolve_standard_order(
     allow_zero_quantity: bool,
 ) -> Result<StandardOrder, String> {
     let symbol = f.text("symbol", None, &[])?.to_uppercase();
-    let exchange = f.choice("exchange", VALID_EXCHANGES, Some("NSE"), &[])?;
+    let exchange = f.choice("exchange", VALID_EXCHANGES, Some(crate::flow::node_contracts::default_exchange()), &[])?;
     let action = f.choice("action", &VALID_ACTIONS, Some("BUY"), &[])?;
     let minimum = if allow_zero_quantity { 0 } else { 1 };
     let quantity = f.integer("quantity", Some(1), &[], Some(minimum))?;
@@ -517,7 +517,7 @@ impl FlowNode for ClosePositionsNode {
             let result = ctx.client.close_all_positions().await;
             return finish(ctx, data, "Close all positions result", result);
         };
-        let exchange = supplied(ctx, data, &["exchange"]).unwrap_or_else(|| "NSE".into());
+        let exchange = supplied(ctx, data, &["exchange"]).unwrap_or_else(|| crate::flow::node_contracts::default_exchange().into());
         let product = supplied(ctx, data, &["product"])
             .unwrap_or_else(|| default_product_for_exchange(Some(&exchange)).to_string());
         ctx.info(format!(

@@ -297,8 +297,9 @@ impl FlowNode for TimeWindow {
     }
 
     async fn run(&self, ctx: &NodeCtx, data: &Map<String, Value>) -> NodeOutcome {
-        let fields = time_field(ctx, data, "startTime", "09:15")
-            .and_then(|s| time_field(ctx, data, "endTime", "15:30").map(|e| (s, e)));
+        let (start_default, end_default) = crate::flow::node_contracts::default_time_window();
+        let fields = time_field(ctx, data, "startTime", start_default)
+            .and_then(|s| time_field(ctx, data, "endTime", end_default).map(|e| (s, e)));
         let (start_raw, end_raw) = match fields {
             Ok(f) => f,
             Err(message) => {

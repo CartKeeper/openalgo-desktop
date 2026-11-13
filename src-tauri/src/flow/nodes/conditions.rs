@@ -137,7 +137,7 @@ impl FlowNode for PositionCheck {
     async fn run(&self, ctx: &NodeCtx, data: &Map<String, Value>) -> NodeOutcome {
         const ABORT: &str = "Position check aborted: ";
         let symbol = ctx.get_str(data, "symbol", "");
-        let exchange = ctx.get_str(data, "exchange", "NSE");
+        let exchange = ctx.get_str(data, "exchange", crate::flow::node_contracts::default_exchange());
         let product = ctx.get_str(
             data,
             "product",
@@ -395,7 +395,7 @@ impl FlowNode for PriceCondition {
     async fn run(&self, ctx: &NodeCtx, data: &Map<String, Value>) -> NodeOutcome {
         const ABORT: &str = "Price check aborted: ";
         let symbol = ctx.get_str(data, "symbol", "");
-        let exchange = ctx.get_str(data, "exchange", "NSE");
+        let exchange = ctx.get_str(data, "exchange", crate::flow::node_contracts::default_exchange());
         let field = ctx.get_str(data, "field", "ltp");
         let operator = ctx.get_str(data, "operator", ">");
         if !PRICE_FIELDS.contains(&field.as_str()) {

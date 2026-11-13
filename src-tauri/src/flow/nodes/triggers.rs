@@ -162,7 +162,7 @@ impl FlowNode for PriceAlert {
 
     async fn run(&self, ctx: &NodeCtx, data: &Map<String, Value>) -> NodeOutcome {
         let symbol = ctx.get_str(data, "symbol", "");
-        let exchange = ctx.get_str(data, "exchange", "NSE");
+        let exchange = ctx.get_str(data, "exchange", crate::flow::node_contracts::default_exchange());
         let condition = normalize_condition(&ctx.get_str(data, "condition", "greater_than"));
         // The web's get_float raises on a list or dict level, before the
         // symbol is checked, and the run ends (decisions.md 24).

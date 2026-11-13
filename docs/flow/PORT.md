@@ -435,3 +435,335 @@ no duplicate command names, migration names or crate keys), with
 The 12 ignored Rust tests are the Flow tests that read the frontend
 sources (`docs/flow/parity.md`); they un-ignore when WP8 Phase B carries
 those files.
+
+## Phase B — the Flow frontend (`wp8b-flow-ui`)
+
+### Carried (Task B1)
+
+- From the same commit (`52580437b0991774576272d007c442cd6eb820fd`), with
+  `git checkout 52580437 -- <paths>` on 2026-11-12: `src/api/flow.ts`,
+  `src/api/flowDesktop.ts`, `src/pages/flow/**`, `src/components/flow/**`,
+  `src/components/desktop/{FlowConfirmDialogs, FlowEditorAccountControls,
+  FlowLeaveGuard, FlowPanelNotes, FlowWebhookReachability}.tsx` (+ tests),
+  `src/lib/flow/**`, `src/lib/desktopFlow.ts` (+ test),
+  `src/stores/flowWorkflowStore.ts` (+ 3 tests), `src/types/flow.ts`,
+  `src/types/flow.surface.json` (+ test): 168 files, 77 of them tests.
+  `src/api/flow.test.ts` is carried in Task B2 with the invoke bridge it
+  tests.
+- Packages: `@xyflow/react ^12.10.0` (upstream's range; the lock resolves
+  12.12.1, the plan's pin). `@uiw/react-codemirror`, `@uiw/codemirror-themes`
+  and `@codemirror/lang-json` were already dependencies at upstream's ranges,
+  and the carried tree imports none of them. Beyond the plan's four:
+  `react-router ^7.12.0` declared (37 carried files import `react-router`,
+  upstream's habit; `react-router-dom@7.12.0` already brought it into the
+  lock, so no package was added), and the dev dependencies `jest-axe
+  ^10.0.0` + `@types/jest-axe ^3.5.9` (7 carried tests use
+  `src/test/a11y-utils.ts`, which this repository ships but whose package
+  was never declared). The two base test files that import `jest-axe`
+  (`components/ui/button.test.tsx`, `components/layout/MobileBottomNav.test.tsx`)
+  now get past the import and still fail, on `document is not defined`:
+  they have no jsdom pragma. They are the base branch's, not fixed here.
+
+### Not carried
+
+| Upstream path | Why |
+| --- | --- |
+| `src/lib/flow/indicatorOffsetWording.test.ts` | Two of its four cases read `docs/prompt/flow-import-format.md` and `docs/userguide/21-flow-visual-builder/README.md`, which this repository does not have (Phase D writes `docs/flow/user-guide.md`); the panel wording it also pins is pinned by `ConfigPanel.desktop.test.tsx`. |
+| `src/utils/toast.ts`, `src/components/layout/AccountControls.tsx`, `src/api/tunnel.ts`, `src/hooks/useProfileMenuItems.ts`, `src/stores/updateStore.ts`, `src/components/auth/LogoutConfirmDialog.tsx`, `src/test/axiosAnswer.ts`, `vitest.config.ts`, `src/test/setup.ts` | App modules the carried tree imports or assumes; the adapters below stand in, or this app's own files do. |
+
+### Adapters (new files of this app)
+
+| File | Stands in for |
+| --- | --- |
+| `src/utils/toast.ts` (+ test) | Upstream's `showToast`: the same call shape `(message, category?, options?)`, every toast shown through sonner. This app has no per-category toast settings, so the category is accepted and unused. |
+| `src/components/layout/AccountControls.tsx` (+ test) | Upstream's header account controls, imported by the carried `FlowEditorAccountControls`: the Navbar's own pieces (broker badge, mode badge, the Live/Analyze switch with its sandbox warning, the theme switch, the profile menu with this app's `profileMenuItems`, Docs, Logout), preceded by `AccountSwitcher`; `onNavigate` lets the editor's leave guard ask first. Copied from `Navbar.tsx`, which this WP may not edit, so a change to the Navbar's account controls is made here too. No Check for Updates (no in-app updater here) and no logout confirmation dialog (the Navbar has none). It logs out once, through the store's `logout()`; the Navbar sends the request twice (`authApi.logout()` and then the store's `logout()`, which sends it again) — reported, not changed. |
+| `src/components/flow/testSetup.ts` | The part of upstream's `src/test/setup.ts` this repository's lacks: `ResizeObserver`/`IntersectionObserver` as real classes, Radix pointer-capture and `scrollIntoView` stubs. Imported by every carried `*.test.tsx`; nothing in the app imports it. |
+
+### Hand edits to carried files (Task B1)
+
+| File | Edit |
+| --- | --- |
+| every carried `*.test.tsx` (56 files) | Three lines prepended: `// @vitest-environment jsdom`, `import '@/test/setup'`, `import '@/components/flow/testSetup'`. This repository has no vitest config (upstream's `vitest.config.ts` sets jsdom and the setup file for every test); each jsdom test here declares its own. |
+| `src/api/flowDesktop.ts` | `tunnelApi` and `onTunnelAddress` removed: `getWebhookInfoForTrader` is `getWebhookInfo` (the server already answers on `public_base_url`, Task A7). |
+| `src/lib/desktopFlow.test.ts` | The case reading `src-tauri/src/services/schemas.rs` (`SUPPORTED_INTERVALS`) removed with its `node:fs` imports: this app has no such constant (the History node passes the interval through to `/api/v1/history`). |
+| `src/pages/flow/FlowKeyboardShortcuts.pinned.test.tsx`, `src/components/flow/panels/ConfigPanel.options.test.tsx` | `:scope > div` selectors replaced by child traversal: this repository's jsdom 24 mishandles `:scope` (upstream runs jsdom 27). |
+| `src/pages/flow/FlowIndex.test.tsx` | The test "shows the tunnel address while the built-in tunnel is online" removed with the `@/api/tunnel` mock (no tunnel API here). |
+| `FlowIndex.w6.test.tsx`, `FlowIndex.pinned.test.tsx`, `ConfigPanel.{desktop, cancelOrders, triggers, titles, everyNode}.test.tsx` | The dead `@/api/tunnel` mocks removed. |
+| `src/pages/flow/FlowEditor.test.tsx` | "offers Check for Updates in the profile menu" became "shows the Dashboard link and the profile menu with Logout" (the Profile entry asserted instead); the leave-guard test goes through the Profile entry (`/profile`) instead of upstream's mocked Positions entry; the `@/hooks/useProfileMenuItems` mock removed. |
+| `src/pages/flow/FlowEditor.w6.test.tsx` | The logout test asserts a direct logout (no "Confirm Logout" dialog here); the `useProfileMenuItems` mock removed. |
+| `src/index.css` (this app's file) | The `@theme inline` mappings `--color-buy`, `--color-sell`, `--color-node-*` added, and upstream's "FLOW EDITOR STYLES" block (through `.bg-surface-2`) appended; the `--buy`/`--sell` HSL triplets already existed in this app's base layer. |
+
+### vitest here, against upstream's
+
+- Under vitest, a `react-router-dom` re-export and a direct `react-router`
+  import load as two module instances, so a hook from one cannot see a
+  `Router` from the other (the first run failed every FlowEditor test on
+  `useNavigate() may be used only in the context of a <Router>` from the
+  adapter). Components the carried tree renders import from `react-router`,
+  as the carried tests' `MemoryRouter` does. In the Vite bundle both names
+  resolve to one module.
+- CSS imports are stubbed (vitest's default `css: false`; upstream sets
+  `css: true`); the one test that reads `src/index.css` reads the file.
+- jsdom 24 here, 27 upstream: the two `:scope` edits above. `HTMLCanvasElement
+  .getContext` "not implemented" lines on stderr are jsdom's, from passing
+  tests.
+
+### Task B2: `/flow/api` as Tauri commands
+
+- `src-tauri/src/commands/flow.rs` (new): upstream's 22 routes
+  (`server/routes/flow/{mod,triggers,lookups}.rs`, not carried) as `flow_*`
+  commands, registered under the WP8 handler anchor in `lib.rs`
+  (`pub mod flow;` under the commands anchor). Each command reads its
+  arguments as the route read the request and calls the one service
+  function the route called; the service's `Reply` is answered as
+  `FlowReply { status, body }`. A JSON body from the editor goes through
+  `Body::parse` again (serialised, then read), so `null`, `{}`, `[]`, `""`
+  and `0` are the web's "no data" here too. Commands take the root `Arc`
+  (`AppState::root()`), the state the service functions and Flow's
+  long-lived tasks share. The plain functions the commands wrap are what
+  the tests call (`commands/flow.rs` tests on the headless harness).
+- Against the plan's signatures: `flow_option_strikes(params:
+  HashMap<String, String>)` is the web's query map (`StrikeQuery::
+  from_params` reads `underlying`, `optionType`, `expiry`, `expiryType`,
+  `exchange`; the plan's `(underlying, exchange, expiry)` dropped two the
+  carried leg builder sends); `flow_list_executions(id, limit: Option<u32>)`
+  hands the limit on as the query string the web read;
+  `flow_execute_workflow(id, body)` accepts and ignores the body, as the
+  route did; `flow_symbol_lotsizes(body)` always has JSON (the route's
+  "not JSON" case cannot arrive from `invoke`).
+- `src/api/flow.ts`: the web's types, function names, signatures and query
+  keys kept; every body is now `flowReply(invoke('flow_…', args))`.
+  `flowReply<T>` resolves the body below 400 and throws `FlowApiError`
+  above, with `message` read as upstream's web client read a refusal
+  (`message`, then `error`, then `detail`, then a plain-text body) and
+  `response.data` = the body, so the pages' `error.message` toasts and
+  `failedRunLog(error)` (`lib/desktopFlow.ts`) work unchanged. A command
+  that rejects (an `AppError`) is a 500 with its message. No wrapper for
+  `flow_monitor_status`: no carried page calls the route.
+- `src/api/flow.test.ts`: upstream's test rewritten over a mocked `invoke`
+  (command and arguments per call, what each function hands back, the
+  refusal rules). Its 401 (redirect to `/login`) and 403 (CSRF sentence)
+  cases are not carried: no HTTP session or CSRF in the bridge.
+- `src/components/desktop/FlowWebhookReachability.tsx`: already warned on a
+  `127.*`, `localhost`, `0.0.0.0` or `[::1]` host; its remedy now names this
+  app's setting (Admin → Server Settings → "Ngrok/Public URL") instead of
+  upstream's built-in tunnel and Host Server URL. Its test and
+  `FlowIndex.test.tsx` assert the new words.
+- The 11 Rust tests Phase A `#[ignore]`d for want of the frontend sources
+  (`flow/mod.rs` 1, `validator/tests/editor_parity.rs` 3,
+  `nodes/options/tests.rs` 1, `nodes/legs/tests.rs` 1,
+  `indicator_service/tests/catalogue.rs` 5) run again on the carried
+  `src/lib/flow/constants.ts`, `src/lib/flow/customLegs.ts` and
+  `src/components/flow/nodes/`, and pass; the `NEEDS_EDITOR` scaffolding
+  went with the attributes. Phase A's gate counted 12 ignored: the twelfth
+  is `nodes/http/client/tests.rs`'s proxy test, which
+  `system_proxy_settings_are_ignored` runs in a child process with proxy
+  variables set, and stays ignored by design. `docs/flow/parity.md`'s list
+  "Ignored until the frontend arrives (Phase B)" is therefore resolved; that
+  file is outside Phase B's list and was not edited (Phase D owns its final
+  table).
+
+### Task B3: routes, the sidebar entry and help
+
+- `src/App.tsx`: `/flow` (the list) and `/flow/shortcuts` under `Layout`,
+  `/flow/editor/:id` under `FullWidthLayout` (no navbar: the canvas has the
+  viewport, and the editor's own header carries the account controls), as
+  upstream mounts them; lazy pages like every other route.
+- `src/config/navigation.ts`: `{ href: '/flow', label: 'Flow', icon:
+  Workflow }` in the Strategy group for every region, and `isActiveRoute`
+  keeps `/flow` lit on `/flow/editor/:id` and `/flow/shortcuts` (exact
+  `/flow` or a `/flow/` prefix), as the Strategies entry does on its nested
+  pages. `src/config/navigation.test.ts` gains a `describe` for both; its
+  three stale assertions are the base branch's and were left alone.
+- Help: `src/pages/flow/flowHelp.ts` (new) holds the three pages' items for
+  the app's shared `HelpButton` (`src/components/HelpButton.tsx`, the
+  floating trigger every page has), adapted from upstream's user guide
+  chapter 21 in this app's words (AAPL on NASDAQ, whole shares, CNC on US
+  venues, Eastern time and the 9:30 AM to 4:00 PM ET session, the Sandbox
+  page, the Ngrok/Public URL setting). `src/pages/flow/flowHelp.test.tsx`
+  renders each page and reads the panel.
+- The help says only what this branch does. Two facts shaped it: the
+  Sandbox page is in the sidebar for Indian brokers only, so the help points
+  a US trader to the Orderbook, which shows the sandbox's orders in analyzer
+  mode (`get_order_book` routes there); and the public webhook route, the
+  order-update poller and Telegram are Phase C's, so a "Not connected yet"
+  item says a webhook address does not receive alerts yet, an Order Update
+  trigger does not fire, and a Telegram Alert node stops with "Telegram is
+  not set up". Phase C replaces that item when it connects them.
+
+### Bundle note: React Flow's own chunk (applied in Follow-up 3)
+
+First reported (`vite.config.ts` was outside WP8's files), then applied
+with the coordinator's authorization (Follow-up 3 below). Before it, the
+`manualChunks` rule `id.includes('/react/')` also matched
+`node_modules/@xyflow/react/`, so React Flow landed in `vendor-react`, the
+chunk every page loads: `vendor-react` grew from 220.54 kB to 358.34 kB
+(minified) with a 15.87 kB stylesheet, and because React Flow imports
+`d3-zoom`/`d3-drag`/`d3-selection` (the `vendor-charts` rule), the entry
+also preloaded `vendor-charts` (247.33 kB) on every page. Measured with
+a copy of the config outside the repository, these two rules put React
+Flow in a `vendor-flow` chunk (136.49 kB + 15.87 kB CSS) that only the
+`/flow/editor` route loads, return `vendor-react` to 220.55 kB, and take
+`vendor-charts` off the startup preloads, with no circular-chunk warning.
+The first rule matters: without it Rollup's CommonJS helpers land in
+`vendor-flow`, React's chunk imports them back, and Rollup warns
+"Circular chunk: vendor-react -> vendor-flow -> vendor-react".
+
+```ts
+        manualChunks: (id) => {
+          // Rollup's CommonJS interop helpers (a virtual module, outside node_modules):
+          // with React's chunk, which every page loads, so a lazy vendor chunk never holds them.
+          if (id.includes('commonjsHelpers')) {
+            return 'vendor-react'
+          }
+          if (id.includes('node_modules')) {
+            // Flow editor (React Flow) - only /flow/editor. Before the React rule:
+            // '@xyflow/react/' contains '/react/'.
+            if (id.includes('/@xyflow/')) {
+              return 'vendor-flow'
+            }
+            // Core React - most stable, cached long-term
+```
+
+### Hand edits to carried files (Task B3)
+
+| File | Edit |
+| --- | --- |
+| `src/pages/flow/FlowIndex.tsx`, `FlowEditor.tsx`, `FlowKeyboardShortcuts.tsx` | `<HelpButton items={…} pageTitle="…" />` as the first child of the page's root (the editor's inside `FlowEditorContent`, before the Replace dialog), with the two imports. |
+| `src/pages/flow/FlowEditorMenu.pinned.test.tsx` | The header test's `getByText('Flow Editor')` scoped to the header bar: the help panel's title, in the DOM while closed, is "Flow Editor" too. |
+
+### Review fix pass (after the whole-branch review)
+
+| File | Edit |
+| --- | --- |
+| `src/lib/flow/constants.ts` | `EXCHANGES` gains this app's seven US venues after upstream's fourteen, in the run's order (`flow::support::US_EXCHANGES`: NYSE, NASDAQ, AMEX, ARCA, BATS, OTC, US), and `defaultProductForExchange` answers `CNC` on them (`US_VENUES`), as `node_contracts::default_product_for_exchange` does. Without them a US trader could not pick NASDAQ in any exchange field (the `{ }` text mode flips back to the select once the text has no `{{`), and a node imported on NASDAQ showed a blank exchange and MIS while the run sent CNC. New test `src/lib/flow/usExchanges.test.ts` reads the Rust list. |
+| `src/lib/flow/constants.pinned.test.ts`, `components/flow/panels/OrderFields.test.tsx`, `components/flow/panels/ConfigPanel.triggers.test.tsx` | Their pinned exchange lists (upstream's fourteen) gain the seven US venues; the OrderFields test's name says so. |
+| `src/api/flow.ts` (Task B2's) | `importWorkflow` also hands back the reply's `notes` and `migrations` when it has them (`ImportedWorkflow`). |
+| `src/pages/flow/FlowIndex.tsx` | The import's success toast: with notes (the Eastern-time sentence), a warning that carries them; with upgraded legacy fields only, their count, as Replace from JSON counts them; otherwise upstream's sentence. Test `src/pages/flow/flowImportNotes.test.tsx`. Review Focus 1's note now reaches the trader, not only the reply. |
+| `src/components/desktop/FlowLeaveGuard.tsx` | `askBeforeLeaving(action)` exported: runs the action at once, or asks with the editor's "Leave without saving?" prompt when the canvas has unsaved changes. `src/components/layout/AccountControls.tsx` sends Logout through it: upstream confirmed every logout with a dialog of its own (the reason the guard lets `/login` through), this app's header logs out at once, so Logout from the editor dropped unsaved edits without asking. Test `src/pages/flow/flowLogout.test.tsx`. |
+| `src/pages/flow/FlowEditor.tsx` | Export Workflow saves through this app's `saveTextFile` (`src/lib/exportFile.ts` → the `save_export_file` command: the file goes to Downloads and a toast gives its path) instead of upstream's `<a download>`, which does nothing in Tauri's macOS webview, as `exportFile.ts` records. Found after the review, while checking the Definition of Done. `FlowEditor.test.tsx` and `FlowEditorMenu.pinned.test.tsx` assert the saved file's name and two-space JSON and that no anchor is clicked; their blob and anchor capture, and the now-unused `readBlob` helper, were removed. |
+| `src/pages/flow/flowHelp.ts` | "What Flow is" says the true thing about Live mode: Flow orders reach `OrderService::place_order` with no acknowledged mode (`expected_mode: None`, as every `/api/v1` caller), so the app's per-order Live/Paper check does not apply; the help says a Live-mode workflow places real orders with no confirmation per order, instead of "the order checks apply". |
+
+### Known deviations after Phase B (recorded, not changed)
+
+- **Times on the Flow pages are upstream's.** The workflow list's dates
+  (`src/lib/flow/listDate.ts`) are written in Asia/Kolkata, so a workflow
+  saved after 1:30 PM ET (2:30 PM in summer) shows the next day's date,
+  and the Execution Log's times are 24-hour (`ExecutionLogPanel.tsx`).
+  CLAUDE.md asks for America/New_York, 12-hour with AM/PM: plan Task D4.
+- **New nodes carried upstream's NSE defaults** (exchange NSE, a 09:15
+  daily schedule gated 09:15–15:15 on NSE, a 09:15–15:30 Time Window,
+  which in this app let a default schedule run before the 9:30 AM ET open)
+  until Follow-up 2 below gave them this app's US defaults.
+- **The carried Flow UI keeps upstream's styling, not this app's design
+  tokens.** The Flow editor CSS block has literal colors (handle and node
+  glow `#e879f9`/`#22d3ee`, edges `#888888`, the hovered edge `#ffffff`),
+  the carried components use Tailwind palette colors directly
+  (`bg-purple-500`, `text-amber-500`, `bg-green-500`, `text-red-500` and
+  the like, hundreds of uses), and the editor's controls are mostly 32 px
+  (`h-8`) with a few 28 px and 24 px ones (`h-7`, `h-6`) that are outside
+  CLAUDE.md's button scale. Restyling upstream's 168 files was not part of
+  the carry; it would be its own piece of work.
+- **The editor's help trigger** (the shared `HelpButton`, fixed at the
+  bottom right) covers the MiniMap's corner, or the bottom of the side
+  panel when one is open. Where the editor's help icon goes is the user's
+  call; the shared component is outside WP8's files.
+### Follow-up 1: the `/api/v1` key (coordinator-authorized, after the review)
+
+Two holes the review found, fixed in `webhook/handlers.rs`,
+`webhook/server.rs` and `flow/support/dispatch.rs` (Phase A's and the app's
+files, opened to this phase for it):
+
+- **No key in a log line or an event.** The six order routes logged their
+  request with `{:?}` (`info!("Place order request: {:?}", req)`) and eight
+  routes sent it to the frontend in `api_*` events, `apikey` included: the
+  user's own OpenAlgo API key on an outside call, the internal token on a
+  Flow call. They now log and emit `redacted(&req)`, the request's JSON with
+  every `apikey`, at any depth, as `"[redacted]"`.
+- **The internal token works only in process.** It was accepted from any
+  request's body (`validate_api_key`) or header (`internal_trust`), so the
+  network listener, and a public URL in front of it, took it too.
+  `dispatch::run` now marks every request it hands the app's router
+  (`InProcessCall`, a request extension, which only code in this process
+  can add); `internal_trust` refuses the token header, as a wrong key, on a
+  request without the mark, and runs a marked request with the right token
+  inside the task-local `IN_PROCESS_CALL`; `WebhookState::is_internal`
+  honors the token only inside that scope, so over the network the token is
+  checked like any other key and refused with exactly a wrong key's answer.
+- Tests (`webhook/server.rs` `key_tests`, `webhook/handlers.rs`
+  `redaction_tests`): the six routes' log lines with the key `k-123` carry
+  no `k-123`; an order's `api_order` event with a user key carries
+  `"[redacted]"`; the listener refuses the internal token in a header and in
+  a body (no sandbox order); the in-process order path takes the token and
+  neither its log nor its event carries it; nested keys are masked. The
+  test-only `handlers::emitted` records what the handlers emit on the
+  test's thread (a headless state has no window).
+
+### Follow-up 2: US defaults for new nodes (coordinator-decided)
+
+The defaults a new node gets in the editor, and the ones the run reads for
+a field a saved node lacks, are this app's US market now (the coordinator's
+decision under the user's delegation):
+
+- **Start**: `time: '09:35'`, `marketHoursOnly: true`, `marketHoursStart:
+  '09:30'`, `marketHoursEnd: '16:00'`, `marketHoursExchange: 'US'` (was a
+  09:15 run gated 09:15–15:15 on NSE, which in this app let a default
+  schedule run before the 9:30 AM ET open). **Time Window**: 09:30 to 16:00.
+- **Equity and order nodes** whose default exchange was `NSE` start on `US`:
+  Price Alert, Place Order, Smart Order, Split Order, Close Positions,
+  Position Check, Price Condition, Get Quote, Get Depth, Multi Quotes,
+  History, Indicator, Prior Period OHLC, Bar Offset, Open Position, Symbol,
+  and the four streaming nodes. They store no product: it follows the
+  exchange, so `US` reads CNC (`defaultProductForExchange`), on the face and
+  in the panel as in the run.
+- **Kept as upstream** until Phase D's US lookups (Task D2): the option and
+  index nodes (`optionsOrder`/`optionsMultiOrder` NSE_INDEX with NRML,
+  `optionSymbol`, `optionChain`, `syntheticFuture` NSE_INDEX, `expiry` NFO)
+  and Margin (NSE: it needs an Indian broker). The Indian exchanges stay
+  selectable beside the US venues.
+- **The editor's fallbacks for a missing field** (`src/lib/flow/constants.ts`
+  defaults, `ConfigPanel.tsx`'s Time, Start, End, Calendar, Start Time, End
+  Time and every equity or order node's Exchange, `OrderFields.tsx`'s
+  `ExchangeField` fallback, the Product control and the node faces'
+  exchange, time and product) read the same values.
+- **The run's fallbacks** read them too: `flow::node_contracts::{
+  default_exchange, default_schedule_time, default_time_window}` replace the
+  literal `"NSE"` of the 17 equity and order node fallbacks (`nodes/data.rs`,
+  `history.rs`, `streaming.rs`, `conditions.rs`, `triggers.rs`,
+  `symbols.rs`, `indicator.rs`, `orders.rs`), the scheduler's `"09:15"`
+  (`triggers/scheduler.rs`) and the Time Window's `"09:15"`/`"15:30"`
+  (`nodes/timing.rs`). Margin's fallback stays `"NSE"`. Under test, a run
+  replaying OpenAlgo web (market zone set to IST, as the goldens and the
+  tests ported from the web set it) reads the web's NSE, 09:15 and
+  09:15–15:30, so that evidence holds unchanged: all six golden families
+  still match.
+- **Help** (`flowHelp.ts`): a new node starts on the US exchange, product
+  CNC, with the Indian exchanges still in the list; a new Schedule runs at
+  9:35 AM ET held to the session, and a new Time Window covers it.
+- **Tests added**: `src/lib/flow/usDefaults.test.ts` (a new Start node's
+  defaults, Time Window, every equity or order node on US with CNC, the
+  option/index/margin nodes unchanged, Indian exchanges selectable);
+  `src/components/flow/usDefaults.test.tsx` (the panel and the faces for a
+  node saved without its exchange, times or product); Rust
+  `node_contracts::us_default_tests`, `nodes::data_tests::us_defaults`
+  (Get Quote with no exchange asks for US),
+  `scheduler::market_time_tests::a_daily_schedule_without_a_time_runs_at_0935_eastern`,
+  `timing::tests::eastern::a_time_window_without_times_is_the_us_regular_session`.
+- **Carried tests updated** (they pinned upstream's defaults): frontend
+  `constants.pinned.test.ts` (new-node defaults), `marketHoursDefaults.test.ts`,
+  `orderNodeDefaults.test.ts`, `nodeFaces.pinned.test.tsx`,
+  `nodeFaces.data.pinned.test.tsx`, `ConfigPanel.{data, desktop, indicator,
+  logic, orders, streaming, triggers}.test.tsx` and `OrderFields.test.tsx`
+  (the unset value read as US, 09:35, 09:30–16:00 or CNC; "stores the
+  window edited" now types 09:45, since 09:30 is the default and React
+  fires no change for it; the desktop test reads `default_exchange()` in
+  `history.rs` instead of the literal); Rust `nodes/streaming/tests.rs` and
+  `nodes/triggers/tests.rs` (ported from the web, their harnesses now set
+  the IST web replay, as the other ported tests do).
+
+### Follow-up 3: React Flow's own chunk
+
+`vite.config.ts` gains the two rules in the bundle note above
+(`commonjsHelpers` → `vendor-react` before the `node_modules` check,
+`/@xyflow/` → `vendor-flow` before the React rule), with the coordinator's
+authorization.
