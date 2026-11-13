@@ -40,7 +40,17 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: (id) => {
+          // Rollup's CommonJS interop helpers (a virtual module, outside node_modules):
+          // with React's chunk, which every page loads, so a lazy vendor chunk never holds them.
+          if (id.includes('commonjsHelpers')) {
+            return 'vendor-react'
+          }
           if (id.includes('node_modules')) {
+            // Flow editor (React Flow) - only /flow/editor. Before the React rule:
+            // '@xyflow/react/' contains '/react/'.
+            if (id.includes('/@xyflow/')) {
+              return 'vendor-flow'
+            }
             // Core React - most stable, cached long-term
             if (id.includes('/react-dom/') || id.includes('/react/') || id.includes('/scheduler/')) {
               return 'vendor-react'
