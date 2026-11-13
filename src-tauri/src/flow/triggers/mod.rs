@@ -10,6 +10,7 @@
 //! | `scheduler` | schedule types, next fire times in IST, the jobs, `tick` |
 //! | `price_monitor` | price alerts: conditions, latch, expiry, one run at a time |
 //! | `order_monitor` | order-update watches: matching, claim, follow-up |
+//! | `order_poll` | the order-book poller that feeds them (this app has no order stream) |
 //! | `feed` | the market feed the subscribe nodes read |
 //! | `drive` | the scheduler driver, the 5 s price poll, the order-update subscriber |
 //! | `runs` | starting a triggered run, and the skip while OpenAlgo is signed out |
@@ -30,6 +31,7 @@
 pub mod drive;
 pub mod feed;
 pub mod order_monitor;
+pub mod order_poll;
 pub mod price_monitor;
 pub mod restore;
 pub mod runs;
@@ -63,6 +65,8 @@ pub struct TriggerSide {
     wake_scheduler: Notify,
     /// An alert was added: the poll starts.
     wake_prices: Notify,
+    /// An order-update watch was added: the order-book poller starts.
+    wake_orders: Notify,
     /// The web's worker pools: at most this many monitor runs at once.
     price_runs: Arc<Semaphore>,
     order_runs: Arc<Semaphore>,
@@ -81,6 +85,7 @@ impl TriggerSide {
             stop: CancellationToken::new(),
             wake_scheduler: Notify::new(),
             wake_prices: Notify::new(),
+            wake_orders: Notify::new(),
             price_runs: Arc::new(Semaphore::new(price_monitor::WORKERS)),
             order_runs: Arc::new(Semaphore::new(order_monitor::WORKERS)),
         })
@@ -102,12 +107,14 @@ impl TriggerSide {
         side
     }
 
-    /// The scheduler driver and the price poll.
+    /// The scheduler driver, the price poll and the order-book poller.
     pub fn start_drivers(self: &Arc<Self>) {
         let me = self.clone();
         self.spawn(async move { me.drive_schedules().await });
         let me = self.clone();
         self.spawn(async move { me.poll_prices().await });
+        let me = self.clone();
+        self.spawn(async move { me.poll_orders().await });
     }
 
     pub fn now(&self) -> chrono::DateTime<chrono::Utc> {
@@ -277,6 +284,7 @@ impl TriggerHooks for TriggerSide {
                 let watch = order_monitor::Watch::from_node(workflow_id, data)
                     .map_err(TriggerError::Invalid)?;
                 self.watches.add(watch);
+                self.wake_orders.notify_one();
                 Ok(())
             }
             // A webhook trigger registers nothing: the webhook is its own

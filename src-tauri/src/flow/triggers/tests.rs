@@ -280,7 +280,8 @@ async fn stop_ends_every_task_and_reset_forgets_everything() {
         .unwrap();
     s.reset().await;
     assert!(s.watches.get(1).is_none());
-    assert_eq!(s.task_count(), 2);
+    // The scheduler driver, the price poll and (WP8 Phase C) the order-book poller.
+    assert_eq!(s.task_count(), 3);
     s.stop().await;
     assert_eq!(s.task_count(), 0);
     s.stop().await;
@@ -575,9 +576,12 @@ async fn an_expired_alert_stands_its_workflow_down() {
     );
 }
 
+mod eastern;
 mod lifecycle;
 mod monitor_runs;
+mod order_updates;
 mod price_logs;
+mod price_poll;
 mod restart;
 mod schedule_logs;
 mod service_logs;

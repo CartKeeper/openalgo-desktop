@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   bottomNavItems,
+  filterNavItems,
   filterSidebarGroups,
   isActiveRoute,
   mobileSheetItems,
@@ -122,5 +123,16 @@ describe('Flow in the sidebar (WP8)', () => {
     expect(isActiveRoute('/flow/editor/7', '/flow')).toBe(true)
     expect(isActiveRoute('/flow/shortcuts', '/flow')).toBe(true)
     expect(isActiveRoute('/flows', '/flow')).toBe(false)
+  })
+})
+
+// WP8 Phase C: the Telegram page sets up Flow's Telegram alerts, and a
+// Telegram Alert node's error points US traders there.
+describe('Telegram Bot in the profile menu (WP8)', () => {
+  it('is in the profile menu for a US broker, in generic mode and for an Indian broker', () => {
+    for (const brokerId of ['alpaca', 'generic', 'zerodha']) {
+      const items = filterNavItems(profileMenuItems, brokerId).map((item) => [item.label, item.href])
+      expect(items, brokerId).toContainEqual(['Telegram Bot', '/telegram'])
+    }
   })
 })

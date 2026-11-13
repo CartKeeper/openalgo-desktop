@@ -767,3 +767,337 @@ decision under the user's delegation):
 (`commonjsHelpers` → `vendor-react` before the `node_modules` check,
 `/@xyflow/` → `vendor-flow` before the React rule), with the coordinator's
 authorization.
+
+## Phase C — triggers and Telegram alerts (`wp8c-flow-triggers`)
+
+Phase A carried the trigger side (scheduler, price monitor, order-update
+monitor, start-up restore) and installs it at app start (`flow::start` ->
+`TriggerSide::install`). Phase C proves it in Eastern time, fixes what the
+proof found, connects what this app lacked (the public webhook route, an
+order-book poller in place of upstream's event bus, Telegram), and adds the
+Live-mode confirmation on activation.
+
+### Task C1: schedules in Eastern time
+
+- `triggers/tests/eastern.rs` (new): the plan's C1 list on the headless
+  harness, market zone `America/New_York`, a manual clock, each fire stepped
+  as the driver steps it (`Scheduler::tick`, then `run_scheduled`), so no
+  test waits on wall time. Every 1 minute activated at 10:00:30 AM ET runs at
+  10:01:02 and 10:02:02 AM ET (upstream's alignment, the minute plus 2 s) and
+  not between; a daily 9:35 AM ET schedule runs once a day, at 13:35Z while
+  the zone is EDT and 14:35Z after 2026-11-01 (Review Focus 2); a one-time
+  10:05 AM ET schedule runs once and stands its workflow down; a fire while
+  signed out is recorded with the reason and the next fire after sign-in
+  runs; reopening the app (`AppState::open` on the same folder) registers an
+  active schedule again and records its next fire.
+- **Fix, hand edit to a carried file** (`triggers/scheduler.rs`,
+  `Schedule::next_at_or_after`): an interval's next fire was computed on
+  whole seconds, so for a time a few milliseconds after a fire (the tick asks
+  from `now + 1 ms`) it answered that same fire. The driver, which re-ticks
+  at most every 50 ms while something is due, then fired an interval
+  schedule again and again for the first second after each fire: a short
+  run ran again, and a Place Order node sent again. The answer is now never
+  before the time asked. Test `a_fire_moves_an_interval_job_a_whole_interval_on`
+  (failed first: the next fire stayed `15:03:02Z`).
+- Against the plan: the "tokio 1 s tick task owned by `FlowModule::spawn`"
+  is upstream's driver instead (sleeps until the next fire, at most 60 s,
+  woken when a job is added, owned by `TriggerSide`, stopped by
+  `TriggerHooks::stop`); and a signed-out fire is recorded as upstream
+  records it (status `failed`, error "Skipped: OpenAlgo was signed out when
+  this schedule fired, …"), not with a `skipped` status the run history
+  does not know.
+- Times: run records are stored in UTC (`flow_workflow_executions.started_at`
+  and `completed_at`, `flow_workflows.next_run_at`); the lines inside a run's
+  log carry market time (upstream's `iso_market`). Showing them in Eastern
+  12-hour time is Phase D's Task D4.
+
+### The flaky `lifecycle::a_monitor_run_logs_its_result`
+
+- Cause, found from the failing run's own log: the run had finished (its
+  one-shot watch was retired) and only two lines were missing, both
+  `drive.rs` call sites the test thread itself reached. tracing-core caches,
+  for the whole process, whether any subscriber wants a call site and the
+  highest level any wants; while at most one subscriber is registered it
+  asks only the current thread's, so a line first logged on a thread with
+  no subscriber (another test's task) was cached as off everywhere until
+  the next registration. A longer wait could never have seen it.
+- Fix (`triggers/tests/support.rs`, `triggers/tests/lifecycle.rs`):
+  `logged()` installs once per test process a global subscriber that wants
+  every line and prints none (a bare `tracing_subscriber::registry()`), so
+  no call site is cached off; and the test waits on the side's run tasks
+  (`settle`, a join, no time bound) instead of polling the log for 5 s.
+  Tests that capture with `flow::support::testkit::capture_logs` (outside
+  Phase C's files) get the same protection once any `logged()` has run in
+  the process.
+
+### Task C2: price alerts on the quote poll
+
+- The price monitor was carried: every 5 s while an alert is armed, each
+  alert asks for its quote through this app's own `/api/v1/quotes` in
+  process (`QuotesService::get_quote` on the broker session; Alpaca reads
+  the symbol and ignores the venue, so `US` works) and applies its
+  condition; while signed out the poll pauses (logged once); with no broker
+  logged in each quote fails at debug level and nothing fires.
+- **Hand edit** (`triggers/drive.rs`): `check_alerts(client: &dyn
+  FlowClient)` split out of `check_prices` (and `check_alert` takes any
+  `FlowClient`), so a test scripts the quotes. The poll's behaviour is
+  unchanged.
+- Tests (`triggers/tests/price_poll.rs`, Eastern time): "crosses above 190"
+  on AAPL fires once when the quote goes 189 -> 191, not again at 192, and
+  the one-time alert stands its workflow down; an every-time alert fires on
+  each new cross and never while the price stays above; one run at a time
+  per workflow (a second cross while the first run is queued is dropped);
+  an alert past its one-hour window stands down without asking for a quote.
+- Against the plan: the poll keeps upstream's in-process `/api/v1/quotes`
+  call instead of calling `QuotesService::get_quote` directly; the handler
+  calls it, with the key check, the rate limit and the reply shape the
+  monitor reads.
+- Not changed: `price_monitor::Alert::from_node` keeps upstream's `NSE` for
+  a node with no exchange. It cannot be reached here: the strict validator
+  refuses a Price Alert without an exchange before activation, and a new
+  node stores `US`.
+
+### Task C3: the public webhook
+
+- `webhook/server.rs` (this app's file): `POST /flow/webhook/:token` and
+  `POST /flow/webhook/:token/:symbol` on the app's listener, answered by the
+  carried `flow::service::webhooks::trigger` (token, switch, active, lock,
+  secret in the JSON or `?secret=` per the auth type, strict validator,
+  run). The body is read as upstream's route read it: a JSON object as the
+  payload, other JSON kept under `message`/`payload`, an urlencoded form's
+  fields, other text under `message`; a multipart body is read as text
+  (axum's `multipart` feature is not enabled in this app). The path's
+  symbol replaces the body's. `flow/service/{webhooks.rs, webhook_guard.rs}`
+  are unchanged.
+- The routes are merged after the `/api/v1` rate limiter, so they are
+  outside it: that limiter logs the path it refuses (here the token) and is
+  the SDK's budget, which an internet sender would spend. Upstream's own
+  Flow webhook limit (100 a minute per address and per token) is not
+  carried; the guards are the secret, the lockout (10 wrong secrets in 10
+  minutes lock the webhook for 15) and one run at a time per workflow.
+- Request log: tower-http's span is built by `request_span`, which shows
+  `redacted_uri`: `/flow/webhook/[redacted]` (a symbol after it kept) and
+  `secret=[redacted]` for any `secret` in the query (its key read
+  percent-decoded, as the webhook reads it). The listener's start-up log
+  lists the route with a `{token}` placeholder.
+- The address shown is `http://127.0.0.1:5000/flow/webhook/<token>` by
+  default (`public_base_url`: the webhook settings' host and port, or the
+  Ngrok/Public URL). No carried Flow code builds a `localhost` address; the
+  listener binds IPv4 127.0.0.1 only and `localhost` can resolve to `::1`,
+  so the test pins 127.0.0.1.
+- Tests (`webhook/server.rs`, `flow_webhook_tests`, through the listener's
+  router): the right secret runs the workflow and answers upstream's JSON
+  (`message`, `status`, `errors`, `execution_id`, `workflow_id`); the
+  symbol route; an unknown token 404; ten wrong secrets 401 each, then the
+  right one 403 with the lock's sentence; the same alert twice while the
+  first (waiting) run holds the workflow, 202 then 409 "Workflow is already
+  running" (Review Focus 4); neither the token nor a secret in the request
+  log, every way a caller can send them.
+
+### Task C4: order-update triggers from an order-book poller
+
+- `triggers/order_poll.rs` (new): this app has no order stream, so while any
+  order-update watch is active the trigger side reads the order book every
+  5 s through `OrderbookService::get_orderbook` (the sandbox's book in
+  analyzer mode, the broker's otherwise; the service logs one info line per
+  read) and sends one `OrderUpdate` for each order new to the book or whose
+  status changed since the last read, on `AppState::order_updates`, which
+  the carried watches already read. The first read of a book is its
+  baseline (turning a watch on never fires for orders already done), and a
+  new source (analyzer mode switched, another broker) is a new baseline. A
+  failed read keeps the last book. With no watch the poller reads nothing.
+- Statuses are given in the watches' words (`watch_status`): the brokers'
+  `COMPLETE`/`FILLED` -> `complete`; `OPEN`, `PARTIALLY_FILLED`, `PENDING`
+  and the sandbox's `pending` -> `open`; `TRIGGER PENDING` -> `trigger
+  pending`; `CANCELLED`/`EXPIRED` -> `cancelled`; `REJECTED` -> `rejected`;
+  anything else lower-cased, so an `any` watch still hears it.
+- Limits a trader may notice: a change is seen up to 5 s late and only as
+  the status a read finds (a partial fill shows `open` until the order
+  completes; an order that opens and fills between two reads is one
+  `complete` update). A watch turned on within 5 s after an order changed can
+  hear that change at the next read. The sandbox fills a MARKET order at once
+  and has no fill engine for resting orders, so in analyzer mode a watch
+  hears new market orders (`complete`) and cancels.
+- **Hand edits**: `triggers/mod.rs` (`wake_orders`, the poller started with
+  the other drivers, woken when a watch registers), `triggers/restore.rs`
+  (woken after watches are restored), `triggers/order_monitor.rs`
+  (`Watches::is_empty`), `events.rs` (its doc). Carried test
+  `triggers/tests.rs::stop_ends_every_task_and_reset_forgets_everything`
+  counts three drivers now (was two).
+- Tests: `order_poll.rs` (the status words; a book reports each new order
+  and each change once, the baseline nothing; a new source is a new
+  baseline) and `triggers/tests/order_updates.rs` (a sandbox limit order
+  filling between two reads sends exactly one `complete` update with the
+  order's fields and runs the watching workflow once; the book is read only
+  while a watch is active, and no run starts).
+
+### Task C5: Telegram alerts and settings
+
+- Storage (the coordinator's decision): this app's `settings` table is one
+  fixed-column row with no key/value API, so the plan's "settings keys" are
+  provider keys instead: the bot token under `telegram` and the chat id
+  under `telegram_chat_id` in `provider_api_keys`, both encrypted by
+  `SqliteDb::save_provider_key` with the app's `SecurityManager`. No
+  migration. The Data Providers page lists only its own providers, so these
+  rows do not appear there.
+- `messaging/telegram.rs` (new): `load`/`save` (a token is refused before
+  it is stored unless it has Telegram's shape, the bot's number, a colon
+  and a secret of 30 or more letters, digits, `_` or `-`, so nothing else
+  can reach the request URL; a chat id is a number, a group's negative, or
+  a channel's `@name`; a blank token keeps the saved one), `mask` (four
+  dots and the last four characters), `send_message` (`POST
+  https://api.telegram.org/bot<token>/sendMessage` with `{chat_id, text}`
+  as JSON, 15 s timeout; the error is Telegram's own `description`, or
+  "could not be reached" with the HTTP client's error stripped of its URL),
+  `alert_text`, `send_alert` (the node's answer in upstream's client shape)
+  and `send_test`. Checked against Telegram's Bot API and bots pages on
+  2026-11-12 (URL form, JSON bodies, `ok`/`description`/`error_code`,
+  `chat_id` as a number or `@name`, BotFather's `/newbot`).
+- Alert text: upstream's heading and 21-character rule, the message, then
+  `Time: 3:45:12 PM ET` (12-hour Eastern, CLAUDE.md), where upstream wrote
+  `*Flow Alert*` for Markdown and the host's 24-hour time. No `parse_mode`
+  is sent, so a message with `_` or `*` is never refused for its Markdown.
+- `commands/telegram.rs` (new): `telegram_get_settings`,
+  `telegram_save_settings(bot_token, chat_id)`, `telegram_send_test`,
+  registered after the 22 `flow_*` commands. They answer plain sentences
+  (`Result<_, String>`): an `AppError` reaches the page as "Internal error:
+  Validation error: ...".
+- **Hand edit** (`flow/nodes/alerts.rs`): in the app a Telegram Alert sends
+  through `messaging::telegram` (the saved settings); a context with no app
+  (the carried node tests) still asks the run's client. The app's client,
+  `AppFlowClient::telegram` in `flow/contract/client/app.rs`, is outside
+  Phase C's files and still answers only the not-set-up sentence; no run in
+  the app reaches it. Moving the send there and dropping the node's fork is
+  a clean-up for when that file is open.
+- Tests: `messaging/telegram.rs` (the token in no row of any table, read
+  back whole, shown masked; what a save refuses; the exact URL and JSON; a
+  refusal's text never names the token; the Eastern 12-hour stamp; the test
+  message), `commands/telegram.rs`, and `flow/nodes/alerts.rs` (`app_tests`:
+  not set up fails with the sentence that names the Telegram page and sends
+  nothing; set up, it sends the interpolated message to the saved chat).
+  Telegram itself is never called: a fake Bot API (`telegram::fake`) is
+  installed per test thread.
+- Frontend: `src/api/telegram.ts` (the web version's stubs, which nothing
+  imported) is replaced by the three commands (`botToken`/`chatId`
+  arguments). `src/pages/telegram/TelegramIndex.tsx`: a "Bot settings" card
+  (the Bot token as a password field that only ever shows the saved token
+  masked, the Chat ID, Save and Send test message as 40 px buttons, the
+  second secondary and enabled once both are saved), a skeleton while
+  loading, an inline error with Retry, and the Help button
+  (`telegramHelp.ts`). The web bot's sections (status, Start/Stop, users,
+  analytics, broadcast) were removed: they read the web client stub, so the
+  page always stopped at "Failed to load Telegram data" and never showed
+  them. The `/telegram/config`, `/users` and `/analytics` pages are
+  untouched (still routed, still linked from nowhere, as before).
+
+### Navigation: Telegram Bot for every region (coordinator decision)
+
+- `src/config/navigation.ts`: the profile menu's `Telegram Bot` entry
+  (`/telegram`) had `region: ['india']`; it now shows for every region, so
+  a US or generic user reaches the page a Telegram Alert node's error names.
+  Test: a new `it` in `src/config/navigation.test.ts` (Alpaca, generic,
+  Zerodha); the file's three stale assertions are the base branch's and
+  were left alone.
+
+### Live-mode confirmation on activation (coordinator decision)
+
+- The carried UI activated a workflow with one click in either mode, and a
+  Flow order goes through the API order path, which skips the app's
+  per-order Live/Paper confirmation. `src/components/desktop/
+  FlowLiveActivation.tsx` (new): `useLiveActivation(activate)` reads the
+  app's own mode when Activate is chosen (`settingsCommands.getAnalyzeMode`,
+  the setting that routes orders; an API client can switch it behind the
+  header, and a mode that cannot be read counts as Live). In Live mode it
+  asks first: "Activate in Live mode?" / "This workflow will place real
+  orders on the live account without asking each time.", with Cancel and
+  Activate (40 px buttons) and a close button in the header; a 16 px
+  radius, `max-w-lg`, backdrop and Escape close it, closing in 150 ms, no
+  motion under reduced motion. In Analyze mode Activate stays one click.
+- **Hand edits**: `src/pages/flow/FlowIndex.tsx` (the card menu's Activate
+  calls the guard; its dialog renders beside the card's other
+  confirmations) and `src/pages/flow/FlowEditor.tsx` (the header's
+  Activate calls the guard and is disabled while the mode is read; its
+  dialog renders beside the Help button).
+- Test: `src/pages/flow/flowLiveActivation.test.tsx` (from the list and
+  from the editor: Live asks and the dialog's Activate activates, Cancel
+  activates nothing, an unreadable mode asks, Analyze activates at once).
+  Carried tests that pin activation itself (`FlowEditor.test.tsx`,
+  `FlowEditor.pinned.test.tsx`, `FlowEditorMenu.pinned.test.tsx`,
+  `FlowIndex.test.tsx`, `FlowIndex.pinned.test.tsx`) now read the app as
+  Analyze mode through a partial `@/api/tauri-client` mock, so Activate is
+  one click there as before; 10 of their tests would otherwise meet the
+  dialog (jsdom cannot read the mode, which counts as Live).
+- Not covered: a workflow activated in Analyze mode places live orders if
+  the app is switched to Live later, without asking again. The Flow help
+  says so.
+
+### Help: the triggers, Telegram and the Live-mode question (coordinator decision)
+
+- `src/pages/flow/flowHelp.ts`: Phase B's "Not connected yet" item is
+  replaced by five items, each checked against this branch's code:
+  Schedules (America/New_York; every 1 minute at 2 s past each minute,
+  10:01:02 AM ET then 10:02:02 AM ET; Market hours only skips a run outside
+  the session without a history entry; a one-time schedule deactivates its
+  workflow; a fire missed while the app was closed runs only within a
+  minute), Price alerts (the broker's quote every 5 s, a broker logged in;
+  one-time and every-time; expiry), Webhook alerts
+  (`http://127.0.0.1:5000/flow/webhook/<token>`, never `localhost`; the
+  secret in the JSON or with Secret in URL; `/AAPL` for the symbol;
+  `{{webhook.symbol}}`; Enable API Server on Admin -> Server Settings,
+  applied after a restart; active and signed in; the 15-minute lock after
+  ten wrong secrets, Regenerate URL & Secret; already running), Order
+  Update triggers (the order book every 5 s, the sandbox's in analyzer
+  mode, up to 5 s late, orders already there do not fire) and Telegram
+  alerts (the Telegram page from the profile menu; the not-set-up
+  sentence). The two Activate items say that Live mode asks first, and that
+  a workflow activated in analyzer mode trades live if the app is switched
+  to Live later.
+- `src/pages/flow/flowHelp.test.tsx`: the "Not connected yet" assertion is
+  replaced by assertions on those facts (the Eastern 12-hour times, the
+  127.0.0.1 address and no `localhost` anywhere in the panel, Enable API
+  Server, the lock, the order-book poll, the Telegram page, the Live-mode
+  question).
+
+### Review fixes (after the whole-branch review)
+
+- **Order-book poller, another account** (`triggers/order_poll.rs`): the
+  book's source was the mode and the broker only, so signing in with
+  another account on the same broker (Alpaca's paper keys, then its live
+  keys: both `alpaca`) made the new account's last orders, filled and
+  cancelled, "new" at the next read, and a watch on one of them would have
+  run its workflow. The source is now the mode, the broker and the account
+  (the session's user id; Alpaca's is the account number), read before the
+  fetch; a read made while the session changed is dropped. A same-account
+  sign-in again (after the daily auto-logout) keeps the book. Test
+  `another_account_on_the_same_broker_is_a_new_baseline`. Status words, for
+  the record: `done for day` reads as `complete` and `replaced` as
+  `cancelled` (Alpaca's own mapping already turns them into `COMPLETE` and
+  `CANCELLED`).
+- **The request span stays tower-http's** (`webhook/server.rs`): Task C3's
+  redacting span was created under this crate's log target, which the app's
+  default filter (`openalgo_desktop=debug`) turns on, so every log line
+  inside every request gained a `request{method=… uri=…}` prefix (a
+  strategy webhook's id is in its path). It now uses tower-http's target,
+  off by default as before Phase C; turned on, it shows the redacted URI.
+  Test `the_apps_default_log_filter_leaves_the_request_span_off`.
+- **The Live-mode question** (`desktop/FlowLiveActivation.tsx`): its title
+  inherited the shared dialog's 18 px, off CLAUDE.md's type scale, and the
+  shared content's overlay faded under reduced motion. The dialog is now
+  built from the alert-dialog's parts: a 16 px, weight 600 title and an
+  overlay and content that stay still under reduced motion. Test in
+  `flowLiveActivation.test.tsx`.
+- Recorded, not changed (outside Phase C's files): `contract/client/app.rs`
+  still holds `telegram_text`, upstream's Markdown alert text, now unused
+  (the send formats its own in `messaging::telegram::alert_text`).
+
+### Gates (Phase C, 2026-11-12)
+
+`git merge feat/historify-desktop-backend`: already up to date (integration
+head `69758baf`, this branch's base). On the branch head:
+
+| Gate | Result | Whose |
+| --- | --- | --- |
+| `cd src-tauri && cargo test --lib` | `test result: ok. 1398 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 50.18s` (no compiler warnings; base 1368) | passes |
+| `npx vitest run` | `Test Files  4 failed \| 119 passed (123)`, `Tests  40 failed \| 2441 passed \| 1 skipped (2482)` | the base's 40: `MobileBottomNav.test.tsx` (13) and `ui/button.test.tsx` (20) have no jsdom pragma, `ui/page-loader.test.tsx` (4) and `config/navigation.test.ts` (3 stale assertions) |
+| `npm run build` | exit 2 on the base's seven `tsc` errors (`src/api/trading.ts` 384-388, `PlaceOrderDialog.tsx:552`, `Historify.tsx:570`); `npx vite build` alone: `✓ built in 32.18s` | the base's |
+| `npm run lint` | exit 1: `Found 2 errors.` (`backtest/TradeTable.tsx:402`, `trading/ActionReviewModal.test.tsx:764`), 152 warnings, 21 infos; every file Phase C touched lints clean | the base's |

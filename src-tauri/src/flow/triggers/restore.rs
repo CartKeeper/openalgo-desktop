@@ -89,6 +89,8 @@ impl TriggerSide {
                 "Restored {} order-update watch(es) from active workflows",
                 restored
             );
+            // The order-book poller feeds them (WP8 Phase C).
+            self.wake_orders.notify_one();
         }
     }
 

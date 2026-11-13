@@ -9,16 +9,24 @@
 //! handlers in process (`flow::support::dispatch`, `tower::ServiceExt::
 //! oneshot`) with the app's per-process internal token: the same key
 //! check, rate limiter, analyzer routing and Gate B as any API client.
+//!
+//! - Flow's public webhook (`/flow/webhook/{token}`, WP8 Phase C): the token
+//!   names a workflow and is its credential, so the request log shows it as
+//!   `[redacted]` ([`redacted_uri`]), as it does a `secret` in the query.
 
 use crate::db::sqlite::WebhookConfig;
+use crate::flow::service::webhooks;
 use crate::flow::support::dispatch::{InProcessCall, INTERNAL_TOKEN_HEADER};
 use crate::state::AppState;
 use crate::webhook::handlers::{self, WebhookState};
 use crate::webhook::rate_limiter::{rate_limit_middleware, RateLimiterState};
 use crate::webhook::types::{ApiResponse, Empty};
 use axum::{
-    extract::{Request, State},
-    http::{header::CONTENT_LENGTH, StatusCode},
+    extract::{Path, Request, State},
+    http::{
+        header::{CONTENT_LENGTH, CONTENT_TYPE},
+        StatusCode, Uri,
+    },
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -153,11 +161,162 @@ pub fn router(state: AppState) -> Router {
         // ================================================================
         .with_state(shared.clone())
         // The app's own runs (Flow) identify themselves by header
-        .layer(middleware::from_fn_with_state(shared, internal_trust))
+        .layer(middleware::from_fn_with_state(shared.clone(), internal_trust))
         // Rate limiting middleware (applied to all API routes)
         .layer(middleware::from_fn_with_state(rate_limiter.clone(), rate_limit_middleware))
+        // Flow's public webhook, added after the API's rate limit so it is
+        // outside it: that limiter logs the path it refuses (the token is
+        // the workflow's credential), and an internet sender would spend
+        // the SDK's budget. Its own guards: the secret, the lockout after
+        // wrong secrets, one run at a time per workflow.
+        .merge(flow_webhook_routes(shared))
         .layer(cors)
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(request_span))
+}
+
+/// The prefix of Flow's public webhook routes.
+const FLOW_WEBHOOK_PREFIX: &str = "/flow/webhook/";
+
+/// What the request log shows in place of a credential.
+const REDACTED: &str = "[redacted]";
+
+/// The largest alert body read (TradingView's and Chartink's are a few
+/// hundred bytes).
+const FLOW_WEBHOOK_BODY_LIMIT: usize = INTERNAL_BODY_LIMIT;
+
+/// The request log's span: tower-http's own, under its target (so the app's
+/// default log filter leaves it off, as before), with the URI redacted.
+fn request_span(req: &Request) -> tracing::Span {
+    tracing::debug_span!(
+        target: "tower_http::trace::make_span",
+        "request",
+        method = %req.method(),
+        uri = %redacted_uri(req.uri()),
+        version = ?req.version(),
+    )
+}
+
+/// `uri` as the request log shows it: a Flow webhook's token as
+/// `[redacted]` (the symbol after it kept), and the value of any `secret`
+/// in the query as `[redacted]`, its key read as the webhook reads it
+/// (percent-decoded).
+pub(crate) fn redacted_uri(uri: &Uri) -> String {
+    let path = uri.path();
+    let mut shown = match path.strip_prefix(FLOW_WEBHOOK_PREFIX) {
+        Some(rest) => match rest.split_once('/') {
+            Some((_, symbol)) => format!("{}{}/{}", FLOW_WEBHOOK_PREFIX, REDACTED, symbol),
+            None => format!("{}{}", FLOW_WEBHOOK_PREFIX, REDACTED),
+        },
+        None => path.to_string(),
+    };
+    if let Some(query) = uri.query() {
+        let pairs: Vec<String> = query
+            .split('&')
+            .map(|pair| {
+                let key = url::form_urlencoded::parse(pair.as_bytes())
+                    .next()
+                    .map(|(k, _)| k.into_owned())
+                    .unwrap_or_default();
+                if key == "secret" {
+                    format!("secret={}", REDACTED)
+                } else {
+                    pair.to_string()
+                }
+            })
+            .collect();
+        shown.push('?');
+        shown.push_str(&pairs.join("&"));
+    }
+    shown
+}
+
+/// Flow's two public webhook routes, upstream's `POST /flow/webhook/{token}`
+/// and `POST /flow/webhook/{token}/{symbol}` (`flow::service::webhooks`
+/// checks the token, the secret, the lockout and the workflow, then runs
+/// it).
+fn flow_webhook_routes(shared: Arc<WebhookState>) -> Router {
+    Router::new()
+        .route("/flow/webhook/:token", post(flow_webhook))
+        .route("/flow/webhook/:token/:symbol", post(flow_webhook_with_symbol))
+        .with_state(shared)
+}
+
+/// `POST /flow/webhook/{token}`: public, with its own credential.
+async fn flow_webhook(
+    State(shared): State<Arc<WebhookState>>,
+    Path(token): Path<String>,
+    req: Request,
+) -> Response {
+    flow_webhook_call(&shared, token, None, req).await
+}
+
+/// `POST /flow/webhook/{token}/{symbol}`: the path's symbol replaces any in
+/// the body.
+async fn flow_webhook_with_symbol(
+    State(shared): State<Arc<WebhookState>>,
+    Path((token, symbol)): Path<(String, String)>,
+    req: Request,
+) -> Response {
+    flow_webhook_call(&shared, token, Some(symbol), req).await
+}
+
+/// Read the alert as upstream's route did (the body as JSON, text or an
+/// urlencoded form, `?secret=` for URL auth) and answer the service's reply.
+async fn flow_webhook_call(
+    shared: &WebhookState,
+    token: String,
+    symbol: Option<String>,
+    req: Request,
+) -> Response {
+    let Some(app) = shared.get_app_state() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "OpenAlgo is shutting down."})),
+        )
+            .into_response();
+    };
+    let app = app.root();
+    let declared = req
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let url_secret = req.uri().query().and_then(|q| {
+        url::form_urlencoded::parse(q.as_bytes())
+            .find(|(k, _)| k == "secret")
+            .map(|(_, v)| v.into_owned())
+    });
+    let Ok(body) = axum::body::to_bytes(req.into_body(), FLOW_WEBHOOK_BODY_LIMIT).await else {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({"error": "The alert is too large."})),
+        )
+            .into_response();
+    };
+    // The web's `request.form`: a body the sender declared urlencoded. A
+    // multipart body is read as text (this app's axum has no multipart).
+    let form = if declared.starts_with("application/x-www-form-urlencoded") {
+        webhooks::urlencoded_fields(&body)
+    } else {
+        serde_json::Map::new()
+    };
+    let mut payload = webhooks::read_payload(&body, &form);
+    if let Some(s) = symbol {
+        payload.insert("symbol".into(), serde_json::Value::String(s));
+    }
+    let answer = webhooks::trigger(
+        &app,
+        webhooks::WebhookCall {
+            token,
+            payload,
+            url_secret,
+        },
+    )
+    .await;
+    let status = StatusCode::from_u16(answer.reply.status)
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (status, Json(answer.reply.body)).into_response()
 }
 
 tokio::task_local! {
@@ -320,6 +479,9 @@ impl WebhookServer {
         info!("");
         info!("Dynamic Webhook (strategy-based):");
         info!("  POST http://{}:{}/webhook/{{webhook_id}}", host, port);
+        info!("");
+        info!("Flow Webhook (a workflow's own token and secret):");
+        info!("  POST http://{}:{}/flow/webhook/{{token}}", host, port);
         info!("");
         info!("REST API (OpenAlgo SDK compatible):");
         info!("  Order Placement:");
@@ -571,5 +733,279 @@ mod key_tests {
             .find(|(event, _)| event == "api_order")
             .expect("the order's event");
         assert!(!event.to_string().contains(&token), "{event}");
+    }
+}
+
+#[cfg(test)]
+mod flow_webhook_tests {
+    //! WP8 Phase C, Task C3: Flow's public webhook on the app's listener,
+    //! `POST /flow/webhook/<token>` and `POST /flow/webhook/<token>/<symbol>`
+    //! (upstream's two public routes): the token names the workflow, the
+    //! secret proves the caller, wrong secrets lock the webhook, a replay
+    //! while the first run holds the workflow is refused, and neither the
+    //! token nor a secret reaches the request log.
+
+    use super::*;
+    use crate::brokers::BrokerRegistry;
+    use crate::flow::store::workflows::{self, NewWorkflow};
+    use crate::flow::support::testkit::{capture_logs, sign_in};
+    use crate::state::testing::{build, TestCtx};
+    use axum::body::Body;
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    /// A test process-wide subscriber that wants every line and prints
+    /// none, so a log capture here sees every line whatever other tests'
+    /// threads hold (see `flow::triggers::tests::support`).
+    fn every_line_on() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry());
+        });
+    }
+
+    /// The app signed in, analyzer mode off, no broker.
+    fn harness() -> TestCtx {
+        every_line_on();
+        let t = build(BrokerRegistry::new(), chrono::Utc::now());
+        sign_in(&t.ctx);
+        t
+    }
+
+    /// An active workflow with its webhook on: Webhook Trigger, then a Delay
+    /// of `wait` seconds when given, then a Log of `{{webhook.symbol}}`.
+    /// Its id, token and secret.
+    fn hooked(t: &TestCtx, wait: Option<u64>) -> (i64, String, String) {
+        let mut nodes = vec![json!({"id": "w", "type": "webhookTrigger", "position": {"x": 0, "y": 0}, "data": {}})];
+        let mut edges = Vec::new();
+        let mut last = "w";
+        if let Some(seconds) = wait {
+            nodes.push(json!({"id": "d", "type": "delay", "position": {"x": 0, "y": 100}, "data": {"delayValue": seconds}}));
+            edges.push(json!({"id": "e0", "source": "w", "target": "d"}));
+            last = "d";
+        }
+        nodes.push(json!({"id": "l", "type": "log", "position": {"x": 0, "y": 200}, "data": {"message": "Alert for {{webhook.symbol}}"}}));
+        edges.push(json!({"id": "e1", "source": last, "target": "l"}));
+        let conn = t.ctx.sqlite.conn().unwrap();
+        let w = workflows::create(
+            &conn,
+            &t.ctx.security,
+            &NewWorkflow {
+                name: "Hook",
+                description: None,
+                nodes: &json!(nodes),
+                edges: &json!(edges),
+            },
+            t.ctx.now(),
+        )
+        .unwrap();
+        workflows::set_active(&conn, w.id, true, t.ctx.now()).unwrap();
+        workflows::set_webhook_enabled(&conn, w.id, true, t.ctx.now()).unwrap();
+        (
+            w.id,
+            w.webhook_token.unwrap(),
+            w.webhook_secret.unwrap().expose().to_string(),
+        )
+    }
+
+    fn post(uri: &str, content_type: &str, body: String) -> Request {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", content_type)
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    fn post_json(uri: &str, body: Value) -> Request {
+        post(uri, "application/json", body.to_string())
+    }
+
+    /// The answer of the app's listener (`WebhookServer::start` serves this
+    /// same router).
+    async fn answer(t: &TestCtx, req: Request) -> (u16, Value) {
+        let resp = router((*t.ctx).clone()).oneshot(req).await.unwrap();
+        let status = resp.status().as_u16();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    fn runs(t: &TestCtx, id: i64) -> Vec<crate::flow::contract::model::Execution> {
+        crate::flow::store::executions::list(&t.ctx.sqlite.conn().unwrap(), id, 20).unwrap()
+    }
+
+    fn logged_messages(run: &crate::flow::contract::model::Execution) -> Vec<String> {
+        run.logs
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|l| l["message"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// The address the webhook settings show is on 127.0.0.1 (the app's
+    /// listener is IPv4 only; `localhost` can resolve to ::1); a POST of
+    /// it with the secret in the JSON runs the workflow and answers
+    /// upstream's JSON; the address with a symbol puts that symbol in the
+    /// run's `{{webhook.symbol}}`; an unknown token answers 404.
+    #[tokio::test]
+    async fn the_right_secret_runs_the_workflow_and_answers_upstreams_json() {
+        let t = harness();
+        let (id, token, secret) = hooked(&t, None);
+        let info = crate::flow::service::webhooks::info(&t.ctx, id).await;
+        let url = info.body["webhook_url"].as_str().unwrap().to_string();
+        assert_eq!(url, format!("http://127.0.0.1:5000/flow/webhook/{}", token));
+        let path = url.trim_start_matches("http://127.0.0.1:5000");
+        let (status, body) =
+            answer(&t, post_json(path, json!({"secret": secret, "symbol": "AAPL"}))).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["status"], "success", "{body}");
+        assert_eq!(body["message"], "Workflow 'Hook' triggered", "{body}");
+        assert_eq!(body["workflow_id"], id, "{body}");
+        assert_eq!(body["errors"], Value::Null, "{body}");
+        assert!(body["execution_id"].as_i64().is_some(), "{body}");
+        let first = runs(&t, id);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].status, "completed", "{:?}", first[0].error);
+        assert!(logged_messages(&first[0]).contains(&"[LOG] Alert for AAPL".to_string()));
+
+        let (status, body) = answer(
+            &t,
+            post_json(&format!("{}/MSFT", path), json!({"secret": secret, "symbol": "AAPL"})),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let newest = &runs(&t, id)[0];
+        assert!(
+            logged_messages(newest).contains(&"[LOG] Alert for MSFT".to_string()),
+            "the path's symbol replaces the body's: {:?}",
+            logged_messages(newest)
+        );
+
+        let (status, body) =
+            answer(&t, post_json("/flow/webhook/not-a-token", json!({"secret": secret}))).await;
+        assert_eq!((status, body), (404, json!({"error": "Invalid webhook token"})));
+    }
+
+    /// A wrong secret is refused 401 and runs nothing; the tenth inside the
+    /// guard's window locks the webhook, so even the right secret is then
+    /// refused 403 with the lock's sentence.
+    #[tokio::test]
+    async fn wrong_secrets_are_refused_and_then_lock_the_webhook() {
+        let t = harness();
+        let (id, token, secret) = hooked(&t, None);
+        let path = format!("/flow/webhook/{}", token);
+        for n in 1..=crate::flow::service::webhook_guard::LOCKOUT_FAILURES {
+            let (status, body) =
+                answer(&t, post_json(&path, json!({"secret": format!("wrong-{n}")}))).await;
+            assert_eq!(
+                (status, body),
+                (401, json!({"error": "Invalid webhook secret"})),
+                "wrong secret {n}"
+            );
+        }
+        let (status, body) = answer(&t, post_json(&path, json!({"secret": secret}))).await;
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(
+            body["error"],
+            crate::flow::service::webhook_guard::LOCKED,
+            "{body}"
+        );
+        assert!(runs(&t, id).is_empty(), "nothing ran");
+    }
+
+    /// The same alert twice within a second: the first starts the run
+    /// (which waits a minute, so it answers 202 and goes on in the
+    /// background holding the workflow); the second is refused 409
+    /// `already running` and starts nothing.
+    #[tokio::test]
+    async fn the_same_alert_twice_while_the_first_runs_is_already_running() {
+        let t = harness();
+        let (id, token, secret) = hooked(&t, Some(60));
+        let path = format!("/flow/webhook/{}", token);
+        let alert = json!({"secret": secret, "symbol": "AAPL"});
+        let first = answer(&t, post_json(&path, alert.clone())).await;
+        let second = answer(&t, post_json(&path, alert)).await;
+        assert_eq!(first.0, 202, "{}", first.1);
+        assert_eq!(first.1["status"], "accepted", "{}", first.1);
+        assert_eq!(second.0, 409, "{}", second.1);
+        assert_eq!(second.1["status"], "error", "{}", second.1);
+        assert_eq!(second.1["message"], "Workflow is already running", "{}", second.1);
+        // The first run writes its record on its own task; stopped, it
+        // writes it before the task ends, and `stop_all` waits for that.
+        t.ctx.flow.stop_all(std::time::Duration::from_secs(60)).await;
+        assert_eq!(runs(&t, id).len(), 1, "the second alert started no run");
+    }
+
+    /// A log writer into a shared buffer.
+    struct Sink(Arc<parking_lot::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Sink {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The request log's span is tower-http's, as before Phase C: the app's
+    /// own filter (`openalgo_desktop=debug,tauri=info`, `lib.rs`) leaves it
+    /// off, so a handler's line inside a request carries no request prefix
+    /// and no URI (a strategy webhook's id is in its path).
+    #[tokio::test]
+    async fn the_apps_default_log_filter_leaves_the_request_span_off() {
+        let t = harness();
+        let buf = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let sink = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(
+                "openalgo_desktop=debug,tauri=info",
+            ))
+            .with_ansi(false)
+            .with_writer(move || Sink(sink.clone()))
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let order = json!({
+            "apikey": "k-1", "strategy": "s", "exchange": "NASDAQ", "symbol": "AAPL",
+            "action": "BUY", "quantity": 1, "pricetype": "MARKET", "product": "CNC"
+        });
+        answer(&t, post_json("/api/v1/placeorder", order)).await;
+        let text = String::from_utf8_lossy(&buf.lock()).to_string();
+        assert!(text.contains("Place order request"), "{text}");
+        assert!(!text.contains("request{"), "{text}");
+    }
+
+    /// Every way a caller can put a credential in the request (the token in
+    /// the path, with and without a symbol, a `?secret=` and a form body)
+    /// leaves the request log with `[redacted]` in its place.
+    #[tokio::test]
+    async fn the_token_and_the_secret_never_reach_the_request_log() {
+        let t = harness();
+        let (_, token, secret) = hooked(&t, None);
+        let logs = capture_logs();
+        let path = format!("/flow/webhook/{}", token);
+        answer(&t, post_json(&path, json!({"secret": secret}))).await;
+        answer(&t, post_json(&format!("{}/AAPL", path), json!({"secret": "wrong"}))).await;
+        answer(&t, post_json(&format!("{}?secret={}", path, secret), json!({}))).await;
+        answer(
+            &t,
+            post(
+                &path,
+                "application/x-www-form-urlencoded",
+                format!("secret={}&symbol=AAPL", secret),
+            ),
+        )
+        .await;
+        let text = logs.text();
+        assert!(!text.contains(&token), "the token is in the log:\n{text}");
+        assert!(!text.contains(&secret), "the secret is in the log:\n{text}");
+        assert!(
+            text.contains("uri=/flow/webhook/[redacted]"),
+            "no request line:\n{text}"
+        );
+        assert!(text.contains("uri=/flow/webhook/[redacted]/AAPL"), "{text}");
+        assert!(text.contains("secret=[redacted]"), "{text}");
     }
 }

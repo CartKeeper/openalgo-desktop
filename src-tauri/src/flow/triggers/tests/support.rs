@@ -26,9 +26,41 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Logged {
 
 pub(super) fn logged() -> (tracing::subscriber::DefaultGuard, Logged) {
     use tracing_subscriber::layer::SubscriberExt;
+    every_line_stays_on();
     let l = Logged::default();
     let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(l.clone()));
     (guard, l)
+}
+
+/// tracing-core caches, for the whole process, whether any subscriber wants
+/// a log line (per call site) and the highest level any subscriber wants;
+/// while at most one subscriber is registered it asks only the current
+/// thread's. A line first logged on a thread with none (another test's
+/// task) was cached as off for every thread until the next registration,
+/// so a capture here never saw it: why
+/// `lifecycle::a_monitor_run_logs_its_result` failed under full-suite load
+/// with the run done and its two drive.rs lines missing (WP8 Phase C). A
+/// process-wide subscriber that wants every line and prints none keeps
+/// every call site on, whatever the other threads hold.
+fn every_line_stays_on() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // Another global (none in this crate's tests) keeps every line on too.
+        let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry());
+    });
+}
+
+/// Wait until every task `s` spawned has finished: the runs a test queued
+/// on a side without drivers (a driver never finishes; use it only on a
+/// side from `side()`). Waits on the tasks themselves, not on wall time.
+pub(super) async fn settle(s: &TriggerSide) {
+    loop {
+        let mut tasks = std::mem::take(&mut *s.tasks.lock());
+        if tasks.is_empty() {
+            return;
+        }
+        while tasks.join_next().await.is_some() {}
+    }
 }
 
 impl Logged {
@@ -62,6 +94,21 @@ pub(super) async fn wait_for(logs: &Logged, line: &str) {
 /// An app with an account and its API key (made before any workflow).
 pub(super) fn keyed() -> crate::state::testing::TestCtx {
     let t = app();
+    crate::flow::support::testkit::sign_in(&t.ctx);
+    t
+}
+
+/// The harness in this app's market zone (America/New_York) at `now`,
+/// signed in, with the app's own trigger side stopped: its start-up restore
+/// runs on a task of its own and would register the workflows a test saves
+/// a second time (WP8 Phase C).
+pub(super) async fn eastern(now: &str) -> crate::state::testing::TestCtx {
+    crate::flow::contract::time::set_market_tz_for_tests(chrono_tz::America::New_York);
+    let t = crate::state::testing::build(
+        crate::brokers::BrokerRegistry::new(),
+        now.parse().unwrap(),
+    );
+    t.ctx.flow.triggers().stop().await;
     crate::flow::support::testkit::sign_in(&t.ctx);
     t
 }

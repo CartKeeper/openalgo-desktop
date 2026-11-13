@@ -43,6 +43,7 @@ import {
 import { FlowEditorAccountControls } from '@/components/desktop/FlowEditorAccountControls'
 import { HelpButton } from '@/components/HelpButton'
 import { FlowLeaveGuard, useGuardedNavigate } from '@/components/desktop/FlowLeaveGuard'
+import { useLiveActivation } from '@/components/desktop/FlowLiveActivation'
 import { edgeTypes } from '@/components/flow/edges'
 // Import Flow components
 import { nodeTypes } from '@/components/flow/nodes'
@@ -281,6 +282,9 @@ function FlowEditorContent() {
       showToast.error(error.message, 'flow')
     },
   })
+
+  // Desktop: in Live mode, activation asks first (FlowLiveActivation).
+  const liveActivation = useLiveActivation(() => activateMutation.mutate())
 
   const deactivateMutation = useMutation({
     mutationFn: async () => {
@@ -626,6 +630,7 @@ function FlowEditorContent() {
       </div>
 
       <HelpButton items={FLOW_EDITOR_HELP} pageTitle="Flow Editor" />
+      {liveActivation.dialog}
       <Dialog open={showReplaceDialog} onOpenChange={setShowReplaceDialog}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
@@ -728,8 +733,10 @@ function FlowEditorContent() {
           ) : (
             <Button
               size="sm"
-              onClick={() => activateMutation.mutate()}
-              disabled={activateMutation.isPending || saveMutation.isPending}
+              onClick={() => liveActivation.request()}
+              disabled={
+                activateMutation.isPending || saveMutation.isPending || liveActivation.checking
+              }
             >
               {activateMutation.isPending ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

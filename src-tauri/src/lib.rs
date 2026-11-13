@@ -24,6 +24,7 @@ pub mod clock;
 pub mod events;
 pub mod flow;
 pub mod indicators_lib;
+pub mod messaging;
 //
 
 use scheduler::{AutoLogoutScheduler, AlertMonitor};
@@ -465,6 +466,9 @@ pub fn run() {
             commands::flow::flow_index_symbols,
             commands::flow::flow_symbol_lotsizes,
             commands::flow::flow_option_strikes,
+            commands::telegram::telegram_get_settings,
+            commands::telegram::telegram_save_settings,
+            commands::telegram::telegram_send_test,
             //
         ])
         .build(tauri::generate_context!())
