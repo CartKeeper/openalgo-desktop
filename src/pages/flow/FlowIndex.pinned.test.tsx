@@ -156,7 +156,7 @@ function renderIndexKept() {
 
 async function openActions(name: string) {
   const user = userEvent.setup()
-  const card = await screen.findByRole('link', { name: `Open workflow ${name}` })
+  const card = await screen.findByRole('row', { name: `Workflow ${name}` })
   await user.click(within(card).getByRole('button', { name: 'Workflow actions' }))
   return user
 }
@@ -260,11 +260,12 @@ describe('F-114 the grid of cards', () => {
     api.listWorkflows.mockResolvedValue([EXPIRY_DAY, third, ORB])
     renderIndex()
     await screen.findByText(ORB.name)
-    const cards = screen.getAllByRole('link', { name: /^Open workflow / })
+    // This app (WP8 Phase D, decision 6b): each card is a selectable row.
+    const cards = screen.getAllByRole('row', { name: /^Workflow / })
     expect(cards.map((card) => card.getAttribute('aria-label'))).toEqual([
-      'Open workflow Expiry day straddle',
-      'Open workflow Gap fill',
-      'Open workflow Opening range breakout',
+      'Workflow Expiry day straddle',
+      'Workflow Gap fill',
+      'Workflow Opening range breakout',
     ])
     const grid = cards[0].parentElement
     expect(grid).toHaveClass('grid', 'sm:grid-cols-2', 'lg:grid-cols-3')
@@ -273,27 +274,36 @@ describe('F-114 the grid of cards', () => {
 })
 
 describe('F-115 a workflow card', () => {
-  it('is a focusable link that opens the editor on a mouse click', async () => {
+  // This app (WP8 Phase D, decision 6b): a click selects the card (the
+  // table spec bans a click that opens); a double-click opens the editor.
+  it('is a selectable row: a click selects it, a double-click opens the editor', async () => {
     renderIndex()
-    const card = await screen.findByRole('link', { name: `Open workflow ${ORB.name}` })
-    expect(card).toHaveAttribute('tabindex', '0')
-    await userEvent.setup().click(card)
+    const user = userEvent.setup()
+    const card = await screen.findByRole('row', { name: `Workflow ${ORB.name}` })
+    await user.click(card)
+    expect(card).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByText('editor for 7')).not.toBeInTheDocument()
+    await user.dblClick(card)
     expect(await screen.findByText('editor for 7')).toBeInTheDocument()
   })
 
-  it('opens the editor on the Space key', async () => {
+  // This app (WP8 Phase D, decision 6b): on the list, Space selects the
+  // focused card and Enter opens it.
+  it('selects the focused card on the Space key and opens it on Enter', async () => {
     renderIndex()
     const user = userEvent.setup()
-    const card = await screen.findByRole('link', { name: `Open workflow ${EXPIRY_DAY.name}` })
-    card.focus()
-    await user.keyboard(' ')
+    const card = await screen.findByRole('row', { name: `Workflow ${EXPIRY_DAY.name}` })
+    screen.getByRole('grid', { name: 'Workflows' }).focus()
+    await user.keyboard('{ArrowDown}{ArrowDown} ')
+    expect(card).toHaveAttribute('aria-selected', 'true')
+    await user.keyboard('{Enter}')
     expect(await screen.findByText('editor for 8')).toBeInTheDocument()
   })
 
   it('tints an active workflow green with a green dot, and a stopped one grey', async () => {
     renderIndex()
-    const active = await screen.findByRole('link', { name: `Open workflow ${ORB.name}` })
-    const stopped = screen.getByRole('link', { name: `Open workflow ${EXPIRY_DAY.name}` })
+    const active = await screen.findByRole('row', { name: `Workflow ${ORB.name}` })
+    const stopped = screen.getByRole('row', { name: `Workflow ${EXPIRY_DAY.name}` })
     expect(active).toHaveClass('border-green-500/30')
     expect(active.querySelector('div.h-2.w-2.rounded-full')).toHaveClass('bg-green-500')
     expect(stopped).not.toHaveClass('border-green-500/30')
@@ -302,8 +312,8 @@ describe('F-115 a workflow card', () => {
 
   it('titles the card with the name and clamps a description to two lines', async () => {
     renderIndex()
-    const active = await screen.findByRole('link', { name: `Open workflow ${ORB.name}` })
-    const stopped = screen.getByRole('link', { name: `Open workflow ${EXPIRY_DAY.name}` })
+    const active = await screen.findByRole('row', { name: `Workflow ${ORB.name}` })
+    const stopped = screen.getByRole('row', { name: `Workflow ${EXPIRY_DAY.name}` })
     expect(within(active).getByText(ORB.name)).toHaveAttribute('data-slot', 'card-title')
     expect(within(active).getByText('NIFTY futures at 09:20')).toHaveClass('line-clamp-2')
     expect(stopped.querySelector('[data-slot="card-description"]')).toBeNull()

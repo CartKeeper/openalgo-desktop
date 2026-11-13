@@ -1317,3 +1317,47 @@ send into the app's client, and writes the user guide.
   command and its arguments), `src/lib/flow/listDate.test.ts`
   (`runDuration`), Rust `flow/store/executions/delete_tests.rs` and
   `commands/flow.rs::chosen_runs_are_deleted_in_one_call`.
+
+### The Flow cards' selection system (coordinator decision 6b)
+
+- The carried card opened the editor on a click (`FlowIndex.tsx`, a
+  `role="link"` card), which CLAUDE.md's table spec bans. Each card is now
+  a selectable row of the page's grid (`role="grid"` "Workflows", each card
+  `role="row"` "Workflow <name>" with one grid cell): a click anywhere on
+  the card selects it, with a visible checkbox; double-click, Enter on the
+  list, or the card's new **Open** button opens the editor; the card's ...
+  menu, its items, the checkbox and the Open button stop their clicks, so
+  they never select. The page's toolbar holds **Select all** (indeterminate
+  for some) and, while anything is selected, the shared action bar: the
+  count, Clear selection, Copy, Move (disabled: "Workflows have no
+  folders"), Delete rightmost in the danger colour. Keys on the list:
+  Cmd/Ctrl+A, arrows, Shift+arrows, Shift+Home/End, Shift+Page Up/Down,
+  Space, Enter, Escape (only when the list itself has the focus, never a
+  key typed in a card's control or a dialog a card opens). The right-click
+  menu: Copy, Move to… (disabled, with the reason), Delete, Select All,
+  Deselect All, Open (one workflow), Duplicate.
+- Copy puts the chosen workflows' export JSON on the clipboard, the format
+  Export Workflow writes (two-space JSON; several as one array).
+  Duplicate makes "<name> (copy)" for each chosen workflow through the
+  create command with the copied graph: a new workflow, inactive, with its
+  own webhook address and its webhook off. Delete always asks first ("Delete
+  2 workflows?" / "This can't be undone. Each goes with its schedule, its
+  webhook address and its run history; an active one is stopped first.")
+  and then deletes them one call each (no command takes several), with one
+  toast for all, naming any that failed.
+- **Hand edit** (`flow/service/mod.rs`, `delete`): an active workflow is
+  recorded inactive after its registrations are removed and before its row
+  is deleted, so a delete the store refuses leaves it stood down (inactive,
+  nothing registered) rather than showing Active with no trigger, and a
+  restart restores nothing for it. Rust tests
+  (`triggers/tests/delete_stops.rs`): deleting active workflows leaves no
+  schedule, price alert, order watch or webhook (the old token answers 404);
+  a refused delete leaves the workflow inactive with nothing registered.
+  `commands/flow.rs::a_duplicate_is_a_new_inactive_workflow_with_its_webhook_off`.
+- **Hand edits** to carried tests: `FlowIndex.pinned.test.tsx` (the cards
+  are rows named "Workflow <name>"; "a click selects, a double-click opens"
+  and "Space selects, Enter opens" replace "a focusable link that opens on a
+  click" and "opens on the Space key"), `FlowIndex.test.tsx` (opens by the
+  Open button), `FlowIndex.w6.test.tsx` (the card lookup). New:
+  `src/pages/flow/flowCardSelection.test.tsx`. Help (`flowHelp.ts`, "New
+  Workflow"): a click selects a card; double-click or Open opens it.

@@ -106,7 +106,7 @@ function renderIndex() {
 
 async function openActions(name: string) {
   const user = userEvent.setup()
-  const card = await screen.findByRole('link', { name: `Open workflow ${name}` })
+  const card = await screen.findByRole('row', { name: `Workflow ${name}` })
   await user.click(within(card).getByRole('button', { name: 'Workflow actions' }))
   return user
 }
@@ -136,12 +136,14 @@ describe('the workflow list', () => {
     expect(await screen.findByText('Oct 29, 2026, 4:00 PM ET')).toBeInTheDocument()
   })
 
-  it('opens a workflow from its card, by click or by keyboard', async () => {
+  // This app (WP8 Phase D, decision 6b): the card's Open button opens it (a
+  // click on the card selects it; flowCardSelection.test.tsx).
+  it('opens a workflow from its card, by its Open button', async () => {
     renderIndex()
     const user = userEvent.setup()
-    const card = await screen.findByRole('link', { name: 'Open workflow Expiry day straddle' })
-    card.focus()
-    await user.keyboard('{Enter}')
+    await user.click(
+      await screen.findByRole('button', { name: 'Open workflow Expiry day straddle' })
+    )
     expect(await screen.findByText('editor for 8')).toBeInTheDocument()
   })
 

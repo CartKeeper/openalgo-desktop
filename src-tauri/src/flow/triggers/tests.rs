@@ -576,6 +576,7 @@ async fn an_expired_alert_stands_its_workflow_down() {
     );
 }
 
+mod delete_stops;
 mod eastern;
 mod lifecycle;
 mod monitor_runs;

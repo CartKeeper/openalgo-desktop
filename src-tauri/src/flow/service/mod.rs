@@ -368,7 +368,11 @@ fn merged_graph_refusal(data: &Map<String, Value>, existing: Option<&Workflow>) 
 }
 
 /// `DELETE /flow/api/workflows/<id>`: refused while a run holds the
-/// workflow; its feed subscriptions and trigger registrations go first.
+/// workflow; its feed subscriptions and trigger registrations go first,
+/// and an active workflow is recorded inactive before its row is deleted
+/// (WP8 Phase D, decision 6b): if the row cannot be deleted, the workflow
+/// stays stood down, as the page will show it, and a restart restores
+/// nothing for it.
 pub async fn delete(app: &Arc<AppState>, id: i64) -> Reply {
     let Some(_claim) = app.flow.try_claim(id) else {
         return Reply::new(
@@ -376,11 +380,11 @@ pub async fn delete(app: &Arc<AppState>, id: i64) -> Reply {
             json!({"error": "This workflow is still running. Try again when it finishes."}),
         );
     };
-    match load(app, id).await {
-        Ok(Some(_)) => {}
+    let was_active = match load(app, id).await {
+        Ok(Some(w)) => w.is_active,
         Ok(None) => return workflow_not_found(),
         Err(e) => return failed("delete workflow", e),
-    }
+    };
     let hooks = app.flow.triggers();
     app.flow.subscriptions.release(id, hooks.as_ref()).await;
     if app.flow.subscriptions.has(id) {
@@ -397,6 +401,21 @@ pub async fn delete(app: &Arc<AppState>, id: i64) -> Reply {
             id,
             e
         );
+    }
+    if was_active {
+        let now = app.now();
+        let stood_down = app
+            .blocking(move |c| {
+                crate::flow::triggers::store::deactivate(&*c.sqlite.conn()?, id, now)
+            })
+            .await;
+        if let Err(e) = stood_down {
+            tracing::warn!(
+                "Workflow {} could not be recorded inactive before it was deleted: {}",
+                id,
+                e
+            );
+        }
     }
     match app
         .blocking(move |c| workflows::delete(&*c.sqlite.conn()?, id))

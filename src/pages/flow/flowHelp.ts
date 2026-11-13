@@ -22,7 +22,7 @@ export const FLOW_INDEX_HELP: HelpItem[] = [
   {
     title: 'New Workflow',
     description:
-      'Asks for a name and opens the editor. Each card shows a green dot while the workflow is active, its last run (completed, failed, running) and when it was last changed. Choose a card to open it.',
+      'Asks for a name and opens the editor. Each card shows a green dot while the workflow is active, its last run (completed, failed, running) and when it was last changed (Eastern time). A click selects a card; double-click it, or use its Open button, to open it in the editor.',
   },
   {
     title: 'Import',

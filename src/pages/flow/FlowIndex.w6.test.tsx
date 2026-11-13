@@ -129,7 +129,7 @@ function renderIndex() {
 
 async function openActions(name: string) {
   const user = userEvent.setup()
-  const card = await screen.findByRole('link', { name: `Open workflow ${name}` })
+  const card = await screen.findByRole('row', { name: `Workflow ${name}` })
   await user.click(within(card).getByRole('button', { name: 'Workflow actions' }))
   return user
 }

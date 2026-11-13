@@ -483,6 +483,36 @@ mod tests {
         assert_eq!(unknown.status, 404, "{}", unknown.body);
     }
 
+    /// Decision 6b: the Flow page's Duplicate is a create with the copied
+    /// graph and "<name> (copy)": a new workflow, inactive, with its own
+    /// webhook address and its webhook off, whatever the original's.
+    #[tokio::test]
+    async fn a_duplicate_is_a_new_inactive_workflow_with_its_webhook_off() {
+        let t = app();
+        let original = create_workflow(&t.ctx, manual_quote_log()).await.unwrap();
+        let id = original.body["id"].as_i64().expect("an id");
+        assert_eq!(webhook_enable(&t.ctx, id).await.status, 200);
+        let source = get_workflow(&t.ctx, id).await.body;
+        assert_eq!(source["webhook_enabled"], true);
+        let copy = create_workflow(
+            &t.ctx,
+            json!({
+                "name": "Quote and log (copy)",
+                "description": source["description"],
+                "nodes": source["nodes"],
+                "edges": source["edges"],
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(copy.status, 201, "{}", copy.body);
+        assert_eq!(copy.body["name"], "Quote and log (copy)");
+        assert_eq!(copy.body["is_active"], false);
+        assert_eq!(copy.body["webhook_enabled"], false);
+        assert_ne!(copy.body["webhook_token"], source["webhook_token"]);
+        assert_eq!(copy.body["nodes"], source["nodes"]);
+    }
+
     /// A symbol as a broker's master contract loads it into the app's cache.
     fn listed(symbol: &str, exchange: &str, lot_size: i32) -> crate::state::SymbolInfo {
         crate::state::SymbolInfo {
