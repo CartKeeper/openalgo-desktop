@@ -89,6 +89,12 @@ pub async fn list_executions(app: &Arc<AppState>, id: i64, limit: Option<u32>) -
     svc::history(app, id, limit.as_deref()).await.into()
 }
 
+/// Delete chosen runs from a workflow's history (WP8 Phase D: the
+/// run-history screen; no upstream route).
+pub async fn delete_executions(app: &Arc<AppState>, id: i64, ids: Vec<i64>) -> FlowReply {
+    svc::delete_runs(app, id, ids).await.into()
+}
+
 /// `GET /flow/api/workflows/{id}/export`.
 pub async fn export_workflow(app: &Arc<AppState>, id: i64) -> FlowReply {
     transfer::export(app, id).await.into()
@@ -234,6 +240,15 @@ pub async fn flow_list_executions(
     limit: Option<u32>,
 ) -> Result<FlowReply, AppError> {
     Ok(list_executions(&state.root(), id, limit).await)
+}
+
+#[tauri::command]
+pub async fn flow_delete_executions(
+    state: State<'_, AppState>,
+    id: i64,
+    ids: Vec<i64>,
+) -> Result<FlowReply, AppError> {
+    Ok(delete_executions(&state.root(), id, ids).await)
 }
 
 #[tauri::command]
@@ -418,6 +433,54 @@ mod tests {
         let deleted = delete_workflow(&t.ctx, id).await;
         assert_eq!(deleted.status, 200, "{}", deleted.body);
         assert_eq!(get_workflow(&t.ctx, id).await.status, 404);
+    }
+
+    /// Decision 6a: the run-history screen deletes chosen runs of one
+    /// workflow in one call; a run still going, an unknown workflow and an
+    /// empty choice are refused with a sentence.
+    #[tokio::test]
+    async fn chosen_runs_are_deleted_in_one_call() {
+        let t = app();
+        let created = create_workflow(&t.ctx, manual_quote_log()).await.unwrap();
+        let id = created.body["id"].as_i64().expect("an id");
+        let run = |status: crate::flow::contract::model::RunStatus| {
+            let conn = t.ctx.sqlite.conn().unwrap();
+            let run = crate::flow::store::executions::create(&conn, id, t.ctx.now()).unwrap();
+            if status != crate::flow::contract::model::RunStatus::Running {
+                crate::flow::store::executions::finish(&conn, run, status, None, &[], t.ctx.now())
+                    .unwrap();
+            }
+            run
+        };
+        use crate::flow::contract::model::RunStatus;
+        let (first, second, going) = (
+            run(RunStatus::Completed),
+            run(RunStatus::Failed),
+            run(RunStatus::Running),
+        );
+
+        let refused = delete_executions(&t.ctx, id, vec![second, going]).await;
+        assert_eq!(refused.status, 409, "{}", refused.body);
+        assert_eq!(
+            refused.body["error"],
+            format!(
+                "Run {} is still going, so nothing was deleted. Delete it once it has ended.",
+                going
+            )
+        );
+
+        let deleted = delete_executions(&t.ctx, id, vec![first, second]).await;
+        assert_eq!(deleted.status, 200, "{}", deleted.body);
+        assert_eq!(deleted.body, json!({"status": "success", "deleted": 2}));
+        let left = list_executions(&t.ctx, id, Some(50)).await;
+        assert_eq!(left.body.as_array().map(Vec::len), Some(1));
+        assert_eq!(left.body[0]["id"], json!(going));
+
+        let none = delete_executions(&t.ctx, id, vec![]).await;
+        assert_eq!(none.status, 400, "{}", none.body);
+        assert_eq!(none.body["error"], "Choose at least one run to delete.");
+        let unknown = delete_executions(&t.ctx, id + 100, vec![first]).await;
+        assert_eq!(unknown.status, 404, "{}", unknown.body);
     }
 
     /// A symbol as a broker's master contract loads it into the app's cache.

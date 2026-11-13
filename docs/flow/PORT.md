@@ -1250,3 +1250,70 @@ send into the app's client, and writes the user guide.
   `FlowEditor.w6.test.tsx`, whose two Run Now tests are about the run
   itself, reads the app as Analyze mode through a partial
   `@/api/tauri-client` mock, as Phase C did for activation.
+
+### The run-history screen (coordinator decision 6a)
+
+- Phase C's Definition of Done reads "a run appears each minute in its
+  history", but no screen listed a workflow's runs (`flow_list_executions`
+  and `getWorkflowExecutions` had no caller). `src/components/desktop/
+  FlowRunHistory.tsx` (new) is that screen: a dialog of fixed size (75% of
+  the window high, up to 896 px wide, 16 px radius, a fixed header with the
+  title, the workflow's name and Close; the body scrolls), opened from
+  **Run history** in the workflow card's ... menu on the Flow page and in
+  the editor's ... menu (a dialog, not a route: `src/App.tsx` is outside
+  WP8 Phase D's files).
+- Each row: when the run started (`Nov 12, 2:35:02 PM ET`, `runTime`), its
+  status (Completed, Failed, Running, Pending), its duration
+  (`runDuration`: `3s`, `1m 5s`, a dash while it runs) and its error.
+  Opening a run (double-click, Enter, or its Open button) shows its log
+  lines with `logTime` (Eastern 12-hour; a stored line's naive Eastern
+  time shown as it is) and Back to runs. It reads the newest 200 runs (the
+  read's cap; the store keeps the newest 500 and 30 days, `executions::
+  prune`) again every 10 seconds and when the window gets focus while it is
+  open (the backend sends no event when a run ends), and at once when a Run
+  Now from the page or the editor ends.
+- States: a skeleton of the rows while loading; "No runs yet" with a Run
+  Now button that goes through decision 6c's question; an inline error
+  with a danger border and Retry.
+- Selection (CLAUDE.md's TABLE INTERACTION DESIGN SPEC), from
+  `src/hooks/useListSelection.ts` (new, shared with the Flow cards): a click
+  anywhere on a row selects it (the checkbox shows it); the header checkbox
+  selects all, indeterminate for some (from some it selects all, the spec's
+  rule, where `TradeTable` cleared); Shift+click ranges from the anchor;
+  Cmd/Ctrl+click toggles; a row's checkbox adds or takes away; Cmd/Ctrl+A,
+  arrows, Shift+arrows, Shift+Home/End, Shift+Page Up/Down, Space, Enter;
+  Escape closes the right-click menu, then clears a selection, and only
+  then closes the window. The action bar (`src/components/desktop/
+  FlowSelectionParts.tsx`, new, shared): the count, Clear selection, Copy,
+  Move (disabled: "Runs stay with their workflow"), Delete rightmost in the
+  danger colour. The right-click menu: Copy, Move to… (disabled, with the
+  reason), Delete, Select All, Deselect All, Open (one run), Duplicate
+  (disabled: "Runs can't be duplicated"); a right-click on an unselected row
+  selects only it. `aria-selected` rows, an `aria-live` count, and
+  `data-selectable`, `data-selected`, `data-item-id`, `data-select-all`,
+  `data-action-bar`. Not built: the spec's long-press for touch (this is a
+  desktop app).
+- Copy puts the chosen runs on the clipboard as text: per run its start in
+  ET, status and duration, its error, then each log line (time, level,
+  message), runs apart by a blank line. Delete always asks first ("Delete 3
+  runs?" / "This can't be undone."), then deletes them in one call.
+- Backend: `flow::store::executions::delete(conn, workflow_id, ids)`
+  deletes only that workflow's rows and refuses the whole call when one of
+  them is still going (`Deleted::StillRunning`), since its end would have
+  no row; `flow::service::delete_runs` answers 400 for an empty choice, 404
+  for an unknown workflow, 409 "Run N is still going, so nothing was
+  deleted. Delete it once it has ended." and 200 `{status, deleted}`;
+  `flow_delete_executions(id, ids)` is the command (WP8 handler anchor,
+  after the other `flow_*` lines), `deleteWorkflowExecutions` its wrapper.
+- **Hand edits**: `src/pages/flow/FlowIndex.tsx` (the card's menu item, its
+  dialog, a Run Now mutation guarded by `useLiveRun` that refreshes the
+  card list and the history), `src/pages/flow/FlowEditor.tsx` (the menu
+  item and dialog; Run Now refreshes the history when it ends),
+  `src/api/flow.ts` (the wrapper); carried pinned tests updated for the new
+  menu item (`FlowIndex.pinned.test.tsx`, `FlowEditorMenu.pinned.test.tsx`).
+- Tests: `src/hooks/useListSelection.test.ts`,
+  `src/components/desktop/FlowRunHistory.test.tsx`,
+  `src/pages/flow/flowRunHistory.test.tsx`, `src/api/flow.test.ts` (the
+  command and its arguments), `src/lib/flow/listDate.test.ts`
+  (`runDuration`), Rust `flow/store/executions/delete_tests.rs` and
+  `commands/flow.rs::chosen_runs_are_deleted_in_one_call`.

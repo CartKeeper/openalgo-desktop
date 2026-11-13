@@ -509,5 +509,40 @@ pub async fn history(app: &Arc<AppState>, id: i64, limit: Option<&str>) -> Reply
     }
 }
 
+/// Delete chosen runs from a workflow's history (the run-history screen,
+/// WP8 Phase D; the web has no such route): one call for every run chosen.
+pub async fn delete_runs(app: &Arc<AppState>, id: i64, runs: Vec<i64>) -> Reply {
+    if runs.is_empty() {
+        return Reply::new(400, json!({"error": "Choose at least one run to delete."}));
+    }
+    match load(app, id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return workflow_not_found(),
+        Err(e) => return failed("delete runs", e),
+    }
+    let deleted = app
+        .blocking(move |c| executions::delete(&*c.sqlite.conn()?, id, &runs))
+        .await;
+    match deleted {
+        Ok(executions::Deleted::Removed(n)) => {
+            Reply::new(200, json!({"status": "success", "deleted": n}))
+        }
+        Ok(executions::Deleted::StillRunning(going)) => {
+            let which = match going.as_slice() {
+                [one] => format!("Run {} is", one),
+                more => format!(
+                    "Runs {} are",
+                    more.iter().map(i64::to_string).collect::<Vec<_>>().join(", ")
+                ),
+            };
+            Reply::new(
+                409,
+                json!({"error": format!("{} still going, so nothing was deleted. Delete it once it has ended.", which)}),
+            )
+        }
+        Err(e) => failed("delete runs", e),
+    }
+}
+
 #[cfg(test)]
 mod tests;

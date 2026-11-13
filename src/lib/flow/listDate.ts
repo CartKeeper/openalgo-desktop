@@ -79,3 +79,21 @@ export function logTime(time: string): string {
   const p = easternParts(at, false)
   return `${p.hour}:${p.minute}:${p.second} ${p.dayPeriod} ET`
 }
+
+/**
+ * How long a run took, from its stored start and end (naive UTC): `3s`,
+ * `1m 5s`, `1h 2m`; a dash for a run without an end (still going) or with
+ * an end before its start.
+ */
+export function runDuration(
+  started: string | null | undefined,
+  completed: string | null | undefined
+): string {
+  if (!started || !completed) return '—'
+  const ms = utcInstant(completed).getTime() - utcInstant(started).getTime()
+  if (!Number.isFinite(ms) || ms < 0) return '—'
+  const seconds = Math.floor(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
+}

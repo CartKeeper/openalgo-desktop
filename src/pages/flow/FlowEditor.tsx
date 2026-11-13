@@ -22,6 +22,7 @@ import {
   ArrowLeft,
   Download,
   FileJson,
+  History,
   Keyboard,
   Loader2,
   MoreVertical,
@@ -44,6 +45,7 @@ import { FlowEditorAccountControls } from '@/components/desktop/FlowEditorAccoun
 import { HelpButton } from '@/components/HelpButton'
 import { FlowLeaveGuard, useGuardedNavigate } from '@/components/desktop/FlowLeaveGuard'
 import { useLiveActivation, useLiveRun } from '@/components/desktop/FlowLiveActivation'
+import { FlowRunHistory } from '@/components/desktop/FlowRunHistory'
 import { edgeTypes } from '@/components/flow/edges'
 // Import Flow components
 import { nodeTypes } from '@/components/flow/nodes'
@@ -139,6 +141,8 @@ function FlowEditorContent() {
   const [showLogPanel, setShowLogPanel] = useState(false)
   const [executionLogs, setExecutionLogs] = useState<LogEntry[]>([])
   const [executionStatus, setExecutionStatus] = useState<ExecutionStatus>('idle')
+  // Desktop (WP8 Phase D): the workflow's run history, from the ... menu.
+  const [showHistory, setShowHistory] = useState(false)
 
   const {
     isLoading,
@@ -334,6 +338,10 @@ function FlowEditorContent() {
       setExecutionStatus('error')
       setExecutionLogs(failedRunLog(error))
       showToast.error(error.message, 'flow')
+    },
+    // Desktop (WP8 Phase D): the run history reads the finished run at once.
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: flowQueryKeys.executions(Number(id)) })
     },
   })
 
@@ -635,6 +643,13 @@ function FlowEditorContent() {
       <HelpButton items={FLOW_EDITOR_HELP} pageTitle="Flow Editor" />
       {liveActivation.dialog}
       {liveRun.dialog}
+      <FlowRunHistory
+        workflowId={Number(id)}
+        workflowName={name}
+        open={showHistory}
+        onOpenChange={setShowHistory}
+        onRunNow={() => liveRun.request()}
+      />
       <Dialog open={showReplaceDialog} onOpenChange={setShowReplaceDialog}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
@@ -768,6 +783,10 @@ function FlowEditorContent() {
               <DropdownMenuItem onClick={() => setShowLogPanel(!showLogPanel)}>
                 <Terminal className="mr-2 h-4 w-4" />
                 {showLogPanel ? 'Hide Logs' : 'Show Logs'}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setShowHistory(true)}>
+                <History className="mr-2 h-4 w-4" />
+                Run history
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleExport}>
                 <Download className="mr-2 h-4 w-4" />

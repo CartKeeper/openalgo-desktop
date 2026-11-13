@@ -340,7 +340,8 @@ describe('F-116 the card footer', () => {
 })
 
 describe('F-117 the actions menu', () => {
-  it('lists Edit, Webhook, the switch for the current state, then Delete after a separator', async () => {
+  // This app (WP8 Phase D, decision 6a): Run history after Webhook.
+  it('lists Edit, Webhook, Run history, the switch for the current state, then Delete after a separator', async () => {
     renderIndex()
     let user = await openActions(ORB.name)
     let menu = await screen.findByRole('menu')
@@ -348,7 +349,7 @@ describe('F-117 the actions menu', () => {
       within(menu)
         .getAllByRole('menuitem')
         .map((item) => item.textContent)
-    ).toEqual(['Edit', 'Webhook', 'Deactivate', 'Delete'])
+    ).toEqual(['Edit', 'Webhook', 'Run history', 'Deactivate', 'Delete'])
     expect(within(menu).getByRole('separator')).toBeInTheDocument()
     expect(within(menu).getByRole('menuitem', { name: 'Delete' })).toHaveClass('text-destructive')
     await user.keyboard('{Escape}')
@@ -360,7 +361,7 @@ describe('F-117 the actions menu', () => {
       within(menu)
         .getAllByRole('menuitem')
         .map((item) => item.textContent)
-    ).toEqual(['Edit', 'Webhook', 'Activate', 'Delete'])
+    ).toEqual(['Edit', 'Webhook', 'Run history', 'Activate', 'Delete'])
   })
 
   it('Edit opens the workflow in the editor', async () => {

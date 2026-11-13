@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { listDate, logTime, runTime } from './listDate'
+import { listDate, logTime, runDuration, runTime } from './listDate'
 
 /**
  * WP8 Phase D, Task D4: every time the Flow pages show is America/New_York,
@@ -77,5 +77,20 @@ describe('logTime', () => {
     expect(logTime('')).toBe('Invalid Date')
     expect(logTime('not a time')).toBe('Invalid Date')
     expect(logTime('09:20:05')).toBe('Invalid Date')
+  })
+})
+
+describe('runDuration', () => {
+  it('reads seconds, minutes and hours from the stored start and end', () => {
+    expect(runDuration('2026-11-12T19:35:02', '2026-11-12T19:35:05')).toBe('3s')
+    expect(runDuration('2026-11-12T19:35:02', '2026-11-12T19:35:02')).toBe('0s')
+    expect(runDuration('2026-11-12T19:35:02', '2026-11-12T19:36:07')).toBe('1m 5s')
+    expect(runDuration('2026-11-12T19:35:02', '2026-11-12T20:37:07')).toBe('1h 2m')
+  })
+
+  it('answers a dash for a run without an end, or an end before its start', () => {
+    expect(runDuration('2026-11-12T19:35:02', null)).toBe('—')
+    expect(runDuration(null, '2026-11-12T19:35:02')).toBe('—')
+    expect(runDuration('2026-11-12T19:35:02', '2026-11-12T19:35:01')).toBe('—')
   })
 })

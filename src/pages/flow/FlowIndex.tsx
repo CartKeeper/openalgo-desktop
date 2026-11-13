@@ -10,6 +10,7 @@ import {
   Copy,
   Eye,
   EyeOff,
+  History,
   Loader2,
   MoreVertical,
   Pause,
@@ -30,6 +31,7 @@ import {
   deleteWorkflow,
   disableWebhook,
   enableWebhook,
+  executeWorkflow,
   flowQueryKeys,
   importWorkflow,
   listWorkflows,
@@ -45,7 +47,8 @@ import {
   DeleteWorkflowDialog,
   RegenerateWebhookDialog,
 } from '@/components/desktop/FlowConfirmDialogs'
-import { useLiveActivation } from '@/components/desktop/FlowLiveActivation'
+import { useLiveActivation, useLiveRun } from '@/components/desktop/FlowLiveActivation'
+import { FlowRunHistory } from '@/components/desktop/FlowRunHistory'
 import { FlowWebhookReachability } from '@/components/desktop/FlowWebhookReachability'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -96,6 +99,8 @@ function WorkflowCard({ workflow }: { workflow: WorkflowListItem }) {
   // Desktop: Delete and Regenerate are confirmed first (FlowConfirmDialogs).
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmRegenerate, setConfirmRegenerate] = useState(false)
+  // Desktop (WP8 Phase D): the workflow's run history, from the card's menu.
+  const [historyOpen, setHistoryOpen] = useState(false)
 
   const activateMutation = useMutation({
     mutationFn: () => activateWorkflow(workflow.id),
@@ -110,6 +115,29 @@ function WorkflowCard({ workflow }: { workflow: WorkflowListItem }) {
 
   // Desktop: in Live mode, activation asks first (FlowLiveActivation).
   const liveActivation = useLiveActivation(() => activateMutation.mutate())
+
+  // Desktop (WP8 Phase D): Run Now from the run history's empty state, which
+  // asks first in Live mode (FlowLiveActivation).
+  const runMutation = useMutation({
+    mutationFn: () => executeWorkflow(workflow.id),
+    onSuccess: (data) => {
+      if (data.status === 'success') {
+        showToast.success(data.message || 'Execution completed', 'flow')
+      } else if (data.status === 'accepted') {
+        showToast.info(data.message, 'flow')
+      } else {
+        showToast.error(data.message || 'Execution failed', 'flow')
+      }
+    },
+    onError: (error: Error) => {
+      showToast.error(error.message, 'flow')
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: flowQueryKeys.executions(workflow.id) })
+      queryClient.invalidateQueries({ queryKey: flowQueryKeys.workflows(), exact: true })
+    },
+  })
+  const liveRun = useLiveRun(() => runMutation.mutate())
 
   const deactivateMutation = useMutation({
     mutationFn: () => deactivateWorkflow(workflow.id),
@@ -252,6 +280,15 @@ function WorkflowCard({ workflow }: { workflow: WorkflowListItem }) {
                 >
                   <Webhook className="mr-2 h-4 w-4" />
                   Webhook
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setHistoryOpen(true)
+                  }}
+                >
+                  <History className="mr-2 h-4 w-4" />
+                  Run history
                 </DropdownMenuItem>
                 {workflow.is_active ? (
                   <DropdownMenuItem
@@ -569,6 +606,14 @@ Chartink payload (sent as-is):
 
       {/* Desktop: confirmations the web does not ask for. */}
       {liveActivation.dialog}
+      {liveRun.dialog}
+      <FlowRunHistory
+        workflowId={workflow.id}
+        workflowName={workflow.name}
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        onRunNow={() => liveRun.request()}
+      />
       <DeleteWorkflowDialog
         name={workflow.name}
         isActive={workflow.is_active}
