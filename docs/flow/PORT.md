@@ -1400,3 +1400,58 @@ it changes ("Departures from the web"):
   (`triggers/tests/price_poll.rs`): every-time "greater than 100" over 101,
   102, 103 runs once, then 99 and 101 run it a second time; every-time
   "inside the channel" 95 to 105 over 100, 101, 110, 100 runs twice.
+
+### The public webhook's rate limits (coordinator decision 6e)
+
+- Carried from upstream (`server/ratelimit.rs`, rows `FlowWebhook` and
+  `WebhookFail`; `server/routes/flow/triggers.rs`, `admit` and
+  `rate_limited`) as `flow/service/webhook_limits.rs` (new), held on
+  `FlowModule::webhook_limits`, so every router the app builds shares one
+  table: 100 requests a minute per caller address, checked before the body
+  is read; 100 a minute per token, once the token names a workflow (an
+  invented token never gets a window: it is a failed authentication); 10
+  failed authentications (an unknown token or a wrong secret) a minute per
+  caller. Over a limit the answer is upstream's JSON 429, `{"status":
+  "error", "message": "Rate limit exceeded. Please slow down your
+  requests.", "limit": "100 per 1 minute", "retry_after": 60}`, with
+  `Retry-After: 60`, for either kind of limit, as upstream answered.
+- One departure, to keep upstream's intent ("never a valid webhook
+  address") with this app's addresses: once a caller has spent its
+  failures, its unknown tokens and its wrong or missing secrets are answered
+  429 at once (upstream refused only unknown tokens), and a wrong one is
+  still counted by the lockout; an alert with the workflow's right secret
+  goes on. Every sender behind a local tunnel (ngrok forwarding to
+  127.0.0.1) reaches this app from 127.0.0.1, so a stranger guessing tokens
+  through the public URL must not be able to shut out TradingView's alerts;
+  and the per-address limit of 100 a minute is, through a tunnel, one
+  limit for all senders together (upstream exempted its built-in tunnel's
+  traffic from the per-address limit; this app cannot tell a tunnel's
+  traffic from a local program's).
+- With the lockout (`webhook_guard`: 10 wrong secrets in 10 minutes lock a
+  webhook for 15 minutes): the 10th wrong secret from a caller within a
+  minute both spends that caller's failure budget and locks the webhook.
+  The 11th wrong secret within the minute is answered 429 (the limit comes
+  first) and still counted by the lockout; the right secret, from that
+  caller or any other, is answered 403 with the lock's sentence until the
+  lock ends or the webhook's URL and secret are regenerated (or the webhook
+  turned off and on); after the minute, a wrong secret is answered 403
+  locked again. Ten wrong secrets spread over more than a minute lock the
+  webhook without a 429.
+- `webhook/server.rs` (this app's file, for 6e only): the listener serves
+  `into_make_service_with_connect_info::<SocketAddr>()`, so each request
+  carries its caller's address; the Flow routes stay outside the `/api/v1`
+  limiter; the refusal is logged as "Flow webhook: the caller at <address>
+  is over its limit; answered 429", never with the token, and a token's
+  window is keyed by a keyed hash. `flow/service/webhooks.rs`:
+  `secret_given` reads a call's secret against its workflow's without
+  touching the call or the lockout; `token_known` (Phase C's, unused until
+  now) is the limits' known-token check.
+- Tests (`webhook/server.rs`, `flow_webhook_tests`): the 101st call in a
+  minute from one address answers 429 (another address is not held); the
+  101st on one token from addresses that sent nothing; the 11th wrong secret
+  in a minute answers 429 and the right one is then 403 locked from any
+  address; ten unknown tokens from 127.0.0.1 spend that address's failures
+  (the 11th is 429) but the right secret from it still runs the workflow;
+  no line logged while limiting carries the token. Unit tests in
+  `webhook_limits.rs`: the moving window, the per-token window, the
+  failure budget, the token kept as a hash, the full table.

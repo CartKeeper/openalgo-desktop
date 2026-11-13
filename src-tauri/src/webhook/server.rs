@@ -32,7 +32,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use tokio::sync::oneshot;
@@ -241,6 +241,33 @@ fn flow_webhook_routes(shared: Arc<WebhookState>) -> Router {
         .with_state(shared)
 }
 
+/// The caller's address: the listener puts it on every request
+/// (`into_make_service_with_connect_info`); a request handed to the router
+/// in process has none (`0.0.0.0`).
+fn caller(req: &Request) -> IpAddr {
+    req.extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|c| c.0.ip())
+        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+}
+
+/// Upstream's 429 for a caller over a Flow webhook limit (WP8 Phase D): its
+/// JSON, with `Retry-After`. The line logged names the caller's address,
+/// never the token.
+fn over_the_limit(ip: IpAddr) -> Response {
+    use crate::flow::service::webhook_limits::{rate_limited, RETRY_AFTER_SECS};
+    tracing::warn!(
+        "Flow webhook: the caller at {} is over its limit; answered 429",
+        ip
+    );
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(axum::http::header::RETRY_AFTER, RETRY_AFTER_SECS.to_string())],
+        Json(rate_limited()),
+    )
+        .into_response()
+}
+
 /// `POST /flow/webhook/{token}`: public, with its own credential.
 async fn flow_webhook(
     State(shared): State<Arc<WebhookState>>,
@@ -262,6 +289,10 @@ async fn flow_webhook_with_symbol(
 
 /// Read the alert as upstream's route did (the body as JSON, text or an
 /// urlencoded form, `?secret=` for URL auth) and answer the service's reply.
+/// Upstream's limits first (WP8 Phase D, `flow::service::webhook_limits`):
+/// 100 requests a minute per caller address before the body is read, then
+/// 100 a minute per known token and 10 failed authentications a minute per
+/// caller; over one, the 429.
 async fn flow_webhook_call(
     shared: &WebhookState,
     token: String,
@@ -276,6 +307,14 @@ async fn flow_webhook_call(
             .into_response();
     };
     let app = app.root();
+    let ip = caller(&req);
+    if !app
+        .flow
+        .webhook_limits
+        .admit_caller(ip, std::time::Instant::now())
+    {
+        return over_the_limit(ip);
+    }
     let declared = req
         .headers()
         .get(CONTENT_TYPE)
@@ -305,15 +344,20 @@ async fn flow_webhook_call(
     if let Some(s) = symbol {
         payload.insert("symbol".into(), serde_json::Value::String(s));
     }
-    let answer = webhooks::trigger(
-        &app,
-        webhooks::WebhookCall {
-            token,
-            payload,
-            url_secret,
-        },
-    )
-    .await;
+    let call = webhooks::WebhookCall {
+        token,
+        payload,
+        url_secret,
+    };
+    if !crate::flow::service::webhook_limits::admit(&app, ip, &call).await {
+        return over_the_limit(ip);
+    }
+    let answer = webhooks::trigger(&app, call).await;
+    if answer.wrong_secret {
+        app.flow
+            .webhook_limits
+            .count_failure(ip, std::time::Instant::now());
+    }
     let status = StatusCode::from_u16(answer.reply.status)
         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     (status, Json(answer.reply.body)).into_response()
@@ -457,9 +501,13 @@ impl WebhookServer {
             .await
             .map_err(|e| format!("Failed to bind to {}: {}", addr, e))?;
 
-        // Spawn server task
+        // Spawn server task. Every request carries its caller's address
+        // (`ConnectInfo`): the Flow webhook's limits are per caller.
         tokio::spawn(async move {
-            let server = axum::serve(listener, app)
+            let server = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
                 .with_graceful_shutdown(async {
                     let _ = shutdown_rx.await;
                     info!("API server shutting down");
@@ -1007,5 +1055,191 @@ mod flow_webhook_tests {
         );
         assert!(text.contains("uri=/flow/webhook/[redacted]/AAPL"), "{text}");
         assert!(text.contains("secret=[redacted]"), "{text}");
+    }
+    // ---- WP8 Phase D (decision 6e): the public webhook's rate limits ----
+
+    /// A request from `ip` (the listener puts the caller's address on every
+    /// request: `into_make_service_with_connect_info`).
+    fn from(ip: [u8; 4], mut req: Request) -> Request {
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((ip, 40_000))));
+        req
+    }
+
+    /// A workflow whose webhook is off: every call to its token is answered
+    /// 403 "Webhook is disabled", a known token, never a failed
+    /// authentication and never a run.
+    fn switched_off(t: &TestCtx, name: &str) -> String {
+        let conn = t.ctx.sqlite.conn().unwrap();
+        let w = workflows::create(
+            &conn,
+            &t.ctx.security,
+            &NewWorkflow {
+                name,
+                description: None,
+                nodes: &json!([]),
+                edges: &json!([]),
+            },
+            t.ctx.now(),
+        )
+        .unwrap();
+        w.webhook_token.unwrap()
+    }
+
+    /// Upstream's 429: JSON, with `Retry-After`.
+    async fn limited(t: &TestCtx, req: Request) -> (u16, Value, Option<String>) {
+        let resp = router((*t.ctx).clone()).oneshot(req).await.unwrap();
+        let status = resp.status().as_u16();
+        let retry = resp
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null), retry)
+    }
+
+    fn upstreams_429() -> Value {
+        json!({
+            "status": "error",
+            "message": "Rate limit exceeded. Please slow down your requests.",
+            "limit": "100 per 1 minute",
+            "retry_after": 60,
+        })
+    }
+
+    /// 100 requests a minute per caller address, whatever the token: the
+    /// 101st from one address answers 429; another address is not held.
+    #[tokio::test]
+    async fn the_101st_call_in_a_minute_from_one_address_answers_429() {
+        let t = harness();
+        let (a, b) = (switched_off(&t, "A"), switched_off(&t, "B"));
+        for n in 0..100 {
+            let token = if n % 2 == 0 { &a } else { &b };
+            let (status, _) = answer(
+                &t,
+                from([203, 0, 113, 7], post_json(&format!("/flow/webhook/{token}"), json!({}))),
+            )
+            .await;
+            assert_eq!(status, 403, "call {n}");
+        }
+        let (status, body, retry) = limited(
+            &t,
+            from([203, 0, 113, 7], post_json(&format!("/flow/webhook/{a}"), json!({}))),
+        )
+        .await;
+        assert_eq!((status, body), (429, upstreams_429()));
+        assert_eq!(retry.as_deref(), Some("60"));
+        let (status, _) = answer(
+            &t,
+            from([198, 51, 100, 9], post_json(&format!("/flow/webhook/{a}"), json!({}))),
+        )
+        .await;
+        assert_eq!(status, 403, "another address is not held");
+    }
+
+    /// 100 requests a minute per token, from any number of addresses: the
+    /// 101st on one token answers 429, from an address that sent nothing.
+    #[tokio::test]
+    async fn the_101st_call_in_a_minute_on_one_token_answers_429() {
+        let t = harness();
+        let token = switched_off(&t, "A");
+        let path = format!("/flow/webhook/{token}");
+        for n in 0..100u8 {
+            let (status, _) =
+                answer(&t, from([192, 0, 2, n % 4], post_json(&path, json!({})))).await;
+            assert_eq!(status, 403, "call {n}");
+        }
+        let (status, body, _) =
+            limited(&t, from([192, 0, 2, 200], post_json(&path, json!({})))).await;
+        assert_eq!((status, body), (429, upstreams_429()));
+    }
+
+    /// 10 failed authentications a minute per caller: the 11th wrong secret
+    /// in a minute answers 429. The tenth also locked the webhook (the
+    /// guard: 10 wrong secrets in 10 minutes lock it for 15), so the right
+    /// secret is refused 403 with the lock's sentence, from that caller and
+    /// from any other, until the lock ends or the address is regenerated.
+    #[tokio::test]
+    async fn the_11th_wrong_secret_in_a_minute_answers_429() {
+        let t = harness();
+        let (id, token, secret) = hooked(&t, None);
+        let path = format!("/flow/webhook/{token}");
+        for n in 1..=10 {
+            let (status, _) = answer(
+                &t,
+                from([203, 0, 113, 7], post_json(&path, json!({"secret": format!("wrong-{n}")}))),
+            )
+            .await;
+            assert_eq!(status, 401, "wrong secret {n}");
+        }
+        let (status, body, _) = limited(
+            &t,
+            from([203, 0, 113, 7], post_json(&path, json!({"secret": "wrong-11"}))),
+        )
+        .await;
+        assert_eq!((status, body), (429, upstreams_429()));
+        for ip in [[203, 0, 113, 7], [198, 51, 100, 9]] {
+            let (status, body) =
+                answer(&t, from(ip, post_json(&path, json!({"secret": secret})))).await;
+            assert_eq!(status, 403, "{body}");
+            assert_eq!(body["error"], crate::flow::service::webhook_guard::LOCKED);
+        }
+        assert!(runs(&t, id).is_empty(), "nothing ran");
+    }
+
+    /// A stranger's misses spend only misses: ten unknown tokens from the
+    /// address every tunnel sender shares spend that address's budget, so
+    /// the eleventh is refused 429, but an alert with a workflow's right
+    /// secret from the same address still runs it.
+    #[tokio::test]
+    async fn a_strangers_misses_never_shut_out_the_right_secret() {
+        let t = harness();
+        let (id, token, secret) = hooked(&t, None);
+        for n in 1..=10 {
+            let (status, _) = answer(
+                &t,
+                from([127, 0, 0, 1], post_json(&format!("/flow/webhook/guess-{n}"), json!({}))),
+            )
+            .await;
+            assert_eq!(status, 404, "guess {n}");
+        }
+        let (status, body, _) = limited(
+            &t,
+            from([127, 0, 0, 1], post_json("/flow/webhook/guess-11", json!({}))),
+        )
+        .await;
+        assert_eq!((status, body), (429, upstreams_429()));
+        let (status, body) = answer(
+            &t,
+            from(
+                [127, 0, 0, 1],
+                post_json(&format!("/flow/webhook/{token}"), json!({"secret": secret})),
+            ),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(runs(&t, id).len(), 1);
+    }
+
+    /// No line logged while a caller is limited carries the token.
+    #[tokio::test]
+    async fn no_line_logged_while_limiting_carries_the_token() {
+        let t = harness();
+        let (_, token, _) = hooked(&t, None);
+        let path = format!("/flow/webhook/{token}");
+        let logs = capture_logs();
+        for n in 1..=12 {
+            let ip = if n % 2 == 0 { [203, 0, 113, 7] } else { [203, 0, 113, 8] };
+            answer(&t, from(ip, post_json(&path, json!({"secret": format!("wrong-{n}")})))).await;
+        }
+        for n in 0..101 {
+            let call = post_json(&format!("{path}/AAPL"), json!({"n": n}));
+            answer(&t, from([198, 51, 100, 9], call)).await;
+        }
+        let text = logs.text();
+        let line = "Flow webhook: the caller at 198.51.100.9 is over its limit; answered 429";
+        assert!(text.contains(line), "nothing was limited:\n{text}");
+        assert!(!text.contains(&token), "the token is in the log:\n{text}");
     }
 }

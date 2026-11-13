@@ -298,8 +298,8 @@ pub fn urlencoded_fields(body: &[u8]) -> Map<String, Value> {
     m
 }
 
-/// Whether a token names a workflow: the cheap check the route makes
-/// before reading the body, to decide which rate limit applies.
+/// Whether a token names a workflow: the check the route's limits make
+/// (`webhook_limits::admit`) to decide which limit applies.
 pub async fn token_known(app: &Arc<AppState>, token: &str) -> bool {
     let token = token.to_string();
     app.blocking(move |c| crate::flow::triggers::store::token_exists(&*c.sqlite.conn()?, &token))
@@ -331,6 +331,44 @@ fn answer(status: u16, error: &str) -> Answer {
 fn same(given: &str, stored: &str) -> bool {
     use subtle::ConstantTimeEq;
     given.len() == stored.len() && bool::from(given.as_bytes().ct_eq(stored.as_bytes()))
+}
+
+/// What a call's secret is against its workflow's, without touching the
+/// call or the lockout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretGiven {
+    Right,
+    Wrong,
+    /// None given where the auth type looks (or the workflow has none).
+    Missing,
+}
+
+/// The workflow a call's token names and what its secret is, for the
+/// limits (`webhook_limits::admit`); `None` for an unknown token.
+pub async fn secret_given(app: &Arc<AppState>, call: &WebhookCall) -> Option<(i64, SecretGiven)> {
+    let token = call.token.clone();
+    let w = app
+        .blocking(move |c| workflows::get_by_token(&*c.sqlite.conn()?, &c.security, &token))
+        .await
+        .ok()
+        .flatten()?;
+    let Some(stored) = w.webhook_secret.as_ref() else {
+        return Some((w.id, SecretGiven::Missing));
+    };
+    let given = if w.webhook_auth_type == "url" {
+        call.url_secret
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| Value::String(s.to_string()))
+    } else {
+        call.payload.get("secret").filter(|v| pyfmt::truthy(v)).cloned()
+    };
+    let is = match given {
+        None => SecretGiven::Missing,
+        Some(Value::String(g)) if same(&g, stored.expose()) => SecretGiven::Right,
+        Some(_) => SecretGiven::Wrong,
+    };
+    Some((w.id, is))
 }
 
 /// The secret check per auth type (`payload` pops `secret` so the run never

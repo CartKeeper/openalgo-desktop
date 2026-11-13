@@ -88,6 +88,8 @@ pub struct FlowModule {
     claimed: Arc<Mutex<HashSet<i64>>>,
     /// The public webhook's lockout after wrong secrets.
     pub webhook_guard: service::webhook_guard::WebhookGuard,
+    /// The public webhook's request limits (WP8 Phase D).
+    pub webhook_limits: service::webhook_limits::WebhookLimits,
     /// The orders each workflow's runs placed: its order-update watch skips
     /// them (WP8 Phase D).
     pub own_orders: Arc<triggers::own_orders::OwnOrders>,
@@ -113,6 +115,7 @@ impl FlowModule {
             env: RwLock::new(NodeEnv::default()),
             claimed: Arc::default(),
             webhook_guard: Default::default(),
+            webhook_limits: Default::default(),
             own_orders: Arc::default(),
             tasks: Mutex::new(JoinSet::new()),
             stop: Mutex::new(CancellationToken::new()),

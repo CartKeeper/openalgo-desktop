@@ -11,11 +11,13 @@
 //! | `activation` | activate, deactivate, the monitors' status |
 //! | `webhooks` | the webhook settings and the public webhook |
 //! | `webhook_guard` | the public webhook's lockout after wrong secrets |
+//! | `webhook_limits` | the public webhook's request limits (WP8 Phase D) |
 
 pub mod activation;
 pub mod transfer;
 pub mod triggers;
 pub mod webhook_guard;
+pub mod webhook_limits;
 pub mod webhooks;
 
 use crate::error::Result;
