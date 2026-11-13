@@ -147,6 +147,11 @@ impl Watches {
         self.watches.lock().remove(&workflow_id).is_some()
     }
 
+    /// No watch is registered (the order-book poller idles).
+    pub fn is_empty(&self) -> bool {
+        self.watches.lock().is_empty()
+    }
+
     pub fn get(&self, workflow_id: i64) -> Option<Watch> {
         self.watches.lock().get(&workflow_id).cloned()
     }

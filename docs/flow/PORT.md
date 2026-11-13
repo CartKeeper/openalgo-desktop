@@ -893,3 +893,40 @@ Live-mode confirmation on activation.
   first (waiting) run holds the workflow, 202 then 409 "Workflow is already
   running" (Review Focus 4); neither the token nor a secret in the request
   log, every way a caller can send them.
+
+### Task C4: order-update triggers from an order-book poller
+
+- `triggers/order_poll.rs` (new): this app has no order stream, so while any
+  order-update watch is active the trigger side reads the order book every
+  5 s through `OrderbookService::get_orderbook` (the sandbox's book in
+  analyzer mode, the broker's otherwise; the service logs one info line per
+  read) and sends one `OrderUpdate` for each order new to the book or whose
+  status changed since the last read, on `AppState::order_updates`, which
+  the carried watches already read. The first read of a book is its
+  baseline (turning a watch on never fires for orders already done), and a
+  new source (analyzer mode switched, another broker) is a new baseline. A
+  failed read keeps the last book. With no watch the poller reads nothing.
+- Statuses are given in the watches' words (`watch_status`): the brokers'
+  `COMPLETE`/`FILLED` -> `complete`; `OPEN`, `PARTIALLY_FILLED`, `PENDING`
+  and the sandbox's `pending` -> `open`; `TRIGGER PENDING` -> `trigger
+  pending`; `CANCELLED`/`EXPIRED` -> `cancelled`; `REJECTED` -> `rejected`;
+  anything else lower-cased, so an `any` watch still hears it.
+- Limits a trader may notice: a change is seen up to 5 s late and only as
+  the status a read finds (a partial fill shows `open` until the order
+  completes; an order that opens and fills between two reads is one
+  `complete` update). A watch turned on within 5 s after an order changed can
+  hear that change at the next read. The sandbox fills a MARKET order at once
+  and has no fill engine for resting orders, so in analyzer mode a watch
+  hears new market orders (`complete`) and cancels.
+- **Hand edits**: `triggers/mod.rs` (`wake_orders`, the poller started with
+  the other drivers, woken when a watch registers), `triggers/restore.rs`
+  (woken after watches are restored), `triggers/order_monitor.rs`
+  (`Watches::is_empty`), `events.rs` (its doc). Carried test
+  `triggers/tests.rs::stop_ends_every_task_and_reset_forgets_everything`
+  counts three drivers now (was two).
+- Tests: `order_poll.rs` (the status words; a book reports each new order
+  and each change once, the baseline nothing; a new source is a new
+  baseline) and `triggers/tests/order_updates.rs` (a sandbox limit order
+  filling between two reads sends exactly one `complete` update with the
+  order's fields and runs the watching workflow once; the book is read only
+  while a watch is active, and no run starts).

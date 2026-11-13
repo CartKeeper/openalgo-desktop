@@ -4,9 +4,11 @@
 //! to; this app has no bus and no order stream. Flow's order-update
 //! monitor subscribes to a broadcast channel instead
 //! ([`OrderUpdates::subscribe`]), and an order-book poller (WP8 Phase C,
-//! `flow::triggers::order_poll`) sends one [`OrderUpdate`] per order whose
-//! status changed between two polls. The struct keeps upstream's fields so
-//! the carried monitor matches watches exactly as upstream does.
+//! `flow::triggers::order_poll`, every 5 s while a watch is active) sends
+//! one [`OrderUpdate`] per order that is new to the book or whose status
+//! changed since its last read, the status in the watches' words. The
+//! struct keeps upstream's fields so the carried monitor matches watches
+//! exactly as upstream does.
 
 use tokio::sync::broadcast;
 
