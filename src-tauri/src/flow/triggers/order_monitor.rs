@@ -19,6 +19,10 @@
 //!   workflow placed ([`Watches::claim_except`], the ids from
 //!   `own_orders`), with a log line: an every-time watch on AAPL whose run
 //!   buys AAPL re-ran itself on each of its own fills on the web.
+//! - (WP8 Phase D, decision 6f) The US labels are one market when a watch's
+//!   exchange is matched (`support::same_market`): a watch on NASDAQ hears
+//!   an order this app's Alpaca adapter reports on `US`. Indian and crypto
+//!   labels match exactly, as on the web.
 
 use crate::events::OrderUpdate;
 use crate::flow::contract::pyfmt;
@@ -105,7 +109,10 @@ impl Watch {
         (self.status == "any" || normalize_status(&u.order_status) == self.status)
             && self.order_id.as_deref().is_none_or(|o| o == u.orderid)
             && self.symbol.as_deref().is_none_or(|s| s == u.symbol)
-            && self.exchange.as_deref().is_none_or(|e| e == u.exchange)
+            && self
+                .exchange
+                .as_deref()
+                .is_none_or(|e| crate::flow::support::same_market(e, &u.exchange))
     }
 }
 

@@ -1455,3 +1455,28 @@ it changes ("Departures from the web"):
   no line logged while limiting carries the token. Unit tests in
   `webhook_limits.rs`: the moving window, the per-token window, the
   failure budget, the token kept as a hash, the full table.
+
+### US exchanges as one market when matching (coordinator decision 6f)
+
+- What this app really writes: the Alpaca adapter puts `US` in every order
+  (`map_alpaca_orders`, the order and trade books) and every quote
+  (`get_quote`, `get_market_depth`); positions keep Alpaca's own label or
+  `US`; the master contract maps assets to `NASDAQ`, `NYSE`, `ARCA`,
+  `BATS`, `OTC`, `AMEX` or `US`. The sandbox keeps the exchange an order was
+  placed on: `US` for a new node (Phase B's default) or the venue the
+  trader picked. So a watch on NASDAQ never heard an Alpaca order (`US`),
+  and a watch on `US` never heard a sandbox order placed on NASDAQ.
+- `flow::support::same_market` (new): two labels are one market when they
+  are equal, or both US labels (`NYSE, NASDAQ, AMEX, ARCA, BATS, OTC, US`),
+  a US ticker being the same on every US venue. **Hand edit**
+  (`triggers/order_monitor.rs`, `Watch::matches`, and its "Departures from
+  the web"): a watch's exchange is matched with it. Indian and crypto
+  labels still match only themselves. A price alert asks for its quote on
+  its own label and reads only the price, so it already fires on Alpaca's
+  `US` quotes (pinned by a test).
+- Tests (`triggers/tests/us_markets.rs`), through the poller's own diff
+  (`Book::changes`): a NASDAQ watch hears Alpaca's `US` order; a `US`
+  watch hears an order on every US venue and every US watch hears `US`;
+  NSE, BSE and CRYPTO match only themselves; a sandbox order placed on
+  NASDAQ, filled between two reads of the book, runs a workflow watching
+  `US`; a NASDAQ alert fires on Alpaca's `US` quote.

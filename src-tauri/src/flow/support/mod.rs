@@ -70,6 +70,16 @@ pub fn is_us_venue(label: &str) -> bool {
         .any(|v| v.eq_ignore_ascii_case(label.trim()))
 }
 
+/// Whether two exchange labels are one market when a watch or an alert is
+/// matched (WP8 Phase D, decision 6f): the US labels are one market, since
+/// a US ticker is the same on every US venue (this app's Alpaca adapter
+/// writes `US` on every order and quote, the sandbox keeps the venue an
+/// order was placed on); every other label, Indian or crypto, matches only
+/// itself, as on the web.
+pub fn same_market(a: &str, b: &str) -> bool {
+    a == b || (is_us_venue(a) && is_us_venue(b))
+}
+
 /// What a broker-backed call answers while no broker is logged in
 /// (upstream's `strategy::dispatch::NO_BROKER_SESSION`).
 pub const NO_BROKER_SESSION: &str =
