@@ -79,7 +79,7 @@ interface ClientScenarioStore {
   clearError: () => void
 }
 
-function computeSummary(
+export function computeSummary(
   enriched: EnrichedScenarioPosition[]
 ): ScenarioSummary {
   let totalValue = 0
@@ -107,7 +107,7 @@ function computeSummary(
   }
 }
 
-function enrichPositions(
+export function enrichPositions(
   positions: ScenarioPosition[],
   quotes: Map<string, GenericQuote>
 ): EnrichedScenarioPosition[] {
