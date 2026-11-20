@@ -569,7 +569,7 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "apply_scenario_trades".to_string(),
-            description: "Apply a batch of simulated trades to a client's sandbox scenario. Each trade updates or creates a position using weighted-average cost basis. Use this when you have concrete trade recommendations and the user wants to apply them to a scenario. Returns updated positions after all trades are applied.".to_string(),
+            description: "Apply a batch of simulated trades to a client's sandbox scenario. Each trade updates or creates a position using weighted-average cost basis. Use this when you have concrete trade recommendations and the user wants to apply them to a scenario. A trade that can't be applied (for example a sell past the shares held in a long-only account such as a 401(k) or IRA) is skipped and listed under skipped_trades with the reason; the other trades still apply. Tell the user about any skipped trades. Returns updated positions after the batch.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

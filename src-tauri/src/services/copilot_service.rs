@@ -1313,42 +1313,21 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
         Self::refuse_baseline_apply(scenario.is_baseline)?;
 
         let mut applied: Vec<serde_json::Value> = Vec::new();
+        // A trade that can't be applied (a sell past the shares held in a
+        // long-only account, a missing price) is skipped and reported; the
+        // rest of the batch still applies.
+        let mut failed: Vec<serde_json::Value> = Vec::new();
 
         for trade in trades {
-            let symbol = trade["symbol"]
-                .as_str()
-                .ok_or_else(|| AppError::Validation("Each trade requires a symbol".to_string()))?;
-            let exchange = trade["exchange"].as_str().unwrap_or("GENERIC");
-            let side = trade["side"]
-                .as_str()
-                .ok_or_else(|| AppError::Validation("Each trade requires a side (buy/sell)".to_string()))?;
-            let quantity = trade["quantity"]
-                .as_f64()
-                .ok_or_else(|| AppError::Validation("Each trade requires a quantity".to_string()))?;
-            let price = trade["price"]
-                .as_f64()
-                .ok_or_else(|| AppError::Validation("Each trade requires a price".to_string()))?;
-
-            let result = state.sqlite.apply_scenario_trade(
-                scenario_id,
-                symbol,
-                exchange,
-                side,
-                quantity,
-                price,
-            )?;
-
-            applied.push(serde_json::json!({
-                "symbol": symbol,
-                "side": side,
-                "quantity": quantity,
-                "price": price,
-                "resulting_position": {
-                    "quantity": result.quantity,
-                    "avg_price": result.avg_price,
-                    "side": result.side,
-                }
-            }));
+            match Self::apply_one_scenario_trade(trade, scenario_id, state) {
+                Ok(done) => applied.push(done),
+                Err(e) => failed.push(serde_json::json!({
+                    "symbol": trade["symbol"].as_str().unwrap_or("?"),
+                    "side": trade["side"],
+                    "quantity": trade["quantity"],
+                    "reason": e.to_string(),
+                })),
+            }
         }
 
         // Return the full updated positions list
@@ -1368,10 +1347,49 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
 
         Ok(serde_json::json!({
             "trades_applied": applied.len(),
+            "trades_skipped": failed.len(),
+            "skipped_trades": failed,
             "trade_details": applied,
             "updated_positions": pos_data,
             "updated_position_count": updated_positions.len(),
             "cash_after": state.sqlite.get_client_scenario_by_id(scenario_id)?.cash,
+        }))
+    }
+
+    /// Apply one trade from an `apply_scenario_trades` batch.
+    fn apply_one_scenario_trade(
+        trade: &serde_json::Value,
+        scenario_id: i64,
+        state: &AppState,
+    ) -> Result<serde_json::Value> {
+        let symbol = trade["symbol"]
+            .as_str()
+            .ok_or_else(|| AppError::Validation("Each trade requires a symbol".to_string()))?;
+        let exchange = trade["exchange"].as_str().unwrap_or("GENERIC");
+        let side = trade["side"]
+            .as_str()
+            .ok_or_else(|| AppError::Validation("Each trade requires a side (buy/sell)".to_string()))?;
+        let quantity = trade["quantity"]
+            .as_f64()
+            .ok_or_else(|| AppError::Validation("Each trade requires a quantity".to_string()))?;
+        let price = trade["price"]
+            .as_f64()
+            .ok_or_else(|| AppError::Validation("Each trade requires a price".to_string()))?;
+
+        let result = state
+            .sqlite
+            .apply_scenario_trade(scenario_id, symbol, exchange, side, quantity, price)?;
+
+        Ok(serde_json::json!({
+            "symbol": symbol,
+            "side": side,
+            "quantity": quantity,
+            "price": price,
+            "resulting_position": {
+                "quantity": result.quantity,
+                "avg_price": result.avg_price,
+                "side": result.side,
+            }
         }))
     }
 
@@ -1550,7 +1568,8 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
     /// built on a cut-off holdings list is wrong, not just shorter.
     const MAX_RESULT_BYTES: usize = 4000;
     const MAX_ARRAY_ITEMS: usize = 10;
-    const WHOLE_RESULT_TOOLS: &'static [&'static str] = &["get_client_scenario"];
+    /// `apply_scenario_trades` too: a cut-off result can hide which trades were skipped.
+    const WHOLE_RESULT_TOOLS: &'static [&'static str] = &["get_client_scenario", "apply_scenario_trades"];
 
     fn truncate_tool_result(tool_name: &str, result: &serde_json::Value) -> String {
         if Self::WHOLE_RESULT_TOOLS.contains(&tool_name) {
@@ -1759,7 +1778,21 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
             }
             "apply_scenario_trades" => {
                 let count = result.get("trades_applied").and_then(|v| v.as_i64()).unwrap_or(0);
-                format!("Applied {} trade(s) to scenario", count)
+                let skipped: Vec<&str> = result
+                    .get("skipped_trades")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|t| t["symbol"].as_str()).collect())
+                    .unwrap_or_default();
+                if skipped.is_empty() {
+                    format!("Applied {} trade(s) to scenario", count)
+                } else {
+                    format!(
+                        "Applied {} trade(s) to scenario; skipped {} ({})",
+                        count,
+                        skipped.len(),
+                        skipped.join(", ")
+                    )
+                }
             }
             "get_price_history" => {
                 let sym = result.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
@@ -1901,5 +1934,53 @@ mod prompt_tests {
         assert!(p.contains("name the source (consensus of N analysts, or the firm)"));
         assert!(p.contains("Present the distribution of outcomes. Treating variance"));
         assert!(!p.contains("not a target"));
+    }
+}
+
+#[cfg(test)]
+mod apply_scenario_trades_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_refused_trade_is_skipped_and_the_rest_still_apply() {
+        let state = crate::state::testing::object();
+        let client = state
+            .sqlite
+            .add_client("Test", None, None, None, None, Some("401k"), None)
+            .unwrap();
+        let scenario = state
+            .sqlite
+            .create_client_scenario(client.id.unwrap(), "Copy", None, false)
+            .unwrap();
+        let sid = scenario.id.unwrap();
+        state.sqlite.add_scenario_position(sid, "AABB", "GENERIC", 723.0, 0.01, "long", None).unwrap();
+
+        let input = serde_json::json!({
+            "scenario_id": sid,
+            "trades": [
+                { "symbol": "AABB", "side": "sell", "quantity": 723, "price": 0.0094 },
+                { "symbol": "AABB", "side": "sell", "quantity": 723, "price": 0.0094 },
+                { "symbol": "VOO", "side": "buy", "quantity": 2, "price": 673.01 }
+            ]
+        });
+        let result = CopilotService::tool_apply_scenario_trades(&input, &state).await.unwrap();
+
+        assert_eq!(result["trades_applied"], 2);
+        assert_eq!(result["trades_skipped"], 1);
+        let reason = result["skipped_trades"][0]["reason"].as_str().unwrap();
+        assert!(reason.contains("can't hold short positions"), "{reason}");
+        let positions = state.sqlite.get_scenario_positions(sid).unwrap();
+        assert!(positions.iter().all(|p| p.side == "long"), "no shorts in a 401(k)");
+        assert!(positions.iter().any(|p| p.symbol == "VOO" && p.quantity == 2.0), "the buy after the refusal applied");
+
+        let summary = CopilotService::summarize_tool_result("apply_scenario_trades", &result);
+        assert_eq!(summary, "Applied 2 trade(s) to scenario; skipped 1 (AABB)");
+    }
+
+    #[test]
+    fn its_result_reaches_claude_whole() {
+        let big = serde_json::json!({ "skipped_trades": [], "pad": "x".repeat(10_000) });
+        let sent = CopilotService::truncate_tool_result("apply_scenario_trades", &big);
+        assert!(!sent.contains("[truncated"));
     }
 }
