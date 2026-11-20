@@ -1,0 +1,15 @@
+[
+  { "value": "individual", "label": "Individual Brokerage", "shortSellingAllowed": true },
+  { "value": "joint", "label": "Joint Brokerage", "shortSellingAllowed": true },
+  { "value": "margin", "label": "Margin Account", "shortSellingAllowed": true },
+  { "value": "401k", "label": "401(k)", "shortSellingAllowed": false },
+  { "value": "roth_401k", "label": "Roth 401(k)", "shortSellingAllowed": false },
+  { "value": "traditional_ira", "label": "Traditional IRA", "shortSellingAllowed": false },
+  { "value": "roth_ira", "label": "Roth IRA", "shortSellingAllowed": false },
+  { "value": "sep_ira", "label": "SEP IRA", "shortSellingAllowed": false },
+  { "value": "simple_ira", "label": "SIMPLE IRA", "shortSellingAllowed": false },
+  { "value": "529", "label": "529 Plan", "shortSellingAllowed": false },
+  { "value": "trust", "label": "Trust", "shortSellingAllowed": true },
+  { "value": "custodial", "label": "Custodial (UGMA/UTMA)", "shortSellingAllowed": false },
+  { "value": "other", "label": "Other", "shortSellingAllowed": true }
+]

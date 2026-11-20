@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseActionsFromMarkdown } from './parseActions'
+import { latestAnswerActions, parseActionsFromMarkdown } from './parseActions'
 
 function block(items: unknown[]): string {
   return `Briefing text\n\n<!-- ACTIONS_JSON\n${JSON.stringify(items)}\n-->\n`
@@ -124,5 +124,47 @@ describe('parseActionsFromMarkdown strategy fields', () => {
     expect(recs.map((r) => r.symbol)).toEqual(['PFE', 'BAC'])
     // Repeat calls start from the top of the text each time.
     expect(parseActionsFromMarkdown(text, 'briefing')).toHaveLength(2)
+  })
+})
+
+describe('latestAnswerActions', () => {
+  const trade = (symbol: string) => ({
+    symbol,
+    exchange: 'GENERIC',
+    side: 'SELL',
+    quantity: 10,
+    orderType: 'MARKET',
+    product: 'CNC',
+    price: 0,
+    rationale: 'r',
+  })
+
+  it("takes only the latest answer's trades, not every answer's", () => {
+    const actions = latestAnswerActions(
+      [
+        { role: 'user', content: 'Analyze this portfolio' },
+        { role: 'assistant', content: block([trade('AABB'), trade('TQQQ')]) },
+        { role: 'user', content: 'Run a full analysis' },
+        { role: 'assistant', content: block([trade('AABB'), trade('AG')]) },
+      ],
+      'report'
+    )
+    expect(actions.map((a) => a.symbol)).toEqual(['AABB', 'AG'])
+  })
+
+  it('skips a later answer that recommends no trades', () => {
+    const actions = latestAnswerActions(
+      [
+        { role: 'assistant', content: block([trade('AABB')]) },
+        { role: 'user', content: 'Why?' },
+        { role: 'assistant', content: 'Because it is near worthless.' },
+      ],
+      'report'
+    )
+    expect(actions.map((a) => a.symbol)).toEqual(['AABB'])
+  })
+
+  it('returns nothing when no answer has trades', () => {
+    expect(latestAnswerActions([{ role: 'assistant', content: 'No trades.' }], 'report')).toEqual([])
   })
 })

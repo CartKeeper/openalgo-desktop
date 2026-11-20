@@ -26,7 +26,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { ReportBuilderDialog } from '@/components/reports/ReportBuilderDialog'
 import { ScenarioPickerDialog } from '@/components/reports/ScenarioPickerDialog'
 import { applyScenarioRecommendations } from '@/lib/applyScenarioRecommendations'
-import { parseActionsFromMarkdown } from '@/lib/parseActions'
+import { latestAnswerActions } from '@/lib/parseActions'
 import { renderMarkdown, formatToolName } from '@/lib/markdown'
 import {
   allowedScenarioTrades,
@@ -266,10 +266,7 @@ export default function ViewReport() {
   }, [showNoteInput])
 
   const reportActions = useMemo(
-    () =>
-      currentMessages
-        .filter((m) => m.role === 'assistant')
-        .flatMap((m) => parseActionsFromMarkdown(m.content, 'report')),
+    () => latestAnswerActions(currentMessages, 'report'),
     [currentMessages]
   )
   const reviewWithFundsCheck = useActionQueueStore((s) => s.setItemsAndOpenWithFundsCheck)

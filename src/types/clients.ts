@@ -1,3 +1,5 @@
+import accountTypes from '../../src-tauri/src/account_types.json'
+
 export interface Client {
   id: number | null
   name: string
@@ -11,24 +13,17 @@ export interface Client {
   updated_at: string | null
 }
 
-/** Account types and their short-selling permissions */
-export const ACCOUNT_TYPES = [
-  { value: 'individual', label: 'Individual Brokerage', shortSellingAllowed: true },
-  { value: 'joint', label: 'Joint Brokerage', shortSellingAllowed: true },
-  { value: 'margin', label: 'Margin Account', shortSellingAllowed: true },
-  { value: '401k', label: '401(k)', shortSellingAllowed: false },
-  { value: 'roth_401k', label: 'Roth 401(k)', shortSellingAllowed: false },
-  { value: 'traditional_ira', label: 'Traditional IRA', shortSellingAllowed: false },
-  { value: 'roth_ira', label: 'Roth IRA', shortSellingAllowed: false },
-  { value: 'sep_ira', label: 'SEP IRA', shortSellingAllowed: false },
-  { value: 'simple_ira', label: 'SIMPLE IRA', shortSellingAllowed: false },
-  { value: '529', label: '529 Plan', shortSellingAllowed: false },
-  { value: 'trust', label: 'Trust', shortSellingAllowed: true },
-  { value: 'custodial', label: 'Custodial (UGMA/UTMA)', shortSellingAllowed: false },
-  { value: 'other', label: 'Other', shortSellingAllowed: true },
-] as const
+export interface AccountType {
+  value: string
+  label: string
+  shortSellingAllowed: boolean
+}
 
-export type AccountTypeValue = (typeof ACCOUNT_TYPES)[number]['value']
+/**
+ * Account types and their short-selling permissions. The list lives with the
+ * backend, which enforces it on every scenario trade; this imports the same file.
+ */
+export const ACCOUNT_TYPES: readonly AccountType[] = accountTypes
 
 /** Check if short selling is allowed for a given account type */
 export function isShortSellingAllowed(accountType: string | null): boolean {

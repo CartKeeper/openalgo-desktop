@@ -116,33 +116,16 @@ pub struct Dossier {
 }
 
 /// Account types the app's strict guidelines apply to (long only; no leveraged
-/// or inverse funds, options, futures, crypto or MLPs). The same list as
-/// `client_brief_service::account_disallows_shorts`, which is private to that module.
+/// or inverse funds, options, futures, crypto or MLPs): the long-only accounts.
 pub fn strict_account(account_type: Option<&str>) -> bool {
-    matches!(
-        account_type,
-        Some("401k" | "roth_401k" | "traditional_ira" | "roth_ira" | "sep_ira" | "simple_ira" | "529" | "custodial")
-    )
+    !crate::account_types::short_selling_allowed(account_type)
 }
 
 /// The account type's display label (the same labels the client form uses).
 pub fn account_label(account_type: Option<&str>) -> &str {
     match account_type {
         None => "Unspecified account",
-        Some("individual") => "Individual Brokerage",
-        Some("joint") => "Joint Brokerage",
-        Some("margin") => "Margin Account",
-        Some("401k") => "401(k)",
-        Some("roth_401k") => "Roth 401(k)",
-        Some("traditional_ira") => "Traditional IRA",
-        Some("roth_ira") => "Roth IRA",
-        Some("sep_ira") => "SEP IRA",
-        Some("simple_ira") => "SIMPLE IRA",
-        Some("529") => "529 Plan",
-        Some("trust") => "Trust",
-        Some("custodial") => "Custodial (UGMA/UTMA)",
-        Some("other") => "Other",
-        Some(raw) => raw,
+        Some(raw) => crate::account_types::label(raw).unwrap_or(raw),
     }
 }
 

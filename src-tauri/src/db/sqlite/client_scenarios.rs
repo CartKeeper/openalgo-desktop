@@ -27,22 +27,7 @@ pub fn create_scenario(
 
 /// Map an account_type value to a human-readable label
 fn account_type_label(value: &str) -> &str {
-    match value {
-        "individual" => "Individual Brokerage",
-        "joint" => "Joint Brokerage",
-        "margin" => "Margin Account",
-        "401k" => "401(k)",
-        "roth_401k" => "Roth 401(k)",
-        "traditional_ira" => "Traditional IRA",
-        "roth_ira" => "Roth IRA",
-        "sep_ira" => "SEP IRA",
-        "simple_ira" => "SIMPLE IRA",
-        "529" => "529 Plan",
-        "trust" => "Trust",
-        "custodial" => "Custodial (UGMA/UTMA)",
-        "other" => "Other",
-        _ => value,
-    }
+    crate::account_types::label(value).unwrap_or(value)
 }
 
 /// Get all scenarios for a client
@@ -630,6 +615,7 @@ pub fn apply_trade_to_scenario(
             "{symbol}: a trade needs a price above $0"
         )));
     }
+    refuse_short_in_long_only_account(conn, scenario_id, symbol, exchange, side, quantity)?;
     let position = apply_trade_to_position(conn, scenario_id, symbol, exchange, side, quantity, price)?;
     // A buy spends cash and a sell raises it. Unrecorded (NULL) cash stays NULL.
     let cash_change = if side == "long" { -quantity * price } else { quantity * price };
@@ -638,6 +624,79 @@ pub fn apply_trade_to_scenario(
         rusqlite::params![cash_change, scenario_id],
     )?;
     Ok(position)
+}
+
+/// The position a trade on `symbol` touches: the row on the trade's own exchange,
+/// or else the scenario's only row for that symbol. Imports store "GENERIC" while
+/// Claude names a real exchange ("NYSE"), and both mean the same holding.
+/// Returns (id, quantity, avg_price, side).
+fn find_trade_position(
+    conn: &Connection,
+    scenario_id: i64,
+    symbol: &str,
+    exchange: &str,
+) -> Result<Option<(i64, f64, f64, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, quantity, avg_price, side, exchange FROM client_scenario_positions
+         WHERE scenario_id = ?1 AND symbol = ?2",
+    )?;
+    let rows: Vec<(i64, f64, f64, String, String)> = stmt
+        .query_map(rusqlite::params![scenario_id, symbol], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+    let pick = rows
+        .iter()
+        .find(|r| r.4 == exchange)
+        .or(if rows.len() == 1 { rows.first() } else { None });
+    Ok(pick.map(|r| (r.0, r.1, r.2, r.3.clone())))
+}
+
+/// Long-only accounts (401(k)s, IRAs, 529s, custodial) can't hold shorts, so a
+/// sell may only close or reduce a long the scenario already holds. Every path
+/// that applies scenario trades — the review dialog, Copilot's tool, the manual
+/// trade form — goes through `apply_trade_to_scenario`, so this is the one guard.
+/// `side` is "long" or "short".
+fn refuse_short_in_long_only_account(
+    conn: &Connection,
+    scenario_id: i64,
+    symbol: &str,
+    exchange: &str,
+    side: &str,
+    quantity: f64,
+) -> Result<()> {
+    if side != "short" {
+        return Ok(());
+    }
+    // The scenario's own type, else its client's — as the Scenario page reads it.
+    let account_type: Option<String> = conn.query_row(
+        "SELECT COALESCE(s.account_type, c.account_type)
+         FROM client_scenarios s LEFT JOIN clients c ON c.id = s.client_id
+         WHERE s.id = ?1",
+        [scenario_id],
+        |row| row.get(0),
+    )?;
+    if crate::account_types::short_selling_allowed(account_type.as_deref()) {
+        return Ok(());
+    }
+    let held = match find_trade_position(conn, scenario_id, symbol, exchange)? {
+        Some((_, qty, _, pos_side)) if pos_side == "long" => qty,
+        _ => 0.0,
+    };
+    if quantity <= held + 1e-9 {
+        return Ok(());
+    }
+    let account = account_type
+        .as_deref()
+        .map(|at| crate::account_types::label(at).unwrap_or(at))
+        .unwrap_or("long-only");
+    Err(AppError::Validation(if held > 0.0 {
+        format!(
+            "{symbol}: a {account} account can't hold short positions, and selling {quantity} would go past the {held} shares held"
+        )
+    } else {
+        format!("{symbol}: a {account} account can't hold short positions, and the scenario holds no {symbol} to sell")
+    }))
 }
 
 /// Apply a priced trade to the position it touches. `side` is "long" or "short".
@@ -650,15 +709,7 @@ fn apply_trade_to_position(
     quantity: f64,
     price: f64,
 ) -> Result<ScenarioPosition> {
-    // Check for existing position
-    let existing: Option<(i64, f64, f64, String)> = conn
-        .query_row(
-            "SELECT id, quantity, avg_price, side FROM client_scenario_positions
-             WHERE scenario_id = ?1 AND symbol = ?2 AND exchange = ?3",
-            rusqlite::params![scenario_id, symbol, exchange],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .ok();
+    let existing = find_trade_position(conn, scenario_id, symbol, exchange)?;
 
     if let Some((pos_id, old_qty, old_avg, old_side)) = existing {
         let is_same_side = old_side == side;
@@ -1096,6 +1147,72 @@ mod apply_trade_tests {
         let resynced = sync_baseline_scenarios(&conn, 1, None).unwrap().remove(0);
         assert_eq!(resynced.id, baseline.id);
         assert_eq!(resynced.cash, None);
+    }
+
+    fn set_account_type(conn: &Connection, scenario: Option<&str>, client: Option<&str>) {
+        conn.execute("UPDATE client_scenarios SET account_type = ?1 WHERE id = 1", [scenario]).unwrap();
+        conn.execute("UPDATE clients SET account_type = ?1 WHERE id = 1", [client]).unwrap();
+    }
+
+    #[test]
+    fn a_long_only_account_can_sell_what_it_holds() {
+        let conn = setup();
+        set_account_type(&conn, Some("401k"), None);
+        apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "sell", 2.0, 700.0).unwrap();
+        apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "sell", 3.0, 700.0).unwrap();
+        assert_eq!(voo(&conn), None);
+    }
+
+    #[test]
+    fn a_long_only_account_refuses_the_same_sell_twice() {
+        // Report #23: the same full-position sell came through twice and the
+        // second one opened a short in a 401(k).
+        let conn = setup();
+        set_account_type(&conn, Some("401k"), None);
+        conn.execute("UPDATE client_scenarios SET cash = 100.0 WHERE id = 1", []).unwrap();
+        apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "sell", 5.0, 700.0).unwrap();
+        let err = apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "sell", 5.0, 700.0).unwrap_err();
+        assert!(err.to_string().contains("can't hold short positions"), "{err}");
+        assert_eq!(voo(&conn), None);
+        assert!((cash(&conn).unwrap() - 3600.0).abs() < 1e-9, "the refused sell must not move cash");
+    }
+
+    #[test]
+    fn a_long_only_account_refuses_a_sell_past_the_shares_held() {
+        let conn = setup();
+        set_account_type(&conn, Some("roth_ira"), None);
+        assert!(apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "sell", 8.0, 700.0).is_err());
+        assert!(apply_trade_to_scenario(&conn, 1, "SPY", "GENERIC", "sell", 1.0, 700.0).is_err());
+        assert_eq!(voo(&conn).unwrap(), (5.0, 679.7, "long".to_string()));
+    }
+
+    #[test]
+    fn a_scenario_with_no_type_of_its_own_follows_its_client() {
+        let conn = setup();
+        set_account_type(&conn, None, Some("401k"));
+        assert!(apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "sell", 8.0, 700.0).is_err());
+    }
+
+    #[test]
+    fn a_brokerage_account_can_still_go_short() {
+        let conn = setup();
+        set_account_type(&conn, Some("margin"), None);
+        apply_trade_to_scenario(&conn, 1, "VOO", "GENERIC", "sell", 8.0, 700.0).unwrap();
+        assert_eq!(voo(&conn).unwrap(), (3.0, 700.0, "short".to_string()));
+    }
+
+    #[test]
+    fn a_trade_on_another_exchange_lands_on_the_held_position() {
+        // Claude says NYSE; the import stored GENERIC. One VOO holding, not two.
+        let conn = setup();
+        apply_trade_to_scenario(&conn, 1, "VOO", "NYSE", "buy", 74.0, 673.01).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM client_scenario_positions WHERE symbol = 'VOO'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+        let (qty, avg, _) = voo(&conn).unwrap();
+        assert_eq!(qty, 79.0);
+        assert!((avg - (5.0 * 679.7 + 74.0 * 673.01) / 79.0).abs() < 1e-9);
     }
 
     #[test]

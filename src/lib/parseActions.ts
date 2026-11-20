@@ -111,3 +111,20 @@ export function parseActionsFromMarkdown(
 
   return results
 }
+
+/**
+ * The trades of the latest assistant answer that recommends any. A later answer
+ * supersedes the earlier ones and usually repeats their trades, so combining
+ * them would apply the same sell twice.
+ */
+export function latestAnswerActions(
+  messages: ReadonlyArray<{ role: string; content: string }>,
+  source: OrderRecommendation['source']
+): OrderRecommendation[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role !== 'assistant') continue
+    const actions = parseActionsFromMarkdown(messages[i].content, source)
+    if (actions.length > 0) return actions
+  }
+  return []
+}

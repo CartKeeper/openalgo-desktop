@@ -446,8 +446,11 @@ pub(crate) struct AccountContext {
 
 impl AccountContext {
     pub(crate) fn new(account_type: Option<&str>) -> Self {
-        let label = account_type.map(account_type_label).unwrap_or("Unspecified account");
-        let guidelines = if account_disallows_shorts(account_type) {
+        let label = match account_type {
+            None => "Unspecified account",
+            Some(at) => crate::account_types::label(at).unwrap_or("Other account"),
+        };
+        let guidelines = if !crate::account_types::short_selling_allowed(account_type) {
             "long only — no shorts, no leveraged or inverse funds, no options, futures, crypto, or MLPs"
         } else {
             "taxable account — a broader instrument set is permitted"
@@ -572,34 +575,6 @@ fn build_user_prompt(
     s
 }
 
-fn account_type_label(value: &str) -> &'static str {
-    match value {
-        "individual" => "Individual Brokerage",
-        "joint" => "Joint Brokerage",
-        "margin" => "Margin Account",
-        "401k" => "401(k)",
-        "roth_401k" => "Roth 401(k)",
-        "traditional_ira" => "Traditional IRA",
-        "roth_ira" => "Roth IRA",
-        "sep_ira" => "SEP IRA",
-        "simple_ira" => "SIMPLE IRA",
-        "529" => "529 Plan",
-        "trust" => "Trust",
-        "custodial" => "Custodial",
-        _ => "Other account",
-    }
-}
-
-fn account_disallows_shorts(account_type: Option<&str>) -> bool {
-    match account_type {
-        None => false,
-        Some(at) => matches!(
-            at,
-            "401k" | "roth_401k" | "traditional_ira" | "roth_ira"
-                | "sep_ira" | "simple_ira" | "529" | "custodial"
-        ),
-    }
-}
 
 /// Build enumerated candidate lists from priced rows so Claude can apply rules
 /// without having to derive lists from a position table. Each line names a

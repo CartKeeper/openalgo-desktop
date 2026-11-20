@@ -15,6 +15,7 @@ pub mod error;
 pub mod state;
 pub mod services;
 pub mod importers;
+pub mod account_types;
 // [wp-anchor] modules: each WP adds its top-level `mod` line under its own marker.
 // [wp-anchor] WP2 analytics
 pub mod analytics;
