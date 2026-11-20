@@ -1,4 +1,9 @@
-import type { OrderRecommendation } from '@/types/actionQueue'
+import type { OrderRecommendation, StrategyRole } from '@/types/actionQueue'
+
+const STRATEGY_ROLES: readonly StrategyRole[] = ['cancel', 'fund', 'buy', 'protect', 'standalone']
+
+/** A `protect` leg is a sell-side stop of one of these types; anything else is skipped. */
+const PROTECT_ORDER_TYPES: ReadonlySet<string> = new Set(['TRAILING_STOP', 'SL', 'SL-M'])
 
 const ACTIONS_REGEX = /<!--\s*ACTIONS_JSON\s*\n([\s\S]*?)\n\s*-->/g
 
@@ -22,8 +27,8 @@ function normalizeStopOrder(rec: OrderRecommendation): OrderRecommendation {
 
   // The stop is triggerPrice; if the AI only supplied one value (in price),
   // that value IS the stop.
-  let stop = rec.triggerPrice && rec.triggerPrice > 0 ? rec.triggerPrice : rec.price
-  let limit = rec.triggerPrice && rec.triggerPrice > 0 ? rec.price : 0
+  const stop = rec.triggerPrice && rec.triggerPrice > 0 ? rec.triggerPrice : rec.price
+  const limit = rec.triggerPrice && rec.triggerPrice > 0 ? rec.price : 0
   if (!stop || stop <= 0) return rec // no usable stop level — let validation reject it
 
   if (rec.orderType === 'SL-M') {
@@ -49,33 +54,51 @@ export function parseActionsFromMarkdown(
   source: OrderRecommendation['source']
 ): OrderRecommendation[] {
   const results: OrderRecommendation[] = []
-  let match: RegExpExecArray | null
 
-  // Reset regex state for each call
-  ACTIONS_REGEX.lastIndex = 0
-
-  while ((match = ACTIONS_REGEX.exec(text)) !== null) {
+  // matchAll iterates a copy of the regex, so every call starts from the top.
+  for (const match of text.matchAll(ACTIONS_REGEX)) {
     try {
       const parsed = JSON.parse(match[1])
       if (!Array.isArray(parsed)) continue
 
       for (const item of parsed) {
-        // Skip items missing required fields
-        if (!item.symbol || !item.side || !item.quantity) continue
+        const role = STRATEGY_ROLES.find((r) => r === item.role)
+        const cancelOrderId =
+          item.cancelOrderId !== undefined && item.cancelOrderId !== null
+            ? String(item.cancelOrderId)
+            : ''
+        const isCancel = role === 'cancel'
+
+        // A cancel leg has no size, so it passes without a quantity — but only with an order id.
+        if (isCancel) {
+          if (!item.symbol || !item.side || !cancelOrderId) continue
+        } else if (!item.symbol || !item.side || !item.quantity) {
+          continue
+        }
+
+        const orderType = item.orderType || 'MARKET'
+        if (role === 'protect' && !PROTECT_ORDER_TYPES.has(orderType)) continue
+        // Trailing stops only make sense as GTC; otherwise honor an explicit GTC, else DAY.
+        const validity = orderType === 'TRAILING_STOP' || item.validity === 'GTC' ? 'GTC' : 'DAY'
 
         results.push(
           normalizeStopOrder({
             id: crypto.randomUUID(),
             symbol: String(item.symbol).toUpperCase(),
             exchange: item.exchange || 'US',
-            side: item.side === 'SELL' ? 'SELL' : 'BUY',
-            quantity: Math.max(1, Math.floor(Number(item.quantity) || 1)),
-            orderType: item.orderType || 'MARKET',
+            // A protect always protects a held (or just-bought) long, so it always sells.
+            side: role === 'protect' || item.side === 'SELL' ? 'SELL' : 'BUY',
+            quantity: isCancel ? 0 : Math.max(1, Math.floor(Number(item.quantity) || 1)),
+            orderType,
             product: item.product || 'CNC',
             price: Number(item.price) || 0,
             triggerPrice: item.triggerPrice ? Number(item.triggerPrice) : undefined,
             trailPrice: item.trailPrice ? Number(item.trailPrice) : undefined,
             trailPercent: item.trailPercent ? Number(item.trailPercent) : undefined,
+            validity,
+            group: typeof item.group === 'string' && item.group ? item.group : undefined,
+            role,
+            cancelOrderId: cancelOrderId || undefined,
             rationale: item.rationale || '',
             source,
           })
@@ -87,4 +110,21 @@ export function parseActionsFromMarkdown(
   }
 
   return results
+}
+
+/**
+ * The trades of the latest assistant answer that recommends any. A later answer
+ * supersedes the earlier ones and usually repeats their trades, so combining
+ * them would apply the same sell twice.
+ */
+export function latestAnswerActions(
+  messages: ReadonlyArray<{ role: string; content: string }>,
+  source: OrderRecommendation['source']
+): OrderRecommendation[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role !== 'assistant') continue
+    const actions = parseActionsFromMarkdown(messages[i].content, source)
+    if (actions.length > 0) return actions
+  }
+  return []
 }

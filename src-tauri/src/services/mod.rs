@@ -33,14 +33,17 @@ pub mod funds_service;
 pub mod quotes_service;
 pub mod orderbook_service;
 pub mod smart_order_service;
+pub mod strategy_basket_service;
 pub mod symbol_service;
 pub mod analyzer_service;
 pub mod options_service;
 pub mod history_service;
+pub mod ride_report;
 pub mod portfolio_service;
 pub mod quant_service;
 pub mod copilot_service;
 pub mod client_brief_service;
+pub mod scenario_comparison;
 pub mod greeks;
 pub mod indicators_service;
 pub mod alert_service;
@@ -60,7 +63,27 @@ pub use funds_service::{FundsService, FundsResult};
 pub use quotes_service::{QuotesService, QuoteResult, DepthResult};
 pub use orderbook_service::{OrderbookService, OrderbookResult, TradebookResult, OrderStatusResult};
 pub use smart_order_service::{SmartOrderService, SmartOrderResult, SplitOrderResult};
+pub use strategy_basket_service::{StrategyLeg, LegRole, LegResult};
 pub use symbol_service::{SymbolService, SymbolSearchResult, ExpiryResult};
 pub use analyzer_service::{AnalyzerService, AnalyzerStatus};
 pub use options_service::{OptionsService, OptionChainResult, OptionGreeks, OptionSymbolResult, SyntheticFutureResult};
 pub use history_service::{HistoryService, HistoryResult, IntervalsResult, CandleData};
+// [wp-anchor] WP2 analytics
+pub mod portfolio_analytics_service;
+//
+// [wp-anchor] WP3 staged-analysis
+pub mod staged_analysis;
+//
+// [wp-anchor] WP4 report-metrics
+pub mod report_metrics;
+pub mod portfolio_health;
+//
+// [wp-anchor] WP5 american-options
+pub mod american_pricing;
+//
+// [wp-anchor] WP6 talib-indicators
+pub mod indicator_catalog;
+//
+// [wp-anchor] WP7 symbol-metadata
+pub mod symbol_metadata_service;
+//

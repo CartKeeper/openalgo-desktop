@@ -1,0 +1,158 @@
+{
+  "client_name": "Casey Borst",
+  "document_label": "Opus 48 / Comparison",
+  "tempo": "Andante · Q4 2026",
+  "generated_date": "November 11, 2026",
+  "subtitle": "What the recommendations changed, how both portfolios measure over the past year, and where each stands against the house checklist.",
+  "confidential_label": "Confidential client report — 401(k)",
+  "cover_title": { "main": "The Recommendations", "accent": "Before & After" },
+  "comparison": {
+    "account_type": "401(k)",
+    "prices_as_of": "November 11, 2026, 2:41 PM ET",
+    "original": { "name": "Casey Borst Sch #0001", "positions": 3, "holdings_value": 24660, "cash": null, "total_value": null, "unpriced": ["YOURF"] },
+    "recommended": { "name": "Casey Borst Sch #0001 (copy)", "positions": 5, "holdings_value": 24412, "cash": null, "total_value": null, "unpriced": [] }
+  },
+  "movements": [
+    {
+      "kind": "changes",
+      "numeral": "I",
+      "tempo": "Allegro",
+      "title_main": "The",
+      "title_accent": "Recommendations",
+      "intro": "Three sales fund two purchases; the leveraged position leaves the score.",
+      "rows": [
+        { "ticker": "TQQQ", "kind": "sold", "change": "Sold all 3", "before": 3, "after": 0, "price": 6129.4, "value_today": 18388, "reason": "A leveraged fund is outside the guidelines for this account type." },
+        { "ticker": "YOURF", "kind": "sold", "change": "Sold all 5,000", "before": 5000, "after": 0, "price": null, "value_today": null, "reason": "No live price; the position cannot be valued." },
+        { "ticker": "AAPL", "kind": "trimmed", "change": "Trimmed 4", "before": 10, "after": 6, "price": 251.1, "value_today": 1004, "reason": "The largest single holding comes down toward the house limit." },
+        { "ticker": "VOO", "kind": "bought", "change": "Bought 9", "before": 0, "after": 9, "price": 696.94, "value_today": 6272, "reason": "A broad core at a 0.03% expense ratio." },
+        { "ticker": "BND", "kind": "bought", "change": "Bought 60", "before": 0, "after": 60, "price": 74.2, "value_today": 4452, "reason": "The fixed-income sleeve the account lacked." }
+      ]
+    },
+    {
+      "kind": "measures",
+      "numeral": "II",
+      "tempo": "Andante",
+      "title_main": "Before &",
+      "title_accent": "After",
+      "intro": "Both portfolios at the same quotes.",
+      "original_label": "Casey Borst Sch #0001",
+      "recommended_label": "Casey Borst Sch #0001 (copy)",
+      "rows": [
+        { "label": "Holdings value", "original": "$24,660", "recommended": "$24,412" },
+        { "label": "Positions", "original": "3", "recommended": "5" },
+        { "label": "Largest holding", "original": "TQQQ · 74.6%", "recommended": "VOO · 24.0%" },
+        { "label": "Leveraged, inverse or other flagged funds", "original": "1 · $18,388 (74.6%)", "recommended": "None" }
+      ],
+      "note": "Percentages are shares of holdings value at today's prices; cash is not recorded for both portfolios, so it is left out."
+    },
+    {
+      "kind": "metrics",
+      "numeral": "III",
+      "tempo": "Andante misurato",
+      "title_main": "Portfolio",
+      "title_accent": "Metrics",
+      "intro": "Held through the past year, the recommended score would have drawn down 11.2% at worst against 38.5% for the original, with a Sharpe ratio of 0.84 against 0.31.",
+      "original_label": "Casey Borst Sch #0001",
+      "recommended_label": "Casey Borst Sch #0001 (copy)",
+      "window": "Daily closes, November 12, 2025 to November 11, 2026 (251 trading days)",
+      "rows": [
+        { "label": "CAGR", "original": "9.8%", "recommended": "12.3%" },
+        { "label": "Volatility (annualized)", "original": "41.2%", "recommended": "15.6%" },
+        { "label": "Sharpe ratio (rf 0%)", "original": "0.31", "recommended": "0.84" },
+        { "label": "Sortino ratio (rf 0%)", "original": "0.44", "recommended": "1.21" },
+        { "label": "Max drawdown", "original": "-38.5%", "recommended": "-11.2%" },
+        { "label": "Calmar ratio", "original": "0.25", "recommended": "1.10" },
+        { "label": "Best month", "original": "14.2%", "recommended": "6.1%" },
+        { "label": "Worst month", "original": "-21.7%", "recommended": "-4.9%" },
+        { "label": "VaR 95% (daily)", "original": "-4.1%", "recommended": "-1.5%" },
+        { "label": "CVaR 95% (daily)", "original": "-6.3%", "recommended": "-2.2%" }
+      ],
+      "monthly": [
+        {
+          "label": "Casey Borst Sch #0001",
+          "years": [
+            { "year": 2025, "months": [null, null, null, null, null, null, null, null, null, null, 0.021, -0.012], "ytd": 0.008748 },
+            { "year": 2026, "months": [0.142, -0.217, 0.034, 0.061, -0.088, 0.052, 0.027, -0.031, 0.045, -0.009, 0.018, null], "ytd": 0.0024 }
+          ]
+        },
+        {
+          "label": "Casey Borst Sch #0001 (copy)",
+          "years": [
+            { "year": 2025, "months": [null, null, null, null, null, null, null, null, null, null, 0.012, 0.004], "ytd": 0.016048 },
+            { "year": 2026, "months": [0.031, -0.049, 0.018, 0.022, -0.011, 0.026, 0.014, -0.006, 0.019, 0.008, 0.011, null], "ytd": 0.0861 }
+          ]
+        }
+      ],
+      "drawdowns": [
+        {
+          "label": "Casey Borst Sch #0001",
+          "rows": [
+            { "start": "2026-01-28", "trough": "2026-03-13", "end": "2026-07-21", "depth_pct": -0.385, "days": 174 },
+            { "start": "2026-08-04", "trough": "2026-08-27", "end": null, "depth_pct": -0.147, "days": 99 },
+            { "start": "2025-12-02", "trough": "2025-12-19", "end": "2026-01-09", "depth_pct": -0.092, "days": 38 }
+          ]
+        },
+        {
+          "label": "Casey Borst Sch #0001 (copy)",
+          "rows": [
+            { "start": "2026-01-28", "trough": "2026-02-24", "end": "2026-04-16", "depth_pct": -0.112, "days": 78 },
+            { "start": "2026-08-04", "trough": "2026-08-15", "end": "2026-09-02", "depth_pct": -0.041, "days": 29 }
+          ]
+        }
+      ],
+      "monte_carlo": [
+        { "label": "Casey Borst Sch #0001", "paths": 1000, "horizon_days": 252, "p5": -0.0625, "p50": 0.08, "p95": 0.71, "bust_threshold": -0.2, "bust_probability": 0.61, "goal_threshold": 0.1, "goal_probability": 0.47 },
+        { "label": "Casey Borst Sch #0001 (copy)", "paths": 1000, "horizon_days": 252, "p5": -0.081, "p50": 0.123, "p95": 0.31, "bust_threshold": -0.2, "bust_probability": 0.23, "goal_threshold": 0.1, "goal_probability": 0.68 }
+      ],
+      "note": "No price history for YOURF; left out of Casey Borst Sch #0001. Each portfolio is today's holdings carried through the window at daily closes: price returns, excluding dividends; the first and last months, and an earlier year's total, cover only the days inside the window. Ratios use a 0% risk-free rate. Monte Carlo odds come from 1,000 bootstrapped years of each portfolio's own daily returns, drawn with a fixed seed so a re-run prints the same odds."
+    },
+    {
+      "kind": "health",
+      "numeral": "IV",
+      "tempo": "Moderato",
+      "title_main": "Portfolio",
+      "title_accent": "Health",
+      "intro": "The recommended score passes the allocation bands the original misses, and brings the largest position from 74.6% to 24.0%.",
+      "original_label": "Casey Borst Sch #0001",
+      "recommended_label": "Casey Borst Sch #0001 (copy)",
+      "rows": [
+        { "key": "equity_share", "title": "Equity allocation", "original": { "status": "warn", "value_text": "85.0%" }, "recommended": { "status": "pass", "value_text": "80.0%" }, "threshold": "78%–82% of holdings value" },
+        { "key": "fixed_income_share", "title": "Fixed-income allocation", "original": { "status": "warn", "value_text": "15.0%" }, "recommended": { "status": "pass", "value_text": "20.0%" }, "threshold": "18%–22% of holdings value" },
+        { "key": "fee_ratio", "title": "Trading costs", "original": { "status": "pass", "value_text": "0.3%", "detail": "$42.10 in fees on $14,000 traded." }, "recommended": { "status": "pass", "value_text": "0.3%", "detail": "$42.10 in fees on $14,000 traded." }, "threshold": "at most 1.0% of traded volume" },
+        { "key": "fund_expenses", "title": "Fund expenses", "original": { "status": "na", "value_text": "Unknown", "detail": "No expense ratio on record for TQQQ; left out of the average." }, "recommended": { "status": "pass", "value_text": "0.03%" }, "threshold": "at most 0.50% weighted by fund value" },
+        { "key": "buying_power", "title": "Buying power", "original": { "status": "na", "value_text": "Cash not recorded" }, "recommended": { "status": "na", "value_text": "Cash not recorded" }, "threshold": "cash at or above $0" },
+        { "key": "single_position", "title": "Largest position (of holdings)", "original": { "status": "fail", "value_text": "TQQQ · 74.6%" }, "recommended": { "status": "warn", "value_text": "VOO · 24.0%" }, "threshold": "warn above 10%, fail above 25% of holdings value" },
+        { "key": "sector_concentration", "title": "Sector concentration", "original": { "status": "na", "value_text": "Sectors unknown", "detail": "100.0% of holdings value has no sector on record." }, "recommended": { "status": "pass", "value_text": "Technology · 18.0%" }, "threshold": "at most 30% of holdings value in one sector" },
+        { "key": "account_rules", "title": "Account guidelines", "original": { "status": "fail", "value_text": "2 unresolved" }, "recommended": { "status": "fail", "value_text": "2 unresolved" }, "threshold": "no unresolved guideline violations" }
+      ],
+      "note": "Informational checks adapted from Ghostfolio's portfolio rules and this app's defaults, not advice. Shares are of holdings value at today's prices; cash is judged only by buying power. A check reads n/a when the data to judge it is not on record."
+    },
+    {
+      "kind": "diagnosis",
+      "numeral": "V",
+      "tempo": "Adagio",
+      "title_main": "Why It",
+      "title_accent": "Matters",
+      "intro": "Three problems the changes address.",
+      "issues": [
+        { "title": "A leveraged fund carried the account", "body": "TQQQ was 74.6% of holdings value and is outside the guidelines for this account type.", "bullets": ["Sold all 3 at $6,129.40", "Largest position falls to VOO at 24.0%"] },
+        { "title": "No fixed income", "body": "The original held no bonds; the recommended score holds 20.0% in BND.", "bullets": ["Fixed-income allocation passes the 18%–22% band"] },
+        { "title": "A position with no live price", "body": "YOURF has no current quote and cannot be valued.", "bullets": ["Sold all 5,000"] }
+      ],
+      "headline": { "lead": "The theme.", "body": "Less concentration, a real bond sleeve, and nothing the account cannot price." }
+    },
+    {
+      "kind": "coda",
+      "numeral": "VI",
+      "tempo": "Coda rallentando",
+      "title_main": "The",
+      "title_accent": "Coda",
+      "intro": "Next steps to review with the advisor.",
+      "groups": [
+        { "heading": "Before next session", "items": [{ "lead": "Confirm the two unresolved guideline flags.", "body": "Both portfolios still show them." }] },
+        { "heading": "After the trades settle", "items": [{ "lead": "Record the account's cash.", "body": "Buying power cannot be judged until it is." }] }
+      ],
+      "closing_note": { "lead": "Fine.", "body": "The score is simpler than it was." }
+    }
+  ]
+}

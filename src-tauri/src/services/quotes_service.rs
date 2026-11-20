@@ -3,7 +3,7 @@
 //! Handles quote and market depth retrieval.
 //! Called by both Tauri commands and REST API.
 
-use crate::brokers::types::{Quote, MarketDepth};
+use crate::brokers::types::{MarketDepth, Quote, QuoteSymbol};
 use crate::error::{AppError, Result};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,7 @@ impl QuotesService {
     /// Get quotes for one or more symbols
     pub async fn get_quotes(
         state: &AppState,
-        symbols: Vec<(String, String)>, // (exchange, symbol) pairs
+        symbols: Vec<QuoteSymbol>,
         api_key: Option<&str>,
     ) -> Result<QuoteResult> {
         info!("QuotesService::get_quotes - {} symbols", symbols.len());
@@ -57,7 +57,10 @@ impl QuotesService {
         symbol: &str,
         api_key: Option<&str>,
     ) -> Result<Quote> {
-        let symbols = vec![(exchange.to_string(), symbol.to_string())];
+        let symbols = vec![QuoteSymbol {
+            exchange: exchange.to_string(),
+            symbol: symbol.to_string(),
+        }];
         let result = Self::get_quotes(state, symbols, api_key).await?;
 
         result
@@ -94,7 +97,7 @@ impl QuotesService {
     /// Get multi-quotes (multiple symbols at once)
     pub async fn get_multi_quotes(
         state: &AppState,
-        symbols: Vec<(String, String)>,
+        symbols: Vec<QuoteSymbol>,
         api_key: Option<&str>,
     ) -> Result<QuoteResult> {
         // Delegate to get_quotes

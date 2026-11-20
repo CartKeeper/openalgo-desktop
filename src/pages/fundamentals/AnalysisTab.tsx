@@ -1,11 +1,22 @@
 import { invoke } from '@tauri-apps/api/core'
 import {
+  ColorType,
+  CrosshairMode,
+  createChart,
+  createSeriesMarkers,
+  type LineData,
+  LineSeries,
+  type SeriesMarker,
+  type Time,
+} from 'lightweight-charts'
+import {
   Activity,
   AlertTriangle,
   ArrowDownRight,
   ArrowRight,
   ArrowUpRight,
   Bot,
+  ChartLine,
   Loader2,
   RefreshCw,
   Send,
@@ -15,35 +26,34 @@ import {
   Wrench,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type IndicatorRequest,
+  type IndicatorResult,
+  type IndicatorSpec,
+  indicatorsApi,
+  type ParamSpec,
+} from '@/api/indicators'
 import { providerCommands } from '@/api/tauri-client'
+import { IndicatorSelect } from '@/components/fundamentals/IndicatorSelect'
+import { HelpButton } from '@/components/HelpButton'
 import { ActionReviewModal } from '@/components/trading/ActionReviewModal'
 import { PlaceOrderDialog } from '@/components/trading/PlaceOrderDialog'
 import { parseActionsFromMarkdown } from '@/lib/parseActions'
 import { useAffordableActions } from '@/hooks/useAffordableActions'
 import { useActionQueueStore } from '@/stores/actionQueueStore'
+import { useThemeStore } from '@/stores/themeStore'
 import type { OrderRecommendation } from '@/types/actionQueue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface IndicatorPoint {
-  timestamp: string
-  value: number
-  secondaryValue: number | null
-  tertiaryValue: number | null
-}
-
-interface IndicatorResult {
-  name: string
-  values: IndicatorPoint[]
-}
 
 interface TechnicalSignals {
   sma20: number | null
@@ -105,12 +115,12 @@ function lastValue(result: IndicatorResult | undefined): number | null {
 
 function lastSecondary(result: IndicatorResult | undefined): number | null {
   if (!result || result.values.length === 0) return null
-  return result.values[result.values.length - 1].secondaryValue ?? null
+  return result.values[result.values.length - 1].secondary_value ?? null
 }
 
 function lastTertiary(result: IndicatorResult | undefined): number | null {
   if (!result || result.values.length === 0) return null
-  return result.values[result.values.length - 1].tertiaryValue ?? null
+  return result.values[result.values.length - 1].tertiary_value ?? null
 }
 
 function computeSignals(
@@ -220,6 +230,44 @@ const sentimentConfig = {
   strong_sell: { label: 'Strong Sell', color: 'text-red-400', bg: 'bg-red-500/10 border-red-500/30', icon: ArrowDownRight },
 }
 
+const ANALYSIS_HELP = [
+  {
+    title: 'Technical Signals',
+    description:
+      "Price against the 20-, 50- and 200-day SMAs, RSI (14) and MACD (12, 26, 9), computed server-side with TA-Lib on daily bars. A value shows -- until the series is long enough for the indicator's lookback.",
+  },
+  {
+    title: 'Technical Sentiment',
+    description:
+      'A tally of the signals: each bullish reading adds one, each bearish reading subtracts one. Four or more is Strong Buy / Strong Sell, two or three is Buy / Sell, anything else is Neutral.',
+  },
+  {
+    title: 'Trend Projection',
+    description:
+      'A straight-line fit of the closes over the chosen range, projected 1, 3 and 6 months ahead. R² says how well the line fits the data. Speculative, not financial advice.',
+  },
+  {
+    title: 'Indicators',
+    description:
+      'Pick any TA-Lib indicator or candlestick pattern. The list is grouped as Overlap, Momentum, Volatility, Volume, Cycle, Statistics and Patterns. Overlap indicators are drawn over the close; the others get their own scale.',
+  },
+  {
+    title: 'Parameters',
+    description:
+      "The inputs beside the picker start at TA-Lib's defaults. Change one and press Enter or leave the field to recompute. A value outside the allowed range is refused and the range is shown.",
+  },
+  {
+    title: 'Patterns',
+    description:
+      'A candlestick pattern draws the close with a marker only on the bars where it fires: an up arrow below the bar for a bullish signal (+100), a down arrow above it for a bearish one (−100).',
+  },
+  {
+    title: 'AI Analysis & Strategy',
+    description:
+      'Sends the technical data above to Claude for a read on the setup, then lets you chat back. Suggested trades can be built in one click; you confirm size and dollar risk before anything is placed.',
+  },
+]
+
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
@@ -294,18 +342,13 @@ export function AnalysisTab({ symbol }: { symbol: string }) {
     try {
       // Fetch indicators and historical data in parallel
       const [indicatorResults, historicalData] = await Promise.all([
-        invoke<IndicatorResult[]>('compute_indicators', {
-          symbol,
-          exchange: 'US',
-          timeframe: '1d',
-          indicators: [
-            { name: 'SMA', params: { period: 20 } },
-            { name: 'SMA', params: { period: 50 } },
-            { name: 'SMA', params: { period: 200 } },
-            { name: 'RSI', params: { period: 14 } },
-            { name: 'MACD', params: { fast: 12, slow: 26, signal: 9 } },
-          ],
-        }),
+        indicatorsApi.compute(symbol, 'US', '1d', [
+          { name: 'SMA', params: { period: 20 } },
+          { name: 'SMA', params: { period: 50 } },
+          { name: 'SMA', params: { period: 200 } },
+          { name: 'RSI', params: { period: 14 } },
+          { name: 'MACD', params: { fast: 12, slow: 26, signal: 9 } },
+        ]),
         providerCommands.getYahooHistorical(symbol, '1d', '6mo'),
       ])
 
@@ -633,6 +676,9 @@ export function AnalysisTab({ symbol }: { symbol: string }) {
         </Card>
       </div>
 
+      {/* Any catalog indicator, with its parameters, plotted */}
+      <IndicatorCard symbol={symbol} />
+
       {/* AI Analysis & Strategy — open conversation */}
       <Card>
         <CardContent className="flex flex-col p-4">
@@ -735,6 +781,7 @@ export function AnalysisTab({ symbol }: { symbol: string }) {
       </Card>
 
       <ActionReviewModal />
+      <HelpButton pageTitle="Analysis" items={ANALYSIS_HELP} />
     </div>
   )
 }
@@ -818,6 +865,460 @@ function AssistantMessage({
         </div>
       )}
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Indicator card: any catalog indicator, with its parameters, plotted
+// ---------------------------------------------------------------------------
+
+/** SMA(1) is the close series itself: the price line under overlays and pattern markers. */
+const PRICE_LINE_REQUEST: IndicatorRequest = { name: 'SMA', params: { period: 1 } }
+
+function humanizeParam(name: string): string {
+  const words = name.replace(/_/g, ' ')
+  return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+function paramLabel(p: ParamSpec): string {
+  return p.kind === 'matype' ? `${humanizeParam(p.name)} (0 SMA … 8 T3)` : humanizeParam(p.name)
+}
+
+/** Bars are labelled by their calendar date; intraday stamps display in Eastern time. */
+function formatBarTime(ts: string): string {
+  if (ts.length <= 10) return ts
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return ts
+  return `${new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).format(d)} ET`
+}
+
+function formatIndicatorValue(v: number | null): string {
+  if (v == null || !Number.isFinite(v)) return '--'
+  return Math.abs(v) >= 1000
+    ? v.toLocaleString('en-US', { maximumFractionDigits: 0 })
+    : v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function lastDefined(values: (number | null)[]): number | null {
+  for (let i = values.length - 1; i >= 0; i--) {
+    const v = values[i]
+    if (v != null && Number.isFinite(v)) return v
+  }
+  return null
+}
+
+/** Tauri rejects with the serialized AppError ({ code, message }); keep the human part. */
+function indicatorErrorMessage(err: unknown): string {
+  const raw =
+    typeof err === 'string'
+      ? err
+      : err && typeof err === 'object' && typeof (err as { message?: unknown }).message === 'string'
+        ? (err as { message: string }).message
+        : ''
+  const message = raw.replace(/^(Internal error: )?(Validation error: )?/, '').trim()
+  return message || 'The indicator could not be computed.'
+}
+
+interface ChartPalette {
+  text: string
+  grid: string
+  price: string
+  lines: string[]
+  bullish: string
+  bearish: string
+}
+
+/**
+ * Resolve a CSS color token to a canvas-safe rgb() string: lightweight-charts
+ * draws on canvas, which cannot read CSS variables, and its own color parser
+ * does not know oklch(). Falls back when the token is missing or unparsable.
+ */
+function cssColor(variable: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(variable).trim()
+  if (!raw) return fallback
+  // The older tokens are bare HSL triplets ("240 10% 3.9%").
+  const value = /^[\d.]+\s+[\d.]+%\s+[\d.]+%$/.test(raw) ? `hsl(${raw})` : raw
+  const canvas = document.createElement('canvas')
+  canvas.width = 1
+  canvas.height = 1
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return fallback
+  ctx.fillStyle = '#010203'
+  ctx.fillStyle = value
+  if (ctx.fillStyle === '#010203') return fallback
+  ctx.clearRect(0, 0, 1, 1)
+  ctx.fillRect(0, 0, 1, 1)
+  const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data
+  return a === 255 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(3)})`
+}
+
+function chartPalette(isDark: boolean): ChartPalette {
+  return {
+    text: cssColor('--muted-foreground', isDark ? '#a6adbb' : '#333333'),
+    grid: cssColor('--border', isDark ? 'rgba(166, 173, 187, 0.1)' : 'rgba(0, 0, 0, 0.08)'),
+    price: cssColor('--muted-foreground', isDark ? '#a6adbb' : '#6b7280'),
+    lines: [
+      cssColor('--chart-1', '#3b82f6'),
+      cssColor('--chart-2', '#f59e0b'),
+      cssColor('--chart-3', '#8b5cf6'),
+    ],
+    bullish: cssColor('--color-green-500', '#22c55e'),
+    bearish: cssColor('--color-red-500', '#ef4444'),
+  }
+}
+
+/** Daily bars: one point per calendar day, ascending; nulls (before the lookback) are skipped. */
+function toLineData(timestamps: string[], values: (number | null)[]): LineData<Time>[] {
+  const data: LineData<Time>[] = []
+  let lastDay = ''
+  for (let i = 0; i < timestamps.length; i++) {
+    const v = values[i]
+    const day = timestamps[i].slice(0, 10)
+    if (v == null || !Number.isFinite(v) || day <= lastDay) continue
+    lastDay = day
+    data.push({ time: day as Time, value: v })
+  }
+  return data
+}
+
+function IndicatorChart({
+  spec,
+  result,
+  price,
+  palette,
+}: {
+  spec: IndicatorSpec
+  result: IndicatorResult
+  price: IndicatorResult | null
+  palette: ChartPalette
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    const chart = createChart(container, {
+      width: container.offsetWidth || 600,
+      height: 260,
+      layout: {
+        background: { type: ColorType.Solid, color: 'transparent' },
+        textColor: palette.text,
+      },
+      grid: {
+        vertLines: { color: palette.grid },
+        horzLines: { color: palette.grid },
+      },
+      rightPriceScale: { borderColor: palette.grid, scaleMargins: { top: 0.1, bottom: 0.1 } },
+      timeScale: { borderColor: palette.grid, timeVisible: false, secondsVisible: false },
+      crosshair: { mode: CrosshairMode.Normal },
+    })
+
+    const timestamps = result.values.map((p) => p.timestamp)
+    const isPattern = spec.group === 'Patterns'
+
+    if (price) {
+      const closes = price.outputs[0]?.[1] ?? price.values.map((p) => p.value)
+      const priceSeries = chart.addSeries(LineSeries, {
+        color: palette.price,
+        lineWidth: 1,
+        title: 'Close',
+        priceLineVisible: false,
+        lastValueVisible: isPattern,
+      })
+      priceSeries.setData(
+        toLineData(
+          price.values.map((p) => p.timestamp),
+          closes
+        )
+      )
+      if (isPattern) {
+        // Markers only where the pattern fired: +100 bullish, −100 bearish.
+        const values = result.outputs[0]?.[1] ?? []
+        const markers: SeriesMarker<Time>[] = []
+        for (let i = 0; i < timestamps.length; i++) {
+          const v = values[i]
+          if (!v) continue
+          markers.push({
+            time: timestamps[i].slice(0, 10) as Time,
+            position: v > 0 ? 'belowBar' : 'aboveBar',
+            shape: v > 0 ? 'arrowUp' : 'arrowDown',
+            color: v > 0 ? palette.bullish : palette.bearish,
+          })
+        }
+        createSeriesMarkers(priceSeries, markers)
+      }
+    }
+
+    if (!isPattern) {
+      result.outputs.slice(0, palette.lines.length).forEach(([name, values], k) => {
+        const series = chart.addSeries(LineSeries, {
+          color: palette.lines[k],
+          lineWidth: 2,
+          title: name === 'value' ? spec.name : name,
+          priceLineVisible: false,
+        })
+        series.setData(toLineData(timestamps, values))
+      })
+    }
+
+    chart.timeScale().fitContent()
+
+    const observer = new ResizeObserver(() => chart.applyOptions({ width: container.offsetWidth }))
+    observer.observe(container)
+
+    return () => {
+      observer.disconnect()
+      chart.remove()
+    }
+  }, [spec, result, price, palette])
+
+  return <div ref={containerRef} className="w-full" style={{ height: 260 }} />
+}
+
+function IndicatorSummary({
+  spec,
+  result,
+  palette,
+}: {
+  spec: IndicatorSpec
+  result: IndicatorResult
+  palette: ChartPalette
+}) {
+  const bars = result.values.length
+  const lastBar = bars > 0 ? formatBarTime(result.values[bars - 1].timestamp) : null
+
+  if (spec.group === 'Patterns') {
+    const values = result.outputs[0]?.[1] ?? []
+    let bullish = 0
+    let bearish = 0
+    let latestIndex = -1
+    for (let i = 0; i < values.length; i++) {
+      const v = values[i]
+      if (!v) continue
+      if (v > 0) bullish++
+      else bearish++
+      latestIndex = i
+    }
+    const latest =
+      latestIndex >= 0
+        ? `latest ${values[latestIndex]! > 0 ? 'bullish' : 'bearish'} on ${formatBarTime(result.values[latestIndex].timestamp)}`
+        : null
+    return (
+      <p className="mt-2 text-[10px] text-muted-foreground tabular-nums">
+        {bullish + bearish === 0
+          ? `No ${spec.label} in the last ${bars} bars`
+          : `${bullish} bullish · ${bearish} bearish in ${bars} bars · ${latest}`}
+      </p>
+    )
+  }
+
+  return (
+    <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground tabular-nums">
+      {result.outputs.slice(0, palette.lines.length).map(([name, values], k) => (
+        <span key={name} className="inline-flex items-center gap-1">
+          <span
+            className="inline-block h-2 w-2 rounded-full"
+            style={{ backgroundColor: palette.lines[k] }}
+          />
+          {name === 'value' ? spec.name : name}: {formatIndicatorValue(lastDefined(values))}
+        </span>
+      ))}
+      {lastBar && <span>as of {lastBar}</span>}
+    </p>
+  )
+}
+
+function IndicatorCard({ symbol }: { symbol: string }) {
+  const { mode } = useThemeStore()
+  const palette = useMemo(() => chartPalette(mode === 'dark'), [mode])
+
+  const [catalog, setCatalog] = useState<IndicatorSpec[]>([])
+  const [catalogError, setCatalogError] = useState<string | null>(null)
+  const [selected, setSelected] = useState('SMA')
+  // Text in the parameter inputs (uncommitted) and the values last computed with.
+  const [draft, setDraft] = useState<Record<string, string>>({})
+  const [applied, setApplied] = useState<Record<string, number>>({})
+  const [result, setResult] = useState<IndicatorResult | null>(null)
+  const [price, setPrice] = useState<IndicatorResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [isLoading, setIsLoading] = useState(false)
+  const requestId = useRef(0)
+
+  const spec = useMemo(() => catalog.find((s) => s.name === selected) ?? null, [catalog, selected])
+
+  const loadCatalog = useCallback(async () => {
+    setCatalogError(null)
+    try {
+      setCatalog(await indicatorsApi.catalog())
+    } catch (err) {
+      console.error('Failed to load the indicator catalog:', err)
+      setCatalogError(indicatorErrorMessage(err))
+    }
+  }, [])
+
+  useEffect(() => {
+    loadCatalog()
+  }, [loadCatalog])
+
+  const compute = useCallback(async () => {
+    if (!spec) return
+    const id = ++requestId.current
+    setIsLoading(true)
+    setError(null)
+    try {
+      const withPrice = spec.group === 'Overlap' || spec.group === 'Patterns'
+      const requests: IndicatorRequest[] = [{ name: spec.name, params: applied }]
+      if (withPrice) requests.push(PRICE_LINE_REQUEST)
+      const results = await indicatorsApi.compute(symbol, 'US', '1d', requests)
+      if (id !== requestId.current) return
+      setResult(results[0] ?? null)
+      setPrice(withPrice ? (results[1] ?? null) : null)
+    } catch (err) {
+      if (id !== requestId.current) return
+      console.error('Failed to compute indicator:', err)
+      setResult(null)
+      setPrice(null)
+      setError(indicatorErrorMessage(err))
+    } finally {
+      if (id === requestId.current) setIsLoading(false)
+    }
+  }, [spec, applied, symbol])
+
+  useEffect(() => {
+    compute()
+  }, [compute])
+
+  const selectIndicator = (name: string) => {
+    setSelected(name)
+    setDraft({})
+    setApplied({})
+    setResult(null)
+    setPrice(null)
+  }
+
+  const commitParam = (p: ParamSpec) => {
+    const text = draft[p.name]
+    if (text === undefined) return
+    const n = Number(text)
+    if (text.trim() === '' || Number.isNaN(n)) {
+      // Cleared or unparsable: back to the default.
+      setDraft(({ [p.name]: _dropped, ...rest }) => rest)
+      setApplied(({ [p.name]: _dropped, ...rest }) => rest)
+      return
+    }
+    setApplied((prev) => (prev[p.name] === n ? prev : { ...prev, [p.name]: n }))
+  }
+
+  const barCount = result?.values.length ?? 0
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <ChartLine className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <h4 className="text-sm font-semibold">Indicators</h4>
+            {isLoading && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+          </div>
+          {spec && (
+            <span className="truncate text-[10px] text-muted-foreground">
+              {spec.group} · {spec.label}
+            </span>
+          )}
+        </div>
+
+        {catalogError ? (
+          <div className="flex h-65 flex-col items-center justify-center gap-2 rounded-lg border border-destructive/40 px-4 text-center text-sm text-muted-foreground">
+            <AlertTriangle className="h-5 w-5 text-destructive" />
+            <span>{catalogError}</span>
+            <Button variant="ghost" size="sm" onClick={loadCatalog}>
+              <RefreshCw className="mr-1 h-3 w-3" /> Retry
+            </Button>
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-end gap-4">
+              <div className="flex min-w-60 flex-1 flex-col gap-1.5">
+                <Label
+                  htmlFor="indicator-select"
+                  className="text-xs font-semibold text-muted-foreground"
+                >
+                  Indicator
+                </Label>
+                <IndicatorSelect
+                  id="indicator-select"
+                  value={selected}
+                  onChange={selectIndicator}
+                  specs={catalog}
+                  disabled={catalog.length === 0}
+                />
+              </div>
+              {spec?.params.map((p) => (
+                <div key={p.name} className="flex flex-col gap-1.5">
+                  <Label
+                    htmlFor={`indicator-param-${p.name}`}
+                    className="text-xs font-semibold text-muted-foreground"
+                  >
+                    {paramLabel(p)}
+                  </Label>
+                  <Input
+                    id={`indicator-param-${p.name}`}
+                    type="number"
+                    inputMode="decimal"
+                    className="h-8 w-28 text-xs tabular-nums md:text-xs"
+                    min={p.min}
+                    max={p.max}
+                    step={p.kind === 'float' ? 'any' : 1}
+                    value={draft[p.name] ?? String(applied[p.name] ?? p.default)}
+                    onChange={(e) => setDraft((d) => ({ ...d, [p.name]: e.target.value }))}
+                    onBlur={() => commitParam(p)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        commitParam(p)
+                      }
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-3">
+              {error ? (
+                <div className="flex h-65 flex-col items-center justify-center gap-2 rounded-lg border border-destructive/40 px-4 text-center text-sm text-muted-foreground">
+                  <AlertTriangle className="h-5 w-5 text-destructive" />
+                  <span>{error}</span>
+                  <Button variant="ghost" size="sm" onClick={compute}>
+                    <RefreshCw className="mr-1 h-3 w-3" /> Retry
+                  </Button>
+                </div>
+              ) : !result || !spec ? (
+                <Skeleton className="h-65 w-full" />
+              ) : barCount === 0 ? (
+                <div className="flex h-65 items-center justify-center text-sm text-muted-foreground">
+                  No bars available for {symbol}
+                </div>
+              ) : (
+                <>
+                  <IndicatorChart spec={spec} result={result} price={price} palette={palette} />
+                  <IndicatorSummary spec={spec} result={result} palette={palette} />
+                </>
+              )}
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

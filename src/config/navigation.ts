@@ -28,6 +28,7 @@ import {
   TrendingUp,
   User,
   Users,
+  Workflow,
 } from 'lucide-react'
 
 export interface NavItem {
@@ -121,6 +122,7 @@ export const sidebarGroups: SidebarGroup[] = [
       { href: '/strategy', label: 'Strategies', icon: Code2, region: ['india'] },
       { href: '/python', label: 'Python', icon: Code2, region: ['india'] },
       { href: '/platforms', label: 'Platforms', icon: Layers, region: ['india'] },
+      { href: '/flow', label: 'Flow', icon: Workflow },
     ],
   },
   {
@@ -160,7 +162,8 @@ export const profileMenuItems: NavItem[] = [
   { href: '/profile', label: 'Profile', icon: User },
   { href: '/apikey', label: 'API Key', icon: Key },
   { href: '/providers', label: 'Data Providers', icon: Globe },
-  { href: '/telegram', label: 'Telegram Bot', icon: MessageSquare, region: ['india'] },
+  // Every region (WP8 Phase C): it sets up Flow's Telegram Alert nodes.
+  { href: '/telegram', label: 'Telegram Bot', icon: MessageSquare },
 ]
 
 // External links
@@ -173,6 +176,9 @@ export const externalLinks = {
 export function isActiveRoute(pathname: string, href: string): boolean {
   if (href === '/strategy') {
     return pathname.startsWith('/strategy')
+  }
+  if (href === '/flow') {
+    return pathname === '/flow' || pathname.startsWith('/flow/')
   }
   if (href === '/python') {
     return pathname.startsWith('/python')

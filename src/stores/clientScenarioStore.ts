@@ -79,7 +79,7 @@ interface ClientScenarioStore {
   clearError: () => void
 }
 
-function computeSummary(
+export function computeSummary(
   enriched: EnrichedScenarioPosition[]
 ): ScenarioSummary {
   let totalValue = 0
@@ -107,7 +107,7 @@ function computeSummary(
   }
 }
 
-function enrichPositions(
+export function enrichPositions(
   positions: ScenarioPosition[],
   quotes: Map<string, GenericQuote>
 ): EnrichedScenarioPosition[] {
@@ -390,6 +390,11 @@ export const useClientScenarioStore = create<ClientScenarioStore>(
           price,
         })
         await get().loadPositions(scenarioId)
+        // The trade moved the scenario's cash.
+        if (get().activeScenario?.id === scenarioId) {
+          const scenario = await invoke<ClientScenario>('get_client_scenario', { id: scenarioId })
+          set({ activeScenario: scenario })
+        }
       } catch (err) {
         const msg =
           err instanceof Error ? err.message : String(err)

@@ -636,6 +636,24 @@ pub fn add_client_document(
     Ok(conn.last_insert_rowid())
 }
 
+/// The Positions file from the client's latest import, if it had one. An import
+/// stores its Transactions file first and its Positions file after, so a
+/// Positions file newer than the newest Transactions file belongs to that import.
+pub fn latest_import_positions_document(conn: &Connection, client_id: i64) -> Result<Option<String>> {
+    let content = conn
+        .query_row(
+            "SELECT content FROM client_documents
+             WHERE client_id = ?1 AND doc_type = 'positions'
+               AND id > COALESCE((SELECT MAX(id) FROM client_documents
+                                  WHERE client_id = ?1 AND doc_type = 'transactions'), 0)
+             ORDER BY id DESC LIMIT 1",
+            [client_id],
+            |row| row.get(0),
+        )
+        .ok();
+    Ok(content)
+}
+
 // ---------------------------------------------------------------------------
 // Holdings (replaced wholesale on each import)
 // ---------------------------------------------------------------------------

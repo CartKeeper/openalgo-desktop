@@ -15,6 +15,18 @@ pub mod error;
 pub mod state;
 pub mod services;
 pub mod importers;
+pub mod account_types;
+// [wp-anchor] modules: each WP adds its top-level `mod` line under its own marker.
+// [wp-anchor] WP2 analytics
+pub mod analytics;
+//
+// [wp-anchor] WP8 flow
+pub mod clock;
+pub mod events;
+pub mod flow;
+pub mod indicators_lib;
+pub mod messaging;
+//
 
 use scheduler::{AutoLogoutScheduler, AlertMonitor};
 use state::AppState;
@@ -42,10 +54,48 @@ pub fn run() {
             // Initialize application state
             let app_state = AppState::new(app.handle())?;
 
+            // Seed bundled provider keys on first run.
+            // BAKED_ANTHROPIC_KEY is injected at build time via option_env!; it is None for
+            // normal dev builds (so behavior is unchanged) and Some(key) only for distribution
+            // builds. Never overwrites a key the user already configured in Settings > Providers.
+            if let Some(baked_anthropic) = option_env!("BAKED_ANTHROPIC_KEY") {
+                if !baked_anthropic.is_empty() {
+                    match app_state
+                        .sqlite
+                        .get_provider_key("anthropic", &app_state.security)
+                    {
+                        Ok(None) => match app_state.sqlite.save_provider_key(
+                            "anthropic",
+                            baked_anthropic,
+                            &app_state.security,
+                        ) {
+                            Ok(()) => tracing::info!("Seeded bundled Anthropic API key"),
+                            Err(e) => tracing::warn!("Failed to seed bundled Anthropic key: {}", e),
+                        },
+                        Ok(Some(_)) => {
+                            tracing::debug!("Anthropic key already configured; skipping seed")
+                        }
+                        Err(e) => tracing::warn!("Could not check Anthropic key state: {}", e),
+                    }
+                }
+            }
+
             // Get webhook config before managing state
             let webhook_config = app_state.sqlite.get_webhook_config().ok();
 
+            // Flow's long-lived tasks hold the state weakly through this root
+            // Arc (state.rs): managed beside the handle, so it lives as long
+            // as the app.
+            let root = app_state.root();
             app.manage(app_state);
+            app.manage(root.clone());
+
+            // Flow: close the runs the last session left, install the node
+            // services, the scheduler and monitors, restore the active
+            // workflows. Inside the async runtime: the trigger side spawns.
+            tauri::async_runtime::spawn(async move {
+                crate::flow::start(&root);
+            });
 
             // Start auto-logout scheduler (configurable, default 3:00 AM IST)
             let scheduler = AutoLogoutScheduler::new(app.handle().clone());
@@ -100,8 +150,10 @@ pub fn run() {
             commands::orders::modify_order,
             commands::orders::cancel_order,
             commands::orders::get_order_book,
+            commands::orders::get_open_orders,
             commands::orders::get_trade_book,
             commands::orders::place_basket_order,
+            commands::orders::place_strategy_basket,
             // Position commands
             commands::positions::get_positions,
             commands::positions::close_position,
@@ -273,6 +325,7 @@ pub fn run() {
             commands::copilot::copilot_send_message,
             commands::copilot::copilot_check_configured,
             commands::copilot::generate_briefing,
+            commands::ride::record_protection_dismissal,
             // Greeks commands
             commands::greeks::compute_greeks,
             commands::greeks::compute_greeks_batch,
@@ -285,6 +338,7 @@ pub fn run() {
             commands::reports::get_research_report,
             commands::reports::delete_research_report,
             commands::reports::update_research_report_title,
+            commands::reports::link_research_report_scenario,
             commands::reports::add_report_note,
             commands::reports::get_report_notes,
             commands::reports::update_report_note,
@@ -330,6 +384,7 @@ pub fn run() {
             commands::clients::get_client_compliance_violations,
             commands::clients::generate_client_brief,
             commands::clients::generate_scenario_brief,
+            commands::clients::generate_scenario_comparison,
             commands::clients::resolve_compliance_violation,
             commands::clients::count_unresolved_violations,
             // Client scenario commands
@@ -364,7 +419,70 @@ pub fn run() {
             commands::backtest::save_backtest_run,
             commands::backtest::list_backtest_runs,
             commands::backtest::get_backtest_run,
+            // [wp-anchor] WP1 chart-tools
+            commands::chart_preferences::chart_get_preference,
+            commands::chart_preferences::chart_save_preference,
+            //
+            // [wp-anchor] WP2 analytics
+            commands::analytics::analytics_client_lots,
+            commands::analytics::analytics_client_performance,
+            commands::analytics::analytics_list_targets,
+            commands::analytics::analytics_save_targets,
+            commands::analytics::analytics_scenario_drift,
+            commands::analytics::analytics_rebalance_plan,
+            //
+            // [wp-anchor] WP3 staged-analysis
+            commands::staged_analysis::staged_run_analysis,
+            //
+            // [wp-anchor] WP5 american-options
+            //
+            // [wp-anchor] WP6 talib-indicators
+            commands::indicators::indicator_catalog,
+            //
+            // [wp-anchor] WP7 symbol-metadata
+            commands::symbol_metadata::symbol_metadata_refresh,
+            commands::symbol_metadata::symbol_metadata_status,
+            commands::symbol_metadata::symbol_metadata_search,
+            //
+            // [wp-anchor] WP8 flow
+            commands::flow::flow_list_workflows,
+            commands::flow::flow_create_workflow,
+            commands::flow::flow_get_workflow,
+            commands::flow::flow_update_workflow,
+            commands::flow::flow_delete_workflow,
+            commands::flow::flow_execute_workflow,
+            commands::flow::flow_list_executions,
+            commands::flow::flow_export_workflow,
+            commands::flow::flow_import_workflow,
+            commands::flow::flow_replace_workflow,
+            commands::flow::flow_activate,
+            commands::flow::flow_deactivate,
+            commands::flow::flow_webhook_info,
+            commands::flow::flow_webhook_enable,
+            commands::flow::flow_webhook_disable,
+            commands::flow::flow_webhook_regenerate,
+            commands::flow::flow_webhook_regenerate_secret,
+            commands::flow::flow_webhook_set_auth_type,
+            commands::flow::flow_monitor_status,
+            commands::flow::flow_index_symbols,
+            commands::flow::flow_symbol_lotsizes,
+            commands::flow::flow_option_strikes,
+            commands::flow::flow_delete_executions,
+            commands::telegram::telegram_get_settings,
+            commands::telegram::telegram_save_settings,
+            commands::telegram::telegram_send_test,
+            //
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                // Flow: the trigger side stops, then every run in flight
+                // gets ten seconds to write its record before it is ended.
+                let state = app_handle.state::<AppState>().inner().clone();
+                tauri::async_runtime::block_on(
+                    state.shutdown_with(std::time::Duration::from_secs(10)),
+                );
+            }
+        });
 }

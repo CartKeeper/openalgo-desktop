@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import type { Order } from '@/api/tauri-client'
 import { tradingApi } from '@/api/trading'
+import { OrderTypeTooltip } from '@/components/trading/OrderTypeBadge'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -109,17 +110,19 @@ export function OpenOrdersCard() {
                 <TableRow key={o.orderid}>
                   <TableCell className="font-semibold">{o.symbol}</TableCell>
                   <TableCell>
-                    <Badge
-                      variant="outline"
-                      className={cn(
-                        'text-[10px]',
-                        o.action === 'BUY'
-                          ? 'border-green-500/40 text-green-600 dark:text-green-400'
-                          : 'border-red-500/40 text-red-600 dark:text-red-400'
-                      )}
-                    >
-                      {o.action} {o.pricetype}
-                    </Badge>
+                    <OrderTypeTooltip pricetype={o.pricetype}>
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          'text-[10px] cursor-help',
+                          o.action === 'BUY'
+                            ? 'border-green-500/40 text-green-600 dark:text-green-400'
+                            : 'border-red-500/40 text-red-600 dark:text-red-400'
+                        )}
+                      >
+                        {o.action} {o.pricetype}
+                      </Badge>
+                    </OrderTypeTooltip>
                   </TableCell>
                   <TableCell className="text-right tabular-nums">{o.quantity}</TableCell>
                   <TableCell className="text-right tabular-nums">

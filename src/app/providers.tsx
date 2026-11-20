@@ -21,7 +21,7 @@ export function Providers({ children }: ProvidersProps) {
   return (
     <QueryClientProvider client={queryClient}>
       {children}
-      <Toaster position="top-right" richColors />
+      <Toaster position="top-right" richColors visibleToasts={3} />
       <ReactQueryDevtools initialIsOpen={false} />
     </QueryClientProvider>
   )

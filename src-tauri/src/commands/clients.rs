@@ -275,7 +275,8 @@ pub async fn import_schwab_documents(
     // allowed. The clamp-on-negative fallback in the holdings reconstructor
     // only fires when shorts are disallowed.
     let client_record = state.sqlite.get_client_by_id(client_id)?;
-    let account_disallows_shorts = account_disallows_shorts(client_record.account_type.as_deref());
+    let account_disallows_shorts =
+        !crate::account_types::short_selling_allowed(client_record.account_type.as_deref());
 
     let order_status_ref = order_status_content.as_deref();
     let positions_ref = positions_content.as_deref();
@@ -317,20 +318,6 @@ pub async fn import_schwab_documents(
         .replace_client_compliance_violations(client_id, &report.violations)?;
 
     Ok(report)
-}
-
-/// Mirror of `isShortSellingAllowed` from `src/types/clients.ts` — kept in sync
-/// with the frontend so the same account-type → rules mapping applies on both
-/// sides.
-fn account_disallows_shorts(account_type: Option<&str>) -> bool {
-    match account_type {
-        None => false,
-        Some(at) => matches!(
-            at,
-            "401k" | "roth_401k" | "traditional_ira" | "roth_ira"
-                | "sep_ira" | "simple_ira" | "529" | "custodial"
-        ),
-    }
 }
 
 #[tauri::command]
@@ -443,6 +430,28 @@ pub async fn generate_scenario_brief(
     )?;
 
     Ok(brief)
+}
+
+/// A client-facing report comparing a cloned scenario with the scenario it was
+/// cloned from, both priced live. Saved with the client's documents like a brief.
+#[tauri::command]
+pub async fn generate_scenario_comparison(
+    state: State<'_, AppState>,
+    scenario_id: i64,
+) -> Result<GoldmanBrief, AppError> {
+    let report = crate::services::scenario_comparison::ScenarioComparisonService::generate(&state, scenario_id).await?;
+    let scenario = state.sqlite.get_client_scenario_by_id(scenario_id)?;
+    let json = serde_json::to_string(&report)
+        .map_err(|e| AppError::Provider(format!("Failed to serialize comparison report: {}", e)))?;
+    let filename = format!(
+        "Goldman_Scenario_Comparison_{}_{}.json",
+        scenario_id,
+        chrono::Local::now().format("%Y%m%d-%H%M%S"),
+    );
+    state
+        .sqlite
+        .add_client_document(scenario.client_id, "goldman_scenario_comparison", &filename, &json)?;
+    Ok(report)
 }
 
 // ---------------------------------------------------------------------------

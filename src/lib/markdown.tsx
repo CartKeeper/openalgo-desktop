@@ -3,7 +3,8 @@ import type React from 'react'
 // ---------- Simple markdown renderer ----------
 
 export function renderMarkdown(text: string): React.ReactNode[] {
-  const lines = text.split('\n')
+  // The AI's ACTIONS_JSON block is for the app (parseActionsFromMarkdown), never for display.
+  const lines = text.replace(/<!--\s*ACTIONS_JSON[\s\S]*?-->/g, '').split('\n')
   const elements: React.ReactNode[] = []
   let codeBlock: string[] | null = null
   let codeBlockLang = ''

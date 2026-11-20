@@ -7,6 +7,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { backtestApi } from './backtest'
+import type { StrategyLegResult, StrategyRole } from '@/types/actionQueue'
 
 // ============================================================================
 // Types
@@ -94,6 +95,15 @@ export interface OrderRequest {
   stop_loss_price?: number
   /** Optional stop-loss limit price (stop-limit exit). */
   stop_loss_limit_price?: number
+}
+
+/** One leg of a grouped strategy basket (cancel / fund / buy / protect / standalone). */
+export interface StrategyLeg {
+  group: string | null
+  role: StrategyRole
+  symbol: string
+  cancel_order_id?: string
+  order?: OrderRequest
 }
 
 export interface ModifyOrderRequest {
@@ -569,9 +579,24 @@ export const orderCommands = {
 
   getOrderBook: () => tauriInvoke<Order[]>('get_order_book'),
 
+  // Working orders only (the broker's open-orders list, not the last-100 order book).
+  getOpenOrders: () => tauriInvoke<Order[]>('get_open_orders'),
+
   getTradeBook: () => tauriInvoke<Order[]>('get_trade_book'),
   placeBasketOrder: (orders: OrderRequest[], expectedAnalyzeMode?: boolean) =>
     tauriInvoke<PlaceOrderResult[]>('place_basket_order', { orders, expectedAnalyzeMode }),
+  placeStrategyBasket: (legs: StrategyLeg[], expectedAnalyzeMode?: boolean) =>
+    tauriInvoke<StrategyLegResult[]>('place_strategy_basket', { legs, expectedAnalyzeMode }),
+}
+
+// ============================================================================
+// Ride Commands
+// ============================================================================
+
+export const rideCommands = {
+  // Records that the user dismissed a trailing-stop protection for `symbol` at `quantity`.
+  recordProtectionDismissal: (symbol: string, quantity: number) =>
+    tauriInvoke<void>('record_protection_dismissal', { symbol, quantity }),
 }
 
 // ============================================================================
@@ -1034,6 +1059,17 @@ export interface FmpQuote {
   volume?: number | null
   previous_close?: number | null
 }
+
+// ============================================================================
+// Briefing Ride Report (mirrors Rust `RideReport` and friends; snake_case JSON)
+// ============================================================================
+
+export type RideStatus = 'too_new' | 'falling' | 'dormant' | 'flat_with_upside' | 'pulling_back' | 'climbing'
+export type TrailReason = 'two_times_swing' | 'three_times_swing_high_upside' | 'unknown_swing_floor'
+export interface ExistingStop { order_id: string; order_type: string; quantity: number; validity: string; trail_percent: number | null; trigger_price: number }
+export interface RidePosition { symbol: string; exchange: string; quantity: number; avg_cost: number; price: number; pnl_pct: number; entered_at: string | null; age_trading_days: number | null; net_move_30d_pct: number | null; daily_swing_pct: number | null; consensus_target: number | null; upside_pct: number | null; targets_last_90d: number | null; target_source: string | null; status: RideStatus; protected: boolean; protection_known: boolean; working_sells: ExistingStop[]; proposed_trail_pct: number; trail_reason: TrailReason; protection_dismissed_at: string | null }
+export interface Scoreboard { equity_now: number; equity_1w: number | null; equity_1m: number | null; as_of: string }
+export interface RideReport { positions: RidePosition[]; scoreboard: Scoreboard | null; paper_mode: boolean; generated_at: string }
 
 export const providerCommands = {
   // API key management

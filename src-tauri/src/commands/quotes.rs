@@ -1,6 +1,6 @@
 //! Quote and market data commands
 
-use crate::brokers::types::{Quote, MarketDepth};
+use crate::brokers::types::{MarketDepth, Quote, QuoteSymbol};
 use crate::error::{AppError, Result};
 use crate::state::AppState;
 use serde::Deserialize;
@@ -27,9 +27,9 @@ pub async fn get_quote(
         .get(&session.broker_id)
         .ok_or_else(|| AppError::Broker("Broker not found".to_string()))?;
 
-    let symbol_pairs: Vec<(String, String)> = symbols
+    let symbol_pairs: Vec<QuoteSymbol> = symbols
         .into_iter()
-        .map(|s| (s.exchange, s.symbol))
+        .map(|s| QuoteSymbol { exchange: s.exchange, symbol: s.symbol })
         .collect();
 
     broker.get_quote(&session.auth_token, symbol_pairs).await

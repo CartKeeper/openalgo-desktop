@@ -35,6 +35,29 @@ impl ActivitiesService {
         broker.get_activities(&auth_token, page_size).await
     }
 
+    /// Get the account's fill history (newest first), paging up to `max_pages` pages.
+    pub async fn get_fills(
+        state: &AppState,
+        api_key: Option<&str>,
+        max_pages: u32,
+    ) -> Result<Vec<AccountActivity>> {
+        info!("ActivitiesService::get_fills");
+
+        // Analyze (sandbox) mode has no broker-side fills.
+        if state.sqlite.get_analyze_mode().unwrap_or(false) {
+            return Ok(Vec::new());
+        }
+
+        let (auth_token, broker_id) = Self::get_auth(state, api_key)?;
+
+        let broker = state
+            .brokers
+            .get(&broker_id)
+            .ok_or_else(|| AppError::Broker(format!("Broker '{}' not found", broker_id)))?;
+
+        broker.get_fills(&auth_token, max_pages).await
+    }
+
     fn get_auth(state: &AppState, api_key: Option<&str>) -> Result<(String, String)> {
         if let Some(key) = api_key {
             let _ = state.sqlite.validate_api_key(key, &state.security)?;

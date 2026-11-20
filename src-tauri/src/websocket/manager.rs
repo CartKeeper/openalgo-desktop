@@ -162,7 +162,8 @@ type TokenMap = Arc<RwLock<HashMap<String, (String, String)>>>; // token -> (sym
 
 /// WebSocket manager for handling market data streams
 pub struct WebSocketManager {
-    app_handle: AppHandle,
+    /// The window to emit to; `None` for a headless app state (tests).
+    app_handle: Option<AppHandle>,
     state: RwLock<ConnectionState>,
     subscriptions: RwLock<HashMap<String, SubscriptionMode>>,
     sender: RwLock<Option<mpsc::Sender<WebSocketCommand>>>,
@@ -182,6 +183,15 @@ pub struct WebSocketManager {
 impl WebSocketManager {
     /// Create new WebSocket manager
     pub fn new(app_handle: AppHandle) -> Self {
+        Self::with_handle(Some(app_handle))
+    }
+
+    /// A manager with no window to emit to (a headless app state).
+    pub fn headless() -> Self {
+        Self::with_handle(None)
+    }
+
+    fn with_handle(app_handle: Option<AppHandle>) -> Self {
         Self {
             app_handle,
             state: RwLock::new(ConnectionState::Disconnected),
@@ -248,7 +258,7 @@ impl WebSocketManager {
         *self.sender.write() = Some(tx);
         *self.state.write() = ConnectionState::Connected;
         info!("{} WebSocket connected", creds.broker_id);
-        let _ = self.app_handle.emit("websocket_connected", &creds.broker_id);
+        let _ = emit(&self.app_handle, "websocket_connected", &creds.broker_id);
 
         let manager = Arc::clone(&self);
         tokio::spawn(async move {
@@ -282,29 +292,7 @@ impl WebSocketManager {
 
         info!("Connecting to {} WebSocket...", broker_id);
 
-        use tokio_tungstenite::tungstenite::http::Request;
-        let request = if broker_id == "angel" {
-            Request::builder()
-                .uri(&url)
-                .header("Authorization", format!("Bearer {}", creds.feed_token))
-                .header("x-api-key", &creds.api_key)
-                .header("x-client-code", &creds.client_id)
-                .header("x-feed-token", &creds.feed_token)
-                .body(())
-                .map_err(|e| AppError::Internal(format!("Failed to build request: {}", e)))?
-        } else if broker_id == "fyers" {
-            Request::builder()
-                .uri(&url)
-                .header("Authorization", &creds.feed_token)
-                .header("User-Agent", "openalgo-desktop/1.0")
-                .body(())
-                .map_err(|e| AppError::Internal(format!("Failed to build request: {}", e)))?
-        } else {
-            Request::builder()
-                .uri(&url)
-                .body(())
-                .map_err(|e| AppError::Internal(format!("Failed to build request: {}", e)))?
-        };
+        let request = build_ws_request(broker_id, &url, creds)?;
 
         let (ws_stream, _) = connect_async(request).await?;
         let (mut write, read) = ws_stream.split();
@@ -377,7 +365,8 @@ impl WebSocketManager {
                         }
                         attempt += 1;
                         let delay = reconnect_backoff_secs(attempt);
-                        let _ = app_handle.emit(
+                        let _ = emit(
+                            &app_handle,
                             "websocket_reconnecting",
                             serde_json::json!({
                                 "broker": broker,
@@ -425,8 +414,8 @@ impl WebSocketManager {
                     // websocket_reconnected for status; websocket_connected so the
                     // frontend's connection-state listener flips back to connected
                     // without the frontend having to re-issue a connect command.
-                    let _ = app_handle.emit("websocket_reconnected", &broker);
-                    let _ = app_handle.emit("websocket_connected", &broker);
+                    let _ = emit(&app_handle, "websocket_reconnected", &broker);
+                    let _ = emit(&app_handle, "websocket_connected", &broker);
                     info!("{} WebSocket reconnected (attempt {})", broker, attempt);
                 }
             }
@@ -569,13 +558,26 @@ impl WebSocketManager {
 // ============================================================================
 
 /// Run one connection's read/command/heartbeat loop until it ends, returning
+/// Emit `event` to the window when there is one; a headless state (tests)
+/// has none and the event is dropped.
+fn emit<T: serde::Serialize + Clone>(
+    app_handle: &Option<AppHandle>,
+    event: &str,
+    payload: T,
+) -> tauri::Result<()> {
+    match app_handle {
+        Some(h) => h.emit(event, payload),
+        None => Ok(()),
+    }
+}
+
 /// whether the end was an unexpected drop (reconnect) or deliberate (stop).
 async fn run_message_loop(
     write: &mut WsWrite,
     read: &mut WsRead,
     rx: &mut mpsc::Receiver<WebSocketCommand>,
     broker: &str,
-    app_handle: &AppHandle,
+    app_handle: &Option<AppHandle>,
     token_map: &TokenMap,
 ) -> ConnectionEnd {
     let mut heartbeat_interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
@@ -595,7 +597,7 @@ async fn run_message_loop(
                     Some(Ok(Message::Binary(data))) => {
                         let ticks = parse_broker_ticks(broker, &data, token_map);
                         for tick in ticks {
-                            if let Err(e) = app_handle.emit("market_tick", &tick) {
+                            if let Err(e) = emit(app_handle, "market_tick", &tick) {
                                 warn!("Failed to emit tick: {}", e);
                             }
                         }
@@ -604,7 +606,7 @@ async fn run_message_loop(
                         if broker == "alpaca" {
                             let ticks = parse_alpaca_ticks(&text, token_map, &mut alpaca_ticks);
                             for tick in ticks {
-                                if let Err(e) = app_handle.emit("market_tick", &tick) {
+                                if let Err(e) = emit(app_handle, "market_tick", &tick) {
                                     warn!("Failed to emit tick: {}", e);
                                 }
                             }
@@ -625,17 +627,17 @@ async fn run_message_loop(
                     }
                     Some(Ok(Message::Close(_))) => {
                         info!("WebSocket closed by server");
-                        let _ = app_handle.emit("websocket_disconnected", broker);
+                        let _ = emit(app_handle, "websocket_disconnected", broker);
                         return ConnectionEnd::Dropped;
                     }
                     Some(Err(e)) => {
                         error!("WebSocket error: {}", e);
-                        let _ = app_handle.emit("websocket_error", e.to_string());
+                        let _ = emit(app_handle, "websocket_error", e.to_string());
                         return ConnectionEnd::Dropped;
                     }
                     None => {
                         info!("WebSocket stream ended");
-                        let _ = app_handle.emit("websocket_disconnected", broker);
+                        let _ = emit(app_handle, "websocket_disconnected", broker);
                         return ConnectionEnd::Dropped;
                     }
                     _ => {}
@@ -684,6 +686,59 @@ async fn run_message_loop(
             }
         }
     }
+}
+
+/// Build the WebSocket handshake request for a broker.
+///
+/// tokio-tungstenite 0.24 passes a hand-built `http::Request<()>` straight
+/// through to the handshake untouched (the `IntoClientRequest` impl for
+/// `Request` is the identity), and `generate_request` then REQUIRES the request
+/// to already carry the five mandatory handshake headers: `Host`, `Connection`,
+/// `Upgrade`, `Sec-WebSocket-Version`, and `Sec-WebSocket-Key`. A request built
+/// with `Request::builder().uri(url).body(())` has none of them, so the connect
+/// fails with `Missing, duplicated or incorrect header sec-websocket-key` before
+/// any network I/O.
+///
+/// We therefore start from `url.into_client_request()`, which generates a
+/// complete, valid client request (all five headers populated, fresh random
+/// key), and only then layer on the broker-specific auth headers.
+fn build_ws_request(
+    broker_id: &str,
+    url: &str,
+    creds: &ConnectionCredentials,
+) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
+
+    let mut request = url
+        .into_client_request()
+        .map_err(|e| AppError::Internal(format!("Failed to build WS request: {}", e)))?;
+
+    let headers = request.headers_mut();
+    let mut set = |name: &'static str, value: String| -> Result<()> {
+        let hv = HeaderValue::from_str(&value)
+            .map_err(|e| AppError::Internal(format!("Invalid value for header {}: {}", name, e)))?;
+        headers.insert(name, hv);
+        Ok(())
+    };
+
+    match broker_id {
+        "angel" => {
+            set("Authorization", format!("Bearer {}", creds.feed_token))?;
+            set("x-api-key", creds.api_key.clone())?;
+            set("x-client-code", creds.client_id.clone())?;
+            set("x-feed-token", creds.feed_token.clone())?;
+        }
+        "fyers" => {
+            set("Authorization", creds.feed_token.clone())?;
+            set("User-Agent", "openalgo-desktop/1.0".to_string())?;
+        }
+        // zerodha and alpaca carry their auth in the URL / a post-connect message,
+        // so the plain handshake request is all they need.
+        _ => {}
+    }
+
+    Ok(request)
 }
 
 /// Exponential backoff schedule for reconnection: 1, 2, 4, 8, 16, then 30s cap.
@@ -1543,6 +1598,77 @@ fn create_fyers_unsubscribe(symbols: &[(String, String)]) -> Message {
     buffer.push(channel);
 
     Message::Binary(buffer)
+}
+
+#[cfg(test)]
+mod ws_request_tests {
+    use super::{build_ws_request, ConnectionCredentials};
+
+    fn creds() -> ConnectionCredentials {
+        ConnectionCredentials {
+            broker_id: "x".to_string(),
+            client_id: "CID".to_string(),
+            api_key: "KEY".to_string(),
+            feed_token: "TOKEN".to_string(),
+            api_secret: "SECRET".to_string(),
+        }
+    }
+
+    // The regression guard: every broker's handshake request MUST carry the five
+    // headers tungstenite 0.24 requires, or connect_async fails with
+    // "Missing, duplicated or incorrect header sec-websocket-key".
+    fn assert_handshake_headers(req: &tokio_tungstenite::tungstenite::handshake::client::Request) {
+        let h = req.headers();
+        assert!(h.contains_key("Sec-WebSocket-Key"), "missing Sec-WebSocket-Key");
+        assert!(h.contains_key("Sec-WebSocket-Version"));
+        assert!(h.contains_key("Upgrade"));
+        assert!(h.contains_key("Connection"));
+        assert!(h.contains_key("Host"));
+    }
+
+    #[test]
+    fn alpaca_request_has_handshake_headers() {
+        let req = build_ws_request(
+            "alpaca",
+            "wss://stream.data.alpaca.markets/v2/delayed_sip",
+            &creds(),
+        )
+        .unwrap();
+        assert_handshake_headers(&req);
+    }
+
+    #[test]
+    fn zerodha_request_has_handshake_headers() {
+        let req =
+            build_ws_request("zerodha", "wss://ws.kite.trade?api_key=KEY", &creds()).unwrap();
+        assert_handshake_headers(&req);
+    }
+
+    #[test]
+    fn angel_request_has_handshake_and_auth_headers() {
+        let req = build_ws_request(
+            "angel",
+            "wss://smartapisocket.angelone.in/smart-stream?clientCode=CID",
+            &creds(),
+        )
+        .unwrap();
+        assert_handshake_headers(&req);
+        let h = req.headers();
+        assert_eq!(h.get("Authorization").unwrap().to_str().unwrap(), "Bearer TOKEN");
+        assert_eq!(h.get("x-api-key").unwrap().to_str().unwrap(), "KEY");
+        assert_eq!(h.get("x-client-code").unwrap().to_str().unwrap(), "CID");
+        assert_eq!(h.get("x-feed-token").unwrap().to_str().unwrap(), "TOKEN");
+    }
+
+    #[test]
+    fn fyers_request_has_handshake_and_auth_headers() {
+        let req =
+            build_ws_request("fyers", "wss://socket.fyers.in/hsm/v1-5/prod", &creds()).unwrap();
+        assert_handshake_headers(&req);
+        let h = req.headers();
+        assert_eq!(h.get("Authorization").unwrap().to_str().unwrap(), "TOKEN");
+        assert_eq!(h.get("User-Agent").unwrap().to_str().unwrap(), "openalgo-desktop/1.0");
+    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,8 @@
 import { ArrowLeft, Info, Search } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { HelpButton } from '@/components/HelpButton'
+import { COMPANY_DATA_HELP_ITEMS, CompanyDataCard } from '@/components/search/CompanyDataCard'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -457,6 +459,11 @@ export default function Token() {
         </CardContent>
       </Card>
 
+      {/* Company data (FinanceDatabase) */}
+      <div className="mb-6">
+        <CompanyDataCard query={symbol} />
+      </div>
+
       {/* Search Tips */}
       <Alert>
         <Info className="h-4 w-4" />
@@ -499,6 +506,24 @@ export default function Token() {
           </div>
         </AlertDescription>
       </Alert>
+
+      {/* Contextual Help */}
+      <HelpButton
+        pageTitle="Symbol Search"
+        items={[
+          {
+            title: 'Symbol search',
+            description:
+              'Type a symbol, company name or token and pick the exchange, then Search Symbol to open the broker results page.',
+          },
+          {
+            title: 'F&O filters',
+            description:
+              'For derivative exchanges (NFO, BFO, MCX, CDS) you can narrow by underlying, instrument type, expiry and strike range instead of a symbol.',
+          },
+          ...COMPANY_DATA_HELP_ITEMS,
+        ]}
+      />
     </div>
   )
 }

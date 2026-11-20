@@ -816,6 +816,8 @@ impl Broker for FyersBroker {
                     order_timestamp: o.orderDateTime.unwrap_or_default(),
                     exchange_timestamp: None,
                     rejection_reason: o.message,
+                    trail_percent: None,
+                    hwm: None,
                 }
             })
             .collect();
@@ -875,6 +877,8 @@ impl Broker for FyersBroker {
                     order_timestamp: t.orderDateTime.unwrap_or_default(),
                     exchange_timestamp: None,
                     rejection_reason: None,
+                    trail_percent: None,
+                    hwm: None,
                 }
             })
             .collect();
@@ -1049,13 +1053,14 @@ impl Broker for FyersBroker {
             span: 0.0,
             exposure: 0.0,
             collateral,
+            equity: None,
         })
     }
 
     async fn get_quote(
         &self,
         auth_token: &str,
-        symbols: Vec<(String, String)>,
+        symbols: Vec<QuoteSymbol>,
     ) -> Result<Vec<Quote>> {
         if symbols.is_empty() {
             return Ok(vec![]);
@@ -1064,7 +1069,7 @@ impl Broker for FyersBroker {
         // Build comma-separated symbols list
         let symbols_str: Vec<String> = symbols
             .iter()
-            .map(|(ex, sym)| format!("{}:{}", ex, sym))
+            .map(|q| format!("{}:{}", q.exchange, q.symbol))
             .collect();
         let symbols_param = symbols_str.join(",");
         let encoded_symbols = urlencoding::encode(&symbols_param);

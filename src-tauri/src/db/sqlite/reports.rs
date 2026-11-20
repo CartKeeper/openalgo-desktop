@@ -13,6 +13,8 @@ pub struct ResearchReport {
     pub tags: Option<String>,
     pub messages_json: String,
     pub tool_calls_json: Option<String>,
+    /// The client scenario an Analyze with Claude report was written about.
+    pub scenario_id: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -46,11 +48,12 @@ pub fn save_report(
     tags: Option<&str>,
     messages_json: &str,
     tool_calls_json: Option<&str>,
+    scenario_id: Option<i64>,
 ) -> Result<ResearchReport> {
     conn.execute(
-        "INSERT INTO research_reports (title, summary, tags, messages_json, tool_calls_json)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![title, summary, tags, messages_json, tool_calls_json],
+        "INSERT INTO research_reports (title, summary, tags, messages_json, tool_calls_json, scenario_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![title, summary, tags, messages_json, tool_calls_json, scenario_id],
     )?;
 
     let id = conn.last_insert_rowid();
@@ -83,7 +86,7 @@ pub fn get_reports(conn: &Connection) -> Result<Vec<ResearchReportSummary>> {
 /// Get a single report by ID (full, with messages)
 pub fn get_report(conn: &Connection, id: i64) -> Result<ResearchReport> {
     conn.query_row(
-        "SELECT id, title, summary, tags, messages_json, tool_calls_json, created_at, updated_at
+        "SELECT id, title, summary, tags, messages_json, tool_calls_json, created_at, updated_at, scenario_id
          FROM research_reports WHERE id = ?1",
         [id],
         |row| {
@@ -94,6 +97,7 @@ pub fn get_report(conn: &Connection, id: i64) -> Result<ResearchReport> {
                 tags: row.get(3)?,
                 messages_json: row.get(4)?,
                 tool_calls_json: row.get(5)?,
+                scenario_id: row.get(8)?,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
             })
@@ -119,6 +123,19 @@ pub fn update_report_title(conn: &Connection, id: i64, title: &str) -> Result<Re
         "UPDATE research_reports SET title = ?1, updated_at = datetime('now') WHERE id = ?2",
         rusqlite::params![title, id],
     )?;
+    get_report(conn, id)
+}
+
+/// Link a report to the client scenario it analyzes (for reports saved before
+/// the link was recorded).
+pub fn set_report_scenario(conn: &Connection, id: i64, scenario_id: i64) -> Result<ResearchReport> {
+    let rows = conn.execute(
+        "UPDATE research_reports SET scenario_id = ?1, updated_at = datetime('now') WHERE id = ?2",
+        rusqlite::params![scenario_id, id],
+    )?;
+    if rows == 0 {
+        return Err(AppError::NotFound(format!("Report {} not found", id)));
+    }
     get_report(conn, id)
 }
 
@@ -189,4 +206,33 @@ fn get_note_by_id(conn: &Connection, id: i64) -> Result<ReportNote> {
         rusqlite::Error::QueryReturnedNoRows => AppError::NotFound(format!("Note {} not found", id)),
         other => other.into(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::sqlite::migrations::run_migrations(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn save_report_keeps_its_scenario() {
+        let conn = db();
+        let linked = save_report(&conn, "t", None, None, "[]", None, Some(7)).unwrap();
+        assert_eq!(linked.scenario_id, Some(7));
+        let plain = save_report(&conn, "t", None, None, "[]", None, None).unwrap();
+        assert_eq!(get_report(&conn, plain.id).unwrap().scenario_id, None);
+    }
+
+    #[test]
+    fn set_report_scenario_links_an_old_report() {
+        let conn = db();
+        let report = save_report(&conn, "t", None, None, "[]", None, None).unwrap();
+        let linked = set_report_scenario(&conn, report.id, 12).unwrap();
+        assert_eq!(linked.scenario_id, Some(12));
+        assert!(matches!(set_report_scenario(&conn, 9999, 12), Err(AppError::NotFound(_))));
+    }
 }

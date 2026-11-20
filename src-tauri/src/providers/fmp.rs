@@ -6,8 +6,52 @@
 use super::ProviderError;
 use super::types::*;
 use reqwest::Client;
+use std::collections::VecDeque;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 const FMP_BASE_URL: &str = "https://financialmodelingprep.com/stable";
+
+/// The user's FMP plan (Starter) allows 300 calls per minute. The app paces itself
+/// a little under that so calls landing at a window edge never tip it over.
+const FMP_CALLS_PER_MINUTE: usize = 290;
+const FMP_WINDOW: Duration = Duration::from_secs(60);
+
+/// Send times of the FMP calls in the last minute, shared by every FmpClient
+/// (each command builds its own client, but they all spend the same key's budget).
+fn fmp_sent() -> &'static tokio::sync::Mutex<VecDeque<Instant>> {
+    static SENT: OnceLock<tokio::sync::Mutex<VecDeque<Instant>>> = OnceLock::new();
+    SENT.get_or_init(|| tokio::sync::Mutex::new(VecDeque::new()))
+}
+
+/// Record a call at `now` if the window has room, else say how long to wait.
+fn pace_step(sent: &mut VecDeque<Instant>, now: Instant, limit: usize, window: Duration) -> Option<Duration> {
+    while sent.front().is_some_and(|t| now.duration_since(*t) >= window) {
+        sent.pop_front();
+    }
+    if sent.len() < limit {
+        sent.push_back(now);
+        return None;
+    }
+    sent.front().map(|oldest| window - now.duration_since(*oldest))
+}
+
+/// Wait until one more FMP call fits in the per-minute budget, then claim it.
+async fn pace_fmp_call() {
+    loop {
+        let wait = {
+            let mut sent = fmp_sent().lock().await;
+            pace_step(&mut sent, Instant::now(), FMP_CALLS_PER_MINUTE, FMP_WINDOW)
+        };
+        match wait {
+            None => return,
+            Some(d) => {
+                tracing::info!("FMP: {} calls in the last minute, waiting {:?}", FMP_CALLS_PER_MINUTE, d);
+                tokio::time::sleep(d).await;
+            }
+        }
+    }
+}
 
 /// FMP API client
 pub struct FmpClient {
@@ -162,24 +206,47 @@ impl FmpClient {
         }).collect())
     }
 
-    /// Get price targets
+    /// Get recent analyst price targets (one record per analyst note)
     pub async fn get_price_targets(&self, symbol: &str) -> Result<Vec<PriceTarget>, ProviderError> {
         let url = format!(
-            "{}/price-target?symbol={}&apikey={}",
+            "{}/price-target-news?symbol={}&limit=50&apikey={}",
             FMP_BASE_URL, symbol, self.api_key
         );
         let resp = self.fetch_fmp_json(&url).await?;
 
-        Ok(resp.iter().map(|item| PriceTarget {
-            symbol: item["symbol"].as_str().unwrap_or(symbol).to_string(),
-            published_date: item["publishedDate"].as_str().map(String::from),
-            analyst_name: item["analystName"].as_str().map(String::from),
-            analyst_company: item["analystCompany"].as_str().map(String::from),
-            price_target: item["priceTarget"].as_f64(),
-            adj_price_target: item["adjPriceTarget"].as_f64(),
-            price_when_posted: item["priceWhenPosted"].as_f64(),
-            news_title: item["newsTitle"].as_str().map(String::from),
-        }).collect())
+        Ok(resp.iter().map(|item| map_price_target_news(item, symbol)).collect())
+    }
+
+    /// Get the analyst price-target consensus (high / low / consensus / median)
+    pub async fn get_price_target_consensus(&self, symbol: &str) -> Result<Option<PriceTargetConsensus>, ProviderError> {
+        let url = format!(
+            "{}/price-target-consensus?symbol={}&apikey={}",
+            FMP_BASE_URL, symbol, self.api_key
+        );
+        let resp = self.fetch_fmp_json(&url).await?;
+        Ok(resp.first().map(map_consensus))
+    }
+
+    /// Get the analyst price-target summary (counts and average targets by period)
+    pub async fn get_price_target_summary(&self, symbol: &str) -> Result<Option<PriceTargetSummary>, ProviderError> {
+        let url = format!(
+            "{}/price-target-summary?symbol={}&apikey={}",
+            FMP_BASE_URL, symbol, self.api_key
+        );
+        let resp = self.fetch_fmp_json(&url).await?;
+        Ok(resp.first().map(map_summary))
+    }
+
+    /// Get daily closes between `from` and `to` (YYYY-MM-DD), sorted ascending by date
+    pub async fn get_daily_closes(&self, symbol: &str, from: &str, to: &str) -> Result<Vec<DailyClose>, ProviderError> {
+        let url = format!(
+            "{}/historical-price-eod/light?symbol={}&from={}&to={}&apikey={}",
+            FMP_BASE_URL, symbol, from, to, self.api_key
+        );
+        let resp = self.fetch_fmp_json(&url).await?;
+        let mut closes: Vec<DailyClose> = resp.iter().filter_map(map_daily_close).collect();
+        closes.sort_by(|a, b| a.date.cmp(&b.date));
+        Ok(closes)
     }
 
     /// Get economic calendar
@@ -279,6 +346,7 @@ impl FmpClient {
 
     /// Helper to fetch FMP JSON, handling error objects gracefully
     async fn fetch_fmp_json(&self, url: &str) -> Result<Vec<serde_json::Value>, ProviderError> {
+        pace_fmp_call().await;
         let response = self.client.get(url).send().await?;
         let status = response.status();
         let body = response.text().await.map_err(|e| {
@@ -522,13 +590,44 @@ impl FmpClient {
     }
 
     pub async fn get_sector_performance(&self) -> Result<Vec<SectorPerformance>, ProviderError> {
-        let url = format!("{}/sector-performance?apikey={}", FMP_BASE_URL, self.api_key);
-        let items = self.fetch_fmp_json(&url).await?;
-        Ok(items.iter().map(|item| SectorPerformance {
-            sector: item["sector"].as_str().unwrap_or("").to_string(),
-            change_percentage: item["changesPercentage"].as_f64()
-                .or_else(|| item["changesPercentage"].as_str().and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())),
-        }).collect())
+        // FMP's /stable API replaced the legacy `/sector-performance` endpoint
+        // (which returned the current day implicitly) with
+        // `/sector-performance-snapshot`, which REQUIRES a `date` (YYYY-MM-DD)
+        // and returns one row per sector for that calendar day. A snapshot only
+        // exists for trading days, and today's may not be populated pre-market,
+        // so we start from "today" in America/New_York and walk back until a
+        // date returns data. The 7-day cap covers a weekend plus a multi-day
+        // holiday without looping forever.
+        let pct = |v: &serde_json::Value| -> Option<f64> {
+            v.as_f64().or_else(|| {
+                v.as_str().and_then(|s| s.trim().trim_end_matches('%').trim().parse::<f64>().ok())
+            })
+        };
+
+        let mut day = chrono::Utc::now().with_timezone(&chrono_tz::America::New_York).date_naive();
+        for _ in 0..7 {
+            let url = format!(
+                "{}/sector-performance-snapshot?date={}&apikey={}",
+                FMP_BASE_URL,
+                day.format("%Y-%m-%d"),
+                self.api_key
+            );
+            let items = self.fetch_fmp_json(&url).await?;
+            if !items.is_empty() {
+                return Ok(items.iter().map(|item| SectorPerformance {
+                    sector: item["sector"].as_str().unwrap_or("").to_string(),
+                    // /stable serves the daily sector average as `averageChange`;
+                    // older payloads used `changesPercentage` (sometimes "1.23%").
+                    change_percentage: pct(&item["averageChange"])
+                        .or_else(|| pct(&item["changesPercentage"])),
+                }).collect());
+            }
+            day = day.pred_opt().unwrap_or(day);
+        }
+
+        Err(ProviderError::ApiError(
+            "FMP sector-performance-snapshot returned no data for the last 7 days".to_string(),
+        ))
     }
 
     pub async fn get_market_gainers(&self) -> Result<Vec<MarketMover>, ProviderError> {
@@ -768,5 +867,126 @@ impl FmpClient {
         }
 
         Ok(results)
+    }
+}
+
+fn map_price_target_news(v: &serde_json::Value, symbol: &str) -> PriceTarget {
+    PriceTarget {
+        symbol: v["symbol"].as_str().unwrap_or(symbol).to_string(),
+        published_date: v["publishedDate"].as_str().map(String::from),
+        analyst_name: v["analystName"].as_str().map(String::from),
+        analyst_company: v["analystCompany"].as_str().map(String::from),
+        price_target: v["priceTarget"].as_f64(),
+        adj_price_target: v["adjPriceTarget"].as_f64(),
+        price_when_posted: v["priceWhenPosted"].as_f64(),
+        news_title: v["newsTitle"].as_str().map(String::from),
+    }
+}
+
+fn map_consensus(v: &serde_json::Value) -> PriceTargetConsensus {
+    PriceTargetConsensus {
+        symbol: v["symbol"].as_str().unwrap_or("").to_string(),
+        target_high: v["targetHigh"].as_f64(),
+        target_low: v["targetLow"].as_f64(),
+        target_consensus: v["targetConsensus"].as_f64(),
+        target_median: v["targetMedian"].as_f64(),
+    }
+}
+
+fn map_summary(v: &serde_json::Value) -> PriceTargetSummary {
+    PriceTargetSummary {
+        symbol: v["symbol"].as_str().unwrap_or("").to_string(),
+        last_month_count: v["lastMonthCount"].as_i64().map(|n| n as i32),
+        last_quarter_count: v["lastQuarterCount"].as_i64().map(|n| n as i32),
+        last_quarter_avg_price_target: v["lastQuarterAvgPriceTarget"].as_f64(),
+        last_year_count: v["lastYearCount"].as_i64().map(|n| n as i32),
+        all_time_count: v["allTimeCount"].as_i64().map(|n| n as i32),
+    }
+}
+
+/// Returns `None` when the date is missing or the price is missing / not positive.
+fn map_daily_close(v: &serde_json::Value) -> Option<DailyClose> {
+    let close = v["price"].as_f64().filter(|p| *p > 0.0)?;
+    let date = v["date"].as_str()?.to_string();
+    Some(DailyClose { date, close, volume: v["volume"].as_i64() })
+}
+
+#[cfg(test)]
+mod target_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn maps_consensus_payload() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"symbol":"PFE","targetHigh":33,"targetLow":26,"targetConsensus":29.17,"targetMedian":29}"#).unwrap();
+        let c = map_consensus(&v);
+        assert_eq!(c.target_consensus, Some(29.17));
+        assert_eq!(c.target_high, Some(33.0));
+    }
+
+    #[test]
+    fn maps_summary_payload() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"symbol":"PFE","lastMonthCount":2,"lastMonthAvgPriceTarget":30.5,"lastQuarterCount":4,"lastQuarterAvgPriceTarget":30.5,"lastYearCount":19,"lastYearAvgPriceTarget":27.95,"allTimeCount":64,"allTimeAvgPriceTarget":40.98}"#).unwrap();
+        assert_eq!(map_summary(&v).last_quarter_count, Some(4));
+    }
+
+    #[test]
+    fn maps_daily_close_and_skips_zero_price() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"symbol":"PFE","date":"2026-10-30","price":30.52,"volume":45485398}"#).unwrap();
+        assert_eq!(map_daily_close(&v).unwrap().close, 30.52);
+        let z: serde_json::Value = serde_json::from_str(r#"{"symbol":"PFE","date":"2026-10-31","price":0}"#).unwrap();
+        assert!(map_daily_close(&z).is_none());
+    }
+
+    #[test]
+    fn price_target_news_record_maps_to_price_target() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"symbol":"PFE","publishedDate":"2026-10-08T11:17:00.000Z","analystName":"Jane","analystCompany":"Cantor","priceTarget":28,"adjPriceTarget":28,"priceWhenPosted":24.9,"newsTitle":"PT Raised","newsURL":"u","newsPublisher":"StreetInsider","newsBaseURL":"streetinsider.com"}"#).unwrap();
+        let t = map_price_target_news(&v, "PFE");
+        assert_eq!(t.price_target, Some(28.0));
+        assert_eq!(t.analyst_company.as_deref(), Some("Cantor"));
+    }
+}
+
+#[cfg(test)]
+mod pacing_tests {
+    use super::*;
+
+    const WINDOW: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn calls_go_through_until_the_limit() {
+        let mut sent = VecDeque::new();
+        let t0 = Instant::now();
+        for i in 0..3 {
+            assert_eq!(pace_step(&mut sent, t0 + Duration::from_millis(i), 3, WINDOW), None);
+        }
+        assert_eq!(sent.len(), 3);
+    }
+
+    #[test]
+    fn the_next_call_waits_for_the_oldest_to_age_out() {
+        let mut sent = VecDeque::new();
+        let t0 = Instant::now();
+        for _ in 0..3 {
+            pace_step(&mut sent, t0, 3, WINDOW);
+        }
+        let wait = pace_step(&mut sent, t0 + Duration::from_secs(20), 3, WINDOW);
+        assert_eq!(wait, Some(Duration::from_secs(40)));
+        assert_eq!(sent.len(), 3, "a refused call is not recorded");
+    }
+
+    #[test]
+    fn calls_older_than_a_minute_free_their_slots() {
+        let mut sent = VecDeque::new();
+        let t0 = Instant::now();
+        for _ in 0..3 {
+            pace_step(&mut sent, t0, 3, WINDOW);
+        }
+        assert_eq!(pace_step(&mut sent, t0 + WINDOW, 3, WINDOW), None);
+        assert_eq!(sent.len(), 1);
+    }
+
+    #[test]
+    fn the_budget_stays_under_the_starter_plan() {
+        assert!(FMP_CALLS_PER_MINUTE < 300);
     }
 }

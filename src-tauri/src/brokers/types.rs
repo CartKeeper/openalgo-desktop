@@ -84,6 +84,12 @@ pub struct Order {
     pub order_timestamp: String,
     pub exchange_timestamp: Option<String>,
     pub rejection_reason: Option<String>,
+    /// Trailing-stop trail percent (Alpaca `trail_percent`), when applicable.
+    #[serde(default)]
+    pub trail_percent: Option<f64>,
+    /// Trailing-stop high-water mark (Alpaca `hwm`), when applicable.
+    #[serde(default)]
+    pub hwm: Option<f64>,
 }
 
 /// Position
@@ -133,6 +139,9 @@ pub struct Funds {
     pub span: f64,
     pub exposure: f64,
     pub collateral: f64,
+    /// Live account equity (cash + positions) when the broker reports it.
+    #[serde(default)]
+    pub equity: Option<f64>,
 }
 
 /// Account activity — trade fills and non-trade events (cash deposits/
@@ -207,6 +216,16 @@ pub struct BrokerWatchlist {
     pub name: String,
     #[serde(default)]
     pub symbols: Vec<String>,
+}
+
+/// A symbol to fetch a quote for. Named fields on purpose: this was previously
+/// an anonymous (String, String) tuple whose order ("(exchange, symbol)") six
+/// of seven broker adapters silently read backwards — querying brokers for a
+/// ticker literally named "US" and returning nothing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuoteSymbol {
+    pub exchange: String,
+    pub symbol: String,
 }
 
 /// Quote

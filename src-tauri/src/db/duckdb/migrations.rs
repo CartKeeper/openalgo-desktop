@@ -33,9 +33,28 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "004_download_jobs", CREATE_DOWNLOAD_JOBS)?;
     run_migration(conn, "005_symbol_metadata", CREATE_SYMBOL_METADATA)?;
     run_migration(conn, "006_download_jobs_v2", ALTER_DOWNLOAD_JOBS_V2)?;
+    run_migration(conn, "007_symbol_metadata_v2", ALTER_SYMBOL_METADATA_V2)?;
 
+    checkpoint(conn, "migrations");
     tracing::info!("DuckDB migrations completed");
     Ok(())
+}
+
+/// Fold the write-ahead log into the main file now, so nothing written so far is
+/// ever replayed on a later launch.
+///
+/// The app never closes DuckDB cleanly (the process exits, or `tauri dev` kills
+/// it on a rebuild), so without this every write stays in the WAL until DuckDB's
+/// 16 MB auto-checkpoint. DDL left in the WAL has twice failed to replay on the
+/// next open ("Failure while replaying WAL file …: Calling
+/// DatabaseManager::GetDefaultDatabase with no default database set", last on
+/// 2026-11-12 after migration 007 plus a 15 MB symbol-metadata load), which
+/// aborts the app in its setup hook on every start. A failed checkpoint is only
+/// logged: the data is committed either way.
+pub(super) fn checkpoint(conn: &Connection, after: &str) {
+    if let Err(e) = conn.execute_batch("CHECKPOINT") {
+        tracing::warn!("DuckDB checkpoint after {after} failed: {e}");
+    }
 }
 
 fn run_migration(conn: &Connection, name: &str, sql: &str) -> Result<()> {
@@ -136,6 +155,8 @@ CREATE TABLE IF NOT EXISTS job_items (
 /// default expression binder has no catalog during WAL replay), which corrupts
 /// the WAL and makes the app abort on every subsequent launch. Columns are added
 /// nullable; the read queries COALESCE missing values to their defaults instead.
+/// Even without DEFAULT the replay failed once more (2026-11-12, see
+/// `checkpoint`), so `run_migrations` now checkpoints as soon as it is done.
 const ALTER_DOWNLOAD_JOBS_V2: &str = r#"
 ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS job_type VARCHAR;
 ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS interval VARCHAR;
@@ -156,5 +177,31 @@ CREATE TABLE IF NOT EXISTS symbol_metadata (
     market_cap DOUBLE,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (symbol, exchange)
+);
+"#;
+
+/// FinanceDatabase columns on `symbol_metadata`, plus the key/value table that
+/// records each refresh (last refresh time, OTC flag, source commit and date).
+///
+/// Same WAL rule as ALTER_DOWNLOAD_JOBS_V2: the adds are nullable and carry NO
+/// DEFAULT clause. Readers COALESCE `delisted` to FALSE; the loader always
+/// writes it explicitly.
+const ALTER_SYMBOL_METADATA_V2: &str = r#"
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS country VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS industry_group VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS size_bucket VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS isin VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS cusip VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS figi VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS website VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS summary VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS asset_type VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS delisted BOOLEAN;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS source VARCHAR;
+ALTER TABLE symbol_metadata ADD COLUMN IF NOT EXISTS source_as_of VARCHAR;
+
+CREATE TABLE IF NOT EXISTS symbol_metadata_meta (
+    meta_key VARCHAR PRIMARY KEY,
+    meta_value VARCHAR
 );
 "#;

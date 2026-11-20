@@ -1,0 +1,1595 @@
+# Flow port — what was carried, what was adapted
+
+WP8 carries upstream OpenAlgo Desktop's Flow module (the visual workflow
+builder) into this app. This file is the record a later upstream sync diffs
+against: the exact commit carried, every seam where this app differs, and
+every edit made to a carried file. Phase A (branch `wp8a-flow-core`) is the
+Rust engine; the frontend (Phase B), the triggers (Phase C) and the parity
+pass (Phase D) add their own sections.
+
+## Carried commit
+
+- Remote `upstream` = `marketcalls/openalgo-desktop`, ref `upstream/master`.
+- Commit: `52580437b0991774576272d007c442cd6eb820fd` (their v1.0.7).
+- Carried with `git checkout upstream/master -- <paths>` on 2026-11-12:
+  - `src-tauri/src/flow/**` (the module),
+  - `src-tauri/src/clock.rs`,
+  - `src-tauri/src/security/secret.rs`,
+  - `src-tauri/src/agent/indicators/**` → `src-tauri/src/indicators_lib/**` (renamed with `git mv`; the empty `agent/` directory was removed),
+  - `tests/fixtures/web/flow/goldens/**` (787 goldens + README, repository root, the path `flow/goldens/replay.rs` reads),
+  - `src-tauri/tests/fixtures/flow/` (`logic_vectors.json`, `validator_goldens.json`),
+  - `src-tauri/tests/fixtures/flow_indicators/` (the indicator service goldens),
+  - `src-tauri/tests/fixtures/agent_indicators/` (the indicator library's own goldens; the plan did not list it, the library's tests `include_str!` it).
+
+Upstream's `edition` is 2021 like this app's; no edition-2024 syntax is in
+the carried tree.
+
+## Not carried (and why)
+
+| Upstream path | Why |
+| --- | --- |
+| `src-tauri/src/flow/doc_tests.rs` | Tests upstream's `docs/prompt/flow-import-format.md` and user-guide chapter 21 against the code. Neither document exists here (Phase D writes `docs/flow/user-guide.md`). |
+| `flow/contract/client/app/{tests,refusal_tests}.rs` | Built on upstream's Agent test kit, mock broker and tunnel log capture. Task A4 writes this app's client tests on the headless harness. |
+| `flow/nodes/internal/tests.rs`, `flow/nodes/order_api_tests.rs`, `flow/nodes/data_tests/app.rs` | Mock-broker (`brokers::mock`) and `mcp::dispatch` tests. |
+| `flow/nodes/alerts/client_tests.rs` | Upstream's Telegram/WhatsApp services; Telegram arrives in Phase C with its own tests. |
+| `flow/triggers/feed/tests.rs` | Upstream's Samco streaming corpus; this app has no broker stream Flow can subscribe to (see `quote_feed` below). |
+| `src-tauri/src/events.rs` of upstream | Upstream has none at that path; its event bus lives in `events/`. This app's `events.rs` is new (below). |
+
+## Seam table (upstream symbol → here)
+
+Every `crate::` path the carried code imported that this app does not have,
+and what it was rewritten to. The rewrite was a mechanical `sed` over the
+carried tree, followed by the hand edits listed in the next section.
+
+| Upstream | Here | Notes |
+| --- | --- | --- |
+| `crate::agent::indicators::*` | `crate::indicators_lib::*` | Directory rename. `discovery.rs` and `scan.rs` (the Agent's tools) are carried so the library's tests stay whole. |
+| `crate::agent::contract::tool::ToolOutcome`, `agent::tools::market::normalise::refuse` | `indicators_lib::outcome::{ToolOutcome, refuse}` | A two-variant stand-in with `invalid_argument`, `text`, `is_ok`. |
+| `crate::agent::tools::market::candles::{CandleFrame, ist_timestamp, ...}` | `indicators_lib::candles` | `Columns`, `candle_columns`, `candle_frame`, `CandleFrame` copied; `ist_timestamp`/`iso_ist` became `market_timestamp`/`iso_market` over the market zone. The Agent's chart/summary helpers were not carried. |
+| `crate::agent::tools::values::*` | `flow::support::values` | Copied; the `py_repr` of upstream's `agent/tools/service.rs` inlined as `service_py_repr`. |
+| `crate::agent::tools::numbers::*` | `flow::support::numbers` | Copied; naive timestamps are read in the market zone, not IST. |
+| `crate::agent::tools::order_vocab::*` | `flow::support::order_vocab` | Copied; `split_exchange_prefix` answers `Err(String)` instead of an Agent `ToolOutcome`. |
+| `crate::agent::tools::testkit::{row, master_rows}` | `flow::support::testkit` | Plus `capture_logs` (was `services::tunnel::fake::capture_logs`) and `sign_in` (what `AuthService::setup` left behind). |
+| `crate::agent::tools::market::VALID_EXCHANGES`, `crate::services::schemas::VALID_EXCHANGES` | `flow::support::FLOW_EXCHANGES` (imported `as VALID_EXCHANGES`) | Upstream's 14 exchanges in web order; Task A5 appends the US venues. |
+| `crate::services::core::{Reply, INVALID_API_KEY, WEBHOOK_LOCKED}` | `flow::support::reply` (`Reply` re-exported as `flow::support::Reply`) | `Reply { status, body }` without upstream's placement outcome. Phase B's `FlowReply` is built from it. |
+| `crate::mcp::dispatch::{Raw, Transport, UNKNOWN_OUTCOME, SDK_TIMEOUT, post_request, run_as}` | `flow::support::dispatch` | The request carries the internal token in `x-openalgo-internal-token`; `run` goes through the app's own axum router with `tower::ServiceExt::oneshot` (Task A4). |
+| `crate::brokers::common::symbols::{SymToken, SymbolGeneration}`, `app.symbols` | `flow::support::symbols::{SymToken, SymbolGeneration, SymbolStore}`; `AppState::symbols` | Built from this app's `SymbolInfo` (no expiry/strike: US equities). `AppState::load_symbol_cache` fills it. |
+| `crate::brokers::common::underlying::*` | `flow::support::underlying` | Copied. |
+| `crate::brokers::common::mapping::{Exchange, Product, PriceType, Action, ...}` | `flow::support::mapping` | Copied (the `oa_enum!` macro and the enums). |
+| `crate::strategy::session::session_day` | `flow::support::session::session_day` | Market zone instead of IST. |
+| `crate::strategy::dispatch::NO_BROKER_SESSION` | `flow::support::NO_BROKER_SESSION` | Same sentence. |
+| `crate::strategy::book::StrategyBook` | `nodes::books::AppStrategyBook` is a unit struct | `legs()` answers `Err("Strategy P&L is not available in this app")`. |
+| `crate::services::options_service::{NO_SPOT, quote_exchange, option_exchange, today_ist, option_chain_structure}`, `services::symbol_service::expiry` | `flow::support::options` | The pure helpers copied; `expiry` and `option_chain_structure` answer 501 "not available yet" until Phase D wires `OptionsService::get_option_chain`. |
+| `crate::services::market_calendar_service::holidays_api` | `flow::support::calendar::holidays_api` | Over this app's `market_holidays` table; `holiday_type` is always `trading`, `open_exchanges` empty, `timezone` the market zone. |
+| `crate::db::sqlite::market_calendar::{SessionWindow, effective_session_window}` | `flow::support::market_hours` | The regular 09:30–16:00 market-time window; Task A3 reads the live clock. |
+| `crate::db::sqlite::write_transaction` | `flow::support::db::write_transaction` | Copied (`Transaction::new_unchecked`, immediate). |
+| `crate::db::sqlite::key_vault::Witness`, `crate::security::crypto::Aad` | removed | This app's `SecurityManager::{encrypt, decrypt}` take no associated data and the key never changes without the data folder; `store::witness()` and `secret_aad()` were dropped. |
+| `crate::security::{Unlocked, keystore}`, `security.is_unlocked()` | `AppState::is_authenticated()` | Always unlocked; "signed in" is a user session. |
+| `crate::services::apikey_service::ApiKeyService::current` | `flow::service::api_key()` answers the internal token | A workflow needs no API key in this app (consequence recorded below). |
+| `crate::services::auth_service` | `app.user_session` | |
+| `crate::services::tunnel` | `flow::support::public_url::public_base_url` | The webhook settings' `ngrok_url` when set, else `http://{host}:{port}` of the webhook server (Task A7). |
+| `crate::events::{Event, Lane, Subscriber, Topic, OrderUpdate}` | `crate::events::{OrderUpdate, OrderUpdates}` (new file) | A `tokio::sync::broadcast` channel on `AppState::order_updates`; `drive::subscribe_order_updates` reads it in a task the trigger side owns. Phase C's order-book poller sends into it. |
+| `crate::feed::*`, `brokers::common::streaming`, `websocket::WebSocketManager` (in `triggers/feed.rs`) | `flow::support::quote_feed::AppFeed`, re-exported at `flow::triggers::feed` | One-shot quotes through `QuotesService` (Task A7). |
+| `crate::messaging::{telegram, whatsapp}` | `AppFlowClient::telegram` answers "Telegram is not set up: add the bot token and chat id on the Telegram page" (Phase C replaces it); `whatsapp` answers "WhatsApp alerts are not available in this app" | |
+| `crate::server::{api_v1, envelope}`, `services::{options_order_service, order_service, schemas, Route}` (in `nodes/internal.rs`) | rewritten | A scoped close goes through `/api/v1/openposition` + `/api/v1/placeorder`; absolute-strike legs are refused with one sentence (Task A4). |
+| `app.server_config()` (session boundary, host server), `app.listening_port()` | `AppState::session_boundary()` (the auto-logout time), `public_base_url` | |
+| `app.blocking`, `app.spawn`, `app.now`, `app.clock`, `app.flow` | added to `AppState` | |
+| `app.sqlite.conn()` | added `SqliteDb::conn()` | Returns the mutex guard; the caller drops it before any await, as upstream's pooled connection. |
+| `SecurityManager::for_tests()` | added (`#[cfg(test)]`) | |
+| `chrono_tz::Asia::Kolkata`, `ist_*` | `flow::contract::time::market_tz()` (America/New_York) | Task A3. A thread-local test override (`set_market_tz_for_tests`) instead of the plan's `OnceLock`, so the IST goldens and the Eastern tests share one test process. |
+| `#[cfg(any(test, feature = "test-support"))]` | `#[cfg(test)]` | This app has no `test-support` feature (the fake client is test-only). |
+
+## Hand edits to carried files (Phase A)
+
+| File | Edit |
+| --- | --- |
+| `flow/mod.rs` | `pub mod support;` added; `mod doc_tests;` removed. |
+| `flow/nodes/mod.rs`, `flow/nodes/alerts.rs`, `flow/nodes/data_tests/mod.rs` | The `mod` lines of the test files not carried removed. |
+| `flow/contract/client/app.rs` | Rewritten for this app (see the seam table); `shaped`, `transport_failure`, `NO_ANSWER`, `NOT_SENT`, `CALL_TIMEOUT` kept as upstream wrote them. `with_broker_cause` matches this app's refusal texts. |
+| `flow/nodes/internal.rs` | Rewritten; `route()` and `Internal` kept. |
+| `flow/nodes/books.rs` | `AppStrategyBook` is a unit struct answering the not-available sentence. |
+| `flow/nodes/data.rs` | `install_env` installs it without a strategy book. |
+| `flow/triggers/feed.rs` | Replaced by a re-export of `flow::support::quote_feed`. |
+| `flow/triggers/drive.rs` | `subscribe_order_updates` reads the broadcast channel instead of the bus. |
+| `flow/triggers/runs.rs` | `paused()` reads `is_authenticated()`. |
+| `flow/store/mod.rs` | `witness()` removed. |
+| `flow/store/workflows.rs` | No AAD on encrypt/decrypt; the decrypted secret wrapped in `Secret`. |
+| `flow/service/mod.rs` | `api_key()` answers the internal token. |
+| `flow/service/webhooks.rs` | `base()` calls `public_base_url`. |
+| `flow/executor/mod.rs` | `context()` reads `AppState::session_boundary()`. |
+| `flow/contract/time.rs` | `market_tz()`, `set_market_tz_for_tests()` added (Task A3 completes the renames). |
+| `flow/nodes/timing.rs` | `market_hours::effective_session_window` (module alias after the path rewrite). |
+| `indicators_lib/mod.rs` | `pub mod candles; pub mod outcome;` |
+| `indicators_lib/compute.rs` | `market_timestamp` for `ist_timestamp`. |
+
+## Files of this app touched outside the carried tree
+
+| File | Change |
+| --- | --- |
+| `src-tauri/src/lib.rs` | WP8 module anchor: `pub mod clock; pub mod events; pub mod flow; pub mod indicators_lib;` |
+| `src-tauri/Cargo.toml` | WP8 deps anchor: `tower` (util), `tokio-util` (rt), `regex`, `zeroize`, `subtle`, `oa_core` (git, upstream's pin). |
+| `src-tauri/src/security/mod.rs` | `pub mod secret; pub use secret::Secret;` and `SecurityManager::for_tests()`. |
+| `src-tauri/src/state.rs` | Fields `clock`, `flow`, `symbols`, `internal_token`, `order_updates`; methods `now`, `blocking`, `spawn`, `session_boundary`; `load_symbol_cache` fills `symbols`. |
+| `src-tauri/src/db/sqlite/mod.rs` | `SqliteDb::conn()` (outside the plan's file list; the smallest way to give the carried store a connection). |
+| `src-tauri/src/events.rs` | New. |
+
+## Consequences a trader will notice
+
+- **Workflows do not need an API key.** Upstream runs a workflow with the
+  trader's current API key and skips a run when there is none. Here every
+  in-process `/api/v1` call carries the app's per-process internal token,
+  so a run never asks for a key; the skip for "no API key" cannot happen.
+- **Market time is America/New_York.** Every schedule time, time window,
+  session date and run timestamp is Eastern (Task A3); a workflow exported
+  from OpenAlgo web (IST) is reinterpreted, and the import reply says so.
+- **Not available in this app**, answered as a node error, never a crash:
+  Strategy P&L, WhatsApp alerts, absolute-strike legs; Telegram until
+  Phase C; option expiry/strike lookups until Phase D.
+
+## Task A2: the `AppState` handle and the headless harness
+
+- `AppState` is now `AppState(Arc<AppStateInner>)` with `Deref`; every
+  field lives on `AppStateInner`. The 250-odd Tauri commands keep
+  `State<'_, AppState>` and compile unchanged (field access derefs).
+- Carried Flow code keeps upstream's `Arc<AppState>` / `Weak<AppState>`
+  signatures. The `Weak`s taken at start-up (`SymbolStoreMaster`,
+  `AppCalendar`, `TriggerSide`) must point at an `Arc` that outlives
+  them: `AppState::root()` makes that root once and finds it again while
+  it lives (`AppStateInner::me`, a weak back-reference). The app manages
+  the root beside the handle (Task A6); a test holds it in `TestCtx::ctx`.
+  Per-call `Arc`s (`Arc::new(state.clone())` in a command) are fine: a
+  run's task holds its own clone for the run's lifetime.
+- `AppState::open(data_dir, OpenOptions)` opens a state on any folder and
+  **starts Flow on it** (restore, interrupted-run close, trigger side), as
+  upstream's `open` did and as the carried reopen tests expect;
+  `AppState::new(&AppHandle)` builds only, and `lib.rs` starts Flow
+  (Task A6). `OpenOptions { clock, brokers, app_handle }` replaces
+  upstream's `{ keystore, clock, brokers }`.
+- `state::testing::build(brokers, now) -> TestCtx { ctx, clock, dir }`
+  keeps upstream's signature so the carried tests compile unchanged
+  (the plan's zero-argument `build()` was not used; `db()` and
+  `object()` exist as the plan lists them). The harness is a fresh
+  database: analyzer mode off until a test turns it on, no user or broker
+  session, random keys, no window. It must be built inside a tokio
+  runtime (`#[tokio::test]`).
+- `WebSocketManager` holds `Option<AppHandle>` and gains `headless()`;
+  its emits go through one helper that drops the event when there is no
+  window. Behaviour with a window is unchanged. (File outside the plan's
+  list: `src-tauri/src/websocket/manager.rs`, the one field that blocked a
+  headless state.)
+- `[dev-dependencies]` gains `tokio = { features = ["full", "test-util"] }`
+  for the carried `#[tokio::test(start_paused = true)]` tests (upstream's
+  dev-dependency).
+
+### Carried tests adapted in A2
+
+| Upstream test helper | Here |
+| --- | --- |
+| `AuthService::setup(&app, "trader", ...)` | `flow::support::testkit::sign_in(&app)` (a user session) |
+| `AuthService::lock_everything(&app)` | `testkit::sign_out(&app)` (session cleared, runs stopped, triggers kept) |
+| `app.security.install(&Unlocked::random())`, `security.is_unlocked()` | removed / `is_authenticated()` (always unlocked here) |
+| `OpenOptions { keystore, .. }` | `OpenOptions { app_handle: None, .. }` |
+| `app.bus.queue_depths()`, `app.bus.publish(Event::OrderUpdate(u))` | `app.order_updates.receiver_count()`, `app.order_updates.send(u)` |
+| `services::schemas::basket_order().load(row)` | the row's keys checked against this app's `BasketOrderItem` fields |
+| `include_str!("src/lib/flow/constants.ts")` | read at run time; the five editor tests and `the_editor_and_the_run_share_their_lists` are `#[ignore]`d until the frontend arrives (Phase B) |
+
+Tests retired (not applicable here; recorded in `docs/flow/parity.md`):
+`executor/tests/run.rs::a_fresh_start_or_an_account_reset_stops_a_run_in_flight`
+(upstream's account reset and fresh start), the calendar-table gate tests
+`timing/tests.rs::the_gate_reads_the_apps_calendar`,
+`timing/tests/gate.rs::{an_unreadable_calendar_is_shut,
+an_exchange_without_hours_uses_the_default}` and
+`triggers/tests/schedule_logs.rs::the_gate_reads_the_nse_calendar_when_no_exchange_is_named`
+(upstream's holiday and timing tables; Task A3 tests the Eastern gate).
+
+## Task A3: market time is America/New_York
+
+- `flow::contract::time::market_tz()` is the one zone every Flow
+  wall-clock time is read and written in (`DEFAULT_MARKET_TZ`,
+  `America/New_York`); `market_now(clock)` replaces upstream's `ist_now`,
+  `market_label()` gives the short name a sentence shows (`ET`, or `IST`
+  under the test override). The plan's `OnceLock` became a `#[cfg(test)]`
+  thread-local override (`set_market_tz_for_tests`), so the goldens and the
+  tests ported from the web (recorded in IST) and this app's Eastern tests
+  share one test process; `AppState::blocking` carries the override to the
+  blocking pool.
+- Renames (upstream → here): `ist_now` → `market_now`, `iso_ist` →
+  `iso_market` (`contract/vars.rs`), `today_ist` → `today_market`
+  (`nodes/history.rs`, `support/options.rs`), `ist_minutes` →
+  `market_minutes` (`nodes/timing.rs`), `from_ist`/`ist` →
+  `from_market`/`market` (`triggers/scheduler.rs`), `in_ist` → `in_market`
+  (`indicator_service/records.rs`), `ist_stamp` → `market_stamp`
+  (`indicators_lib/compute.rs`). `clock::ist_offset` had two readers, both
+  now on `market_tz()`, so no `market_offset` exists; `IST_OFFSET_SECS`,
+  `ist_offset` and `ist_slots_between` (no caller here) were not carried.
+- Daylight saving in the scheduler (`from_market`): a wall time that
+  repeats on the fall-back night fires once, on the later instant
+  (upstream's `.latest()` rule); a wall time the spring-forward night
+  skips fires the same minute past the hour once the clock has jumped
+  (02:30 → 03:30 EDT). Tests: `triggers/scheduler/market_time_tests.rs`.
+- The schedule trigger's market-hours gate
+  (`nodes::timing::is_within_market_hours`) is async over the app: the
+  broker's `MarketStatusService::get_clock` when it can be read (closed
+  inside the regular hours is a holiday or an early close), else the
+  regular 09:30–16:00 market-time window (`support::market_hours::
+  regular_window`) with a warning in the log; the node's own start and end
+  replace a side either way. `marketHoursExchange` is read but every US
+  venue shares the one session (upstream read per-exchange calendar
+  tables; `effective_session_window` and `DEFAULT_MARKET_HOURS_EXCHANGE`
+  were removed with them). Tests: `nodes/timing/tests/eastern.rs`
+  (spring-forward window, the logged fallback); the live-clock branch has
+  no broker in the harness and is recorded in `docs/flow/parity.md`.
+- A web workflow's import answers `notes: ["Schedule and time-window times
+  are read as Eastern time in this app"]` when any node reads a wall-clock
+  time (`transfer::reads_wall_clock_times`: a non-manual schedule, a Time
+  Window, Time Condition or Wait Until node). Test:
+  `service/tests/market_time.rs`.
+- Sentences that named IST now name the market zone
+  (`market_label()`): the past one-time schedule refusal and the
+  missed-fire line of the restore.
+- Carried IST tests set the zone in their own setup (the plan's rule):
+  `nodes/testkit::{ist, ctx_at}`, `nodes/order_testing::Run::at`,
+  `nodes/data_tests/support::ist`, `triggers/scheduler/tests::ist_at`,
+  `triggers/tests::app`, `triggers/tests/schedule_logs::ist_at`,
+  `service/tests::app`, `executor/tests/{run,w6_run}::app`, the
+  `vars.rs` built-ins test, the indicator fixture loaders
+  (`indicator_service/tests/support::json`, `indicators_lib/tests/
+  support::json`: the web's package recorded them on an IST host) and the
+  goldens replay (`goldens/replay::replay`).
+
+## Task A4: nodes call this app's `/api/v1` handlers in process
+
+- `webhook::server::router(state) -> axum::Router` is the one router
+  (extracted from `WebhookServer::start`); `AppState::api_router()` builds
+  it once per state for Flow. Each router has its own `RateLimiterState`,
+  so Flow has its own share of the `/api/v1` limit and never spends an
+  SDK client's (upstream gives Flow its own caller address for the same
+  reason). The limiter, analyzer routing and Gate B are untouched.
+- `flow::support::dispatch::run` hands the request to the router with
+  `tower::ServiceExt::oneshot` inside a task the app owns, and reads the
+  answer within `CALL_TIMEOUT` (120 s, the SDK's); a dropped node future
+  never cuts an order off mid-flight. `Raw`/`Transport` are upstream's
+  `mcp::dispatch` types.
+- The credential is the per-process internal token, in the header
+  `x-openalgo-internal-token`. The router's innermost layer
+  (`internal_trust`) checks it in constant time and writes it into the
+  JSON body as `apikey`, where every `/api/v1` request schema reads the
+  key (a header-only scheme would fail JSON extraction before any check);
+  a wrong token is refused 403; a request without the header passes
+  untouched. `WebhookState::validate_api_key` accepts the token, and
+  `service_key` hands the services `None` for it — the trust a Tauri
+  command has (the services re-check any `Some(key)` against the
+  `api_keys` table, which the token is not in). A trader never needs an
+  API key for a workflow.
+- `WebhookState` holds a `WeakAppState` (the router lives inside the
+  state, so a strong handle would be a cycle) and an `Option<AppHandle>`
+  for its frontend events (none for a headless state).
+- `with_broker_cause`: this app's handlers answer a broker-less call with
+  "Broker not connected" inside the service's error, or the key sentence;
+  either becomes upstream's no-broker-session sentence at the node when no
+  broker is logged in (Review Focus 5).
+- `nodes::internal` (upstream's internal service entry): a scoped close is
+  `/api/v1/openposition` then the opposite `/api/v1/placeorder` through
+  the same router (the position service's own sentences for a flat
+  symbol); absolute-strike legs answer 400 "Legs with an absolute strike
+  are not available in this app: use an offset (ATM, ITM1, OTM1, ...)
+  instead." (this app's options service sizes legs by offset only).
+- Tests: `contract/client/app.rs` (funds through the handlers, a sandbox
+  order with its id, the token gate, the no-broker cause) and
+  `nodes/internal.rs` (the strike refusal, a flat and a held scoped close).
+
+## Task A5: US exchanges and the `CNC` default
+
+- `flow::support::FLOW_EXCHANGES` is the web's fourteen exchanges in the
+  web's order followed by `US_EXCHANGES` (`NYSE, NASDAQ, AMEX, ARCA, BATS,
+  OTC, US`); `flow::support::mapping::Exchange` has the same variants
+  (`is_us()`, and `is_cash()` includes them). Every node that checks an
+  exchange (`placeOrder`, `basketOrder`, the option nodes, the margin
+  basket) and the validator's `Vocabulary::Exchange` read that one list.
+- `node_contracts::default_product_for_exchange`: `NRML` on the web's
+  derivative segments (unchanged), `CNC` on the US venues (the spec's
+  default), `MIS` elsewhere (unchanged).
+- A refusal's accepted list is this app's (sorted, so it begins `AMEX,
+  ARCA, BATS, BCD, ...`). The web recorded its own fourteen, so the
+  validator goldens (`validator/tests/goldens.rs::as_the_web_lists`) and
+  the behaviour goldens (`goldens/replay.rs::as_the_web_lists`) compare the
+  desktop's list with the US venues set aside; the carried orders test
+  expects this app's list.
+- Goldens the web recorded as refusals of a US venue (`got 'NASDAQ'`,
+  `got 'NYSE'`) are this app's accepted path by design: the replay reports
+  them `not applicable here` with the reason, per family (see
+  `docs/flow/parity.md`).
+
+## Task A6: store, migration, start and stop
+
+- Migration `100_flow_core` (the program's reserved name) runs
+  `flow::store::migrate` through `run_migration_fn`, a Rust-bodied
+  variant of this app's `run_migration` under the WP8 anchors in
+  `db/sqlite/migrations.rs`: run once, recorded in the `migrations` table
+  like the SQL ones. The tables are upstream's `flow_workflows` and
+  `flow_workflow_executions`, column for column (the webhook secret is
+  encrypted with this app's `SecurityManager`, no AAD).
+- `lib.rs` (the construction site): after `app.manage(app_state)` the root
+  `Arc` is managed too (`app.manage(root)`, so Flow's start-time weak
+  references stay alive), and `flow::start(&root)` runs inside Tauri's
+  async runtime (the trigger side spawns its drivers): it closes the runs
+  the last session left `running` (recorded `failed` with upstream's
+  interrupted sentence, never resumed), installs the node services, the
+  scheduler and monitors, and restores the active workflows.
+- On `RunEvent::ExitRequested` the app calls `AppState::shutdown_with(10
+  s)`: the trigger side stops, then every run in flight gets ten seconds
+  to write its record before it is ended (upstream's `STOP_GRACE` of two
+  seconds remains the tests' `shutdown()`).
+- Tests: `flow/store/app_tests.rs` (the app's own runner creates the
+  tables and records the migration; a run left running is closed at the
+  next open and its workflow is free — Review Focus 3).
+
+### `SqliteDb::conn()` is a pool checkout (a hang found and fixed)
+
+Upstream's `ctx.sqlite.conn()` checks a connection out of an r2d2 pool,
+so carried code holds one while it checks out another, or across an
+await, without a thought (`refuse_updates` while a test holds its `conn`;
+the executor's `blocking` reads while the test that started the run holds
+one). Task A1 first implemented `conn()` as the guard of this app's single
+`Mutex<Connection>`, and two carried tests deadlocked on it forever
+(`nodes::http::tests::analyzer_mode_still_sends_the_request`, which
+holds `conn` across `executor::execute(..).await`, and
+`triggers::tests::lifecycle::activation_answers_500_when_it_cannot_persist_or_register`,
+which calls `conn()` twice on one thread); the whole `flow::` run sat at
+0% CPU with 808 of 810 tests finished. `SqliteDb` now owns an r2d2 pool of
+four connections beside the app's own connection (`r2d2_sqlite` was
+already a dependency): `conn()` returns a `PooledConn`, waits at most the
+pool's 30 s for a free one and then answers an error, never hangs. Both
+sources share the file in WAL mode with `busy_timeout` 5 s (the app's
+connection gains that pragma: it waits for a Flow writer instead of
+failing busy); the pooled connections have foreign keys on (Flow's run
+history cascades with its workflow). The schedule gate's broker call
+(`MarketStatusService::get_clock`) is time-boxed to 10 s
+(`MARKET_CLOCK_TIMEOUT`) before the logged fallback: Flow's own awaits on
+an external boundary all carry a timeout (`dispatch::run` 120 s, the feed
+the node's own, the gate 10 s).
+
+## Task A7: the support implementations
+
+- `flow::support::public_url::public_base_url(app)`: the webhook
+  settings' `ngrok_url` (trimmed of a trailing slash) when one is set, else
+  `http://{webhook_host}:{webhook_port}` from the same settings (the
+  defaults are `127.0.0.1:5000`); the local default when the settings
+  cannot be read, logged. Upstream read its built-in tunnel's address.
+- `flow::support::quote_feed::AppFeed` (`MarketFeed` for the subscribe and
+  price nodes): this app has no stream Flow can subscribe to, so a frame
+  is a one-shot quote through `QuotesService::get_quote` (modes `LTP` and
+  `Quote`) or `get_market_depth` plus the quote's price (mode `Depth`),
+  shaped as the web's websocket frame the nodes read
+  (`{symbol, exchange, mode: 1|2|3, data: {...}}`; `data.prev_close` is the
+  quote's `close`, a book carries `bids`/`asks` as `{price, quantity}` and
+  the two totals). The node's own timeout bounds the call; `accept`
+  decides whether the one frame counts; `unsubscribe` has nothing to give
+  back; with no broker logged in every call answers "No broker is logged
+  in, so there is no live market data feed." at once, and "OpenAlgo is
+  shutting down." once the app is gone. The live path needs a broker and
+  is not provable on the headless harness (`docs/flow/parity.md`).
+- `values`, `numbers`, `order_vocab` and `testkit` were filled in Task A1
+  (copies of upstream's helpers); their tests are the copied ones.
+
+## Task A8: node families green, goldens replayed
+
+- `cargo test --lib flow::` runs to completion (the deadlock of Task A6's
+  note is gone) with every node family green and all six golden families
+  matching; the per-family lines are in `docs/flow/parity.md`.
+- Carried tests that pinned upstream's "no API key" branch were adapted
+  to this app, where a run always has the app's own credential (Task A4):
+  the fire now runs and the tests assert the executed outcome; the three
+  whose subject was the key guard itself were retired. The holiday-table
+  gate test was retired with the calendar tables (Task A3). The tests that
+  read the Flow frontend sources are `#[ignore]`d until Phase B carries
+  them; the two that read upstream's prompt document were removed
+  (`validator/tests/editor_parity_docs.rs` and one test of
+  `editor_parity.rs`). Every case is listed in `docs/flow/parity.md`.
+- Review Focus 5 (a broker call with no broker logged in) is pinned at
+  the client (`contract/client/app.rs::a_broker_call_without_a_broker_names_the_cause`,
+  Task A4): the node reads upstream's no-broker-session sentence and the
+  run fails at that node; the trigger side's own tests show the workflow
+  stays registered after a failed run.
+
+### `indicators_lib` in this app
+
+- `discovery.rs`, `scan.rs` and `outcome.rs` (the Agent's tools) are
+  `#[cfg(test)]` modules: only their tests run here.
+- The Agent's dispatcher (`compute::compute`, `coerce`, `json`, parts of
+  `registry`) is reached only by the library's goldens; the module carries
+  `#![cfg_attr(not(test), allow(dead_code))]` with the reason, rather than
+  deleting a tested half of a carried library. Flow's Indicator node uses
+  `ta`, `registry::get_spec` and `compute::bind`.
+- `Json::from_value` (referenced by nothing, tests included) was removed.
+- Unused re-exports in `indicators_lib/mod.rs` were removed.
+
+## Environment notes for whoever rebuilds this
+
+- `src-tauri/Cargo.lock` and `dist/` are git-ignored in this repository.
+  A fresh worktree resolves the lock from scratch and may pick
+  `parking_lot 0.13` (needs rustc 1.95); seeding it from the main
+  checkout's lock avoids that. `tauri::generate_context!` needs `dist/`
+  to exist, so `npm run build` (or a copy of a built `dist/`) must precede
+  any cargo command.
+- `npm run build` (`tsc -b`) fails on the base branch in files this work
+  package does not touch (`src/api/trading.ts`, `PlaceOrderDialog.tsx`,
+  `Historify.tsx`: `PlaceOrderRequest` lacks the bracket-order fields,
+  `HistorifyDownloadJob` is not a `DownloadJob`). Recorded for the
+  coordinator; not fixed here (out of scope).
+
+## Gates on the merged branch (2026-11-12)
+
+After `git merge feat/historify-desktop-backend` (integration head
+`57638b65`, WP1, WP6, WP5, WP7, WP2 and WP4 merged; the merge was clean,
+no duplicate command names, migration names or crate keys), with
+`npm ci` from the integration lock:
+
+| Gate | Result | Whose |
+| --- | --- | --- |
+| `cd src-tauri && cargo test --lib` | `test result: ok. 1279 passed; 0 failed; 12 ignored; 0 measured; 0 filtered out; finished in 48.44s` (no compiler warnings) | passes |
+| `npx vitest run` | `Test Files  4 failed \| 29 passed (33)`, `Tests  7 failed \| 223 passed \| 1 skipped (231)` | the integration tree's: `src/config/navigation.test.ts` (3), `src/components/ui/page-loader.test.tsx` (4) assert stale expectations; `MobileBottomNav.test.tsx` and `ui/button.test.tsx` import `jest-axe`, which no `package.json` declares. All four files are byte-identical to the base branch (23480b90) and to the integration branch; WP8 Phase A changes no frontend file. |
+| `npm run build` | exit 2: the seven `tsc` errors above | the base branch's (unchanged on integration) |
+| `npm run lint` | exit 1: `× Some errors were emitted while running checks.` (Biome errors in `components/dashboard/WatchlistCard.tsx`, `reports/ReportBuilderDialog.tsx`, `backtest/TradeTable.tsx`, `HelpButton.tsx`, `api/strategy.ts`, `pages/telegram/TelegramUsers.tsx` and five more; 153 warnings) | the integration tree's: none of the files is touched by WP8 Phase A |
+
+The 12 ignored Rust tests are the Flow tests that read the frontend
+sources (`docs/flow/parity.md`); they un-ignore when WP8 Phase B carries
+those files.
+
+## Phase B — the Flow frontend (`wp8b-flow-ui`)
+
+### Carried (Task B1)
+
+- From the same commit (`52580437b0991774576272d007c442cd6eb820fd`), with
+  `git checkout 52580437 -- <paths>` on 2026-11-12: `src/api/flow.ts`,
+  `src/api/flowDesktop.ts`, `src/pages/flow/**`, `src/components/flow/**`,
+  `src/components/desktop/{FlowConfirmDialogs, FlowEditorAccountControls,
+  FlowLeaveGuard, FlowPanelNotes, FlowWebhookReachability}.tsx` (+ tests),
+  `src/lib/flow/**`, `src/lib/desktopFlow.ts` (+ test),
+  `src/stores/flowWorkflowStore.ts` (+ 3 tests), `src/types/flow.ts`,
+  `src/types/flow.surface.json` (+ test): 168 files, 77 of them tests.
+  `src/api/flow.test.ts` is carried in Task B2 with the invoke bridge it
+  tests.
+- Packages: `@xyflow/react ^12.10.0` (upstream's range; the lock resolves
+  12.12.1, the plan's pin). `@uiw/react-codemirror`, `@uiw/codemirror-themes`
+  and `@codemirror/lang-json` were already dependencies at upstream's ranges,
+  and the carried tree imports none of them. Beyond the plan's four:
+  `react-router ^7.12.0` declared (37 carried files import `react-router`,
+  upstream's habit; `react-router-dom@7.12.0` already brought it into the
+  lock, so no package was added), and the dev dependencies `jest-axe
+  ^10.0.0` + `@types/jest-axe ^3.5.9` (7 carried tests use
+  `src/test/a11y-utils.ts`, which this repository ships but whose package
+  was never declared). The two base test files that import `jest-axe`
+  (`components/ui/button.test.tsx`, `components/layout/MobileBottomNav.test.tsx`)
+  now get past the import and still fail, on `document is not defined`:
+  they have no jsdom pragma. They are the base branch's, not fixed here.
+
+### Not carried
+
+| Upstream path | Why |
+| --- | --- |
+| `src/lib/flow/indicatorOffsetWording.test.ts` | Two of its four cases read `docs/prompt/flow-import-format.md` and `docs/userguide/21-flow-visual-builder/README.md`, which this repository does not have (Phase D writes `docs/flow/user-guide.md`); the panel wording it also pins is pinned by `ConfigPanel.desktop.test.tsx`. |
+| `src/utils/toast.ts`, `src/components/layout/AccountControls.tsx`, `src/api/tunnel.ts`, `src/hooks/useProfileMenuItems.ts`, `src/stores/updateStore.ts`, `src/components/auth/LogoutConfirmDialog.tsx`, `src/test/axiosAnswer.ts`, `vitest.config.ts`, `src/test/setup.ts` | App modules the carried tree imports or assumes; the adapters below stand in, or this app's own files do. |
+
+### Adapters (new files of this app)
+
+| File | Stands in for |
+| --- | --- |
+| `src/utils/toast.ts` (+ test) | Upstream's `showToast`: the same call shape `(message, category?, options?)`, every toast shown through sonner. This app has no per-category toast settings, so the category is accepted and unused. |
+| `src/components/layout/AccountControls.tsx` (+ test) | Upstream's header account controls, imported by the carried `FlowEditorAccountControls`: the Navbar's own pieces (broker badge, mode badge, the Live/Analyze switch with its sandbox warning, the theme switch, the profile menu with this app's `profileMenuItems`, Docs, Logout), preceded by `AccountSwitcher`; `onNavigate` lets the editor's leave guard ask first. Copied from `Navbar.tsx`, which this WP may not edit, so a change to the Navbar's account controls is made here too. No Check for Updates (no in-app updater here) and no logout confirmation dialog (the Navbar has none). It logs out once, through the store's `logout()`; the Navbar sends the request twice (`authApi.logout()` and then the store's `logout()`, which sends it again) — reported, not changed. |
+| `src/components/flow/testSetup.ts` | The part of upstream's `src/test/setup.ts` this repository's lacks: `ResizeObserver`/`IntersectionObserver` as real classes, Radix pointer-capture and `scrollIntoView` stubs. Imported by every carried `*.test.tsx`; nothing in the app imports it. |
+
+### Hand edits to carried files (Task B1)
+
+| File | Edit |
+| --- | --- |
+| every carried `*.test.tsx` (56 files) | Three lines prepended: `// @vitest-environment jsdom`, `import '@/test/setup'`, `import '@/components/flow/testSetup'`. This repository has no vitest config (upstream's `vitest.config.ts` sets jsdom and the setup file for every test); each jsdom test here declares its own. |
+| `src/api/flowDesktop.ts` | `tunnelApi` and `onTunnelAddress` removed: `getWebhookInfoForTrader` is `getWebhookInfo` (the server already answers on `public_base_url`, Task A7). |
+| `src/lib/desktopFlow.test.ts` | The case reading `src-tauri/src/services/schemas.rs` (`SUPPORTED_INTERVALS`) removed with its `node:fs` imports: this app has no such constant (the History node passes the interval through to `/api/v1/history`). |
+| `src/pages/flow/FlowKeyboardShortcuts.pinned.test.tsx`, `src/components/flow/panels/ConfigPanel.options.test.tsx` | `:scope > div` selectors replaced by child traversal: this repository's jsdom 24 mishandles `:scope` (upstream runs jsdom 27). |
+| `src/pages/flow/FlowIndex.test.tsx` | The test "shows the tunnel address while the built-in tunnel is online" removed with the `@/api/tunnel` mock (no tunnel API here). |
+| `FlowIndex.w6.test.tsx`, `FlowIndex.pinned.test.tsx`, `ConfigPanel.{desktop, cancelOrders, triggers, titles, everyNode}.test.tsx` | The dead `@/api/tunnel` mocks removed. |
+| `src/pages/flow/FlowEditor.test.tsx` | "offers Check for Updates in the profile menu" became "shows the Dashboard link and the profile menu with Logout" (the Profile entry asserted instead); the leave-guard test goes through the Profile entry (`/profile`) instead of upstream's mocked Positions entry; the `@/hooks/useProfileMenuItems` mock removed. |
+| `src/pages/flow/FlowEditor.w6.test.tsx` | The logout test asserts a direct logout (no "Confirm Logout" dialog here); the `useProfileMenuItems` mock removed. |
+| `src/index.css` (this app's file) | The `@theme inline` mappings `--color-buy`, `--color-sell`, `--color-node-*` added, and upstream's "FLOW EDITOR STYLES" block (through `.bg-surface-2`) appended; the `--buy`/`--sell` HSL triplets already existed in this app's base layer. |
+
+### vitest here, against upstream's
+
+- Under vitest, a `react-router-dom` re-export and a direct `react-router`
+  import load as two module instances, so a hook from one cannot see a
+  `Router` from the other (the first run failed every FlowEditor test on
+  `useNavigate() may be used only in the context of a <Router>` from the
+  adapter). Components the carried tree renders import from `react-router`,
+  as the carried tests' `MemoryRouter` does. In the Vite bundle both names
+  resolve to one module.
+- CSS imports are stubbed (vitest's default `css: false`; upstream sets
+  `css: true`); the one test that reads `src/index.css` reads the file.
+- jsdom 24 here, 27 upstream: the two `:scope` edits above. `HTMLCanvasElement
+  .getContext` "not implemented" lines on stderr are jsdom's, from passing
+  tests.
+
+### Task B2: `/flow/api` as Tauri commands
+
+- `src-tauri/src/commands/flow.rs` (new): upstream's 22 routes
+  (`server/routes/flow/{mod,triggers,lookups}.rs`, not carried) as `flow_*`
+  commands, registered under the WP8 handler anchor in `lib.rs`
+  (`pub mod flow;` under the commands anchor). Each command reads its
+  arguments as the route read the request and calls the one service
+  function the route called; the service's `Reply` is answered as
+  `FlowReply { status, body }`. A JSON body from the editor goes through
+  `Body::parse` again (serialised, then read), so `null`, `{}`, `[]`, `""`
+  and `0` are the web's "no data" here too. Commands take the root `Arc`
+  (`AppState::root()`), the state the service functions and Flow's
+  long-lived tasks share. The plain functions the commands wrap are what
+  the tests call (`commands/flow.rs` tests on the headless harness).
+- Against the plan's signatures: `flow_option_strikes(params:
+  HashMap<String, String>)` is the web's query map (`StrikeQuery::
+  from_params` reads `underlying`, `optionType`, `expiry`, `expiryType`,
+  `exchange`; the plan's `(underlying, exchange, expiry)` dropped two the
+  carried leg builder sends); `flow_list_executions(id, limit: Option<u32>)`
+  hands the limit on as the query string the web read;
+  `flow_execute_workflow(id, body)` accepts and ignores the body, as the
+  route did; `flow_symbol_lotsizes(body)` always has JSON (the route's
+  "not JSON" case cannot arrive from `invoke`).
+- `src/api/flow.ts`: the web's types, function names, signatures and query
+  keys kept; every body is now `flowReply(invoke('flow_…', args))`.
+  `flowReply<T>` resolves the body below 400 and throws `FlowApiError`
+  above, with `message` read as upstream's web client read a refusal
+  (`message`, then `error`, then `detail`, then a plain-text body) and
+  `response.data` = the body, so the pages' `error.message` toasts and
+  `failedRunLog(error)` (`lib/desktopFlow.ts`) work unchanged. A command
+  that rejects (an `AppError`) is a 500 with its message. No wrapper for
+  `flow_monitor_status`: no carried page calls the route.
+- `src/api/flow.test.ts`: upstream's test rewritten over a mocked `invoke`
+  (command and arguments per call, what each function hands back, the
+  refusal rules). Its 401 (redirect to `/login`) and 403 (CSRF sentence)
+  cases are not carried: no HTTP session or CSRF in the bridge.
+- `src/components/desktop/FlowWebhookReachability.tsx`: already warned on a
+  `127.*`, `localhost`, `0.0.0.0` or `[::1]` host; its remedy now names this
+  app's setting (Admin → Server Settings → "Ngrok/Public URL") instead of
+  upstream's built-in tunnel and Host Server URL. Its test and
+  `FlowIndex.test.tsx` assert the new words.
+- The 11 Rust tests Phase A `#[ignore]`d for want of the frontend sources
+  (`flow/mod.rs` 1, `validator/tests/editor_parity.rs` 3,
+  `nodes/options/tests.rs` 1, `nodes/legs/tests.rs` 1,
+  `indicator_service/tests/catalogue.rs` 5) run again on the carried
+  `src/lib/flow/constants.ts`, `src/lib/flow/customLegs.ts` and
+  `src/components/flow/nodes/`, and pass; the `NEEDS_EDITOR` scaffolding
+  went with the attributes. Phase A's gate counted 12 ignored: the twelfth
+  is `nodes/http/client/tests.rs`'s proxy test, which
+  `system_proxy_settings_are_ignored` runs in a child process with proxy
+  variables set, and stays ignored by design. `docs/flow/parity.md`'s list
+  "Ignored until the frontend arrives (Phase B)" is therefore resolved; that
+  file is outside Phase B's list and was not edited (Phase D owns its final
+  table).
+
+### Task B3: routes, the sidebar entry and help
+
+- `src/App.tsx`: `/flow` (the list) and `/flow/shortcuts` under `Layout`,
+  `/flow/editor/:id` under `FullWidthLayout` (no navbar: the canvas has the
+  viewport, and the editor's own header carries the account controls), as
+  upstream mounts them; lazy pages like every other route.
+- `src/config/navigation.ts`: `{ href: '/flow', label: 'Flow', icon:
+  Workflow }` in the Strategy group for every region, and `isActiveRoute`
+  keeps `/flow` lit on `/flow/editor/:id` and `/flow/shortcuts` (exact
+  `/flow` or a `/flow/` prefix), as the Strategies entry does on its nested
+  pages. `src/config/navigation.test.ts` gains a `describe` for both; its
+  three stale assertions are the base branch's and were left alone.
+- Help: `src/pages/flow/flowHelp.ts` (new) holds the three pages' items for
+  the app's shared `HelpButton` (`src/components/HelpButton.tsx`, the
+  floating trigger every page has), adapted from upstream's user guide
+  chapter 21 in this app's words (AAPL on NASDAQ, whole shares, CNC on US
+  venues, Eastern time and the 9:30 AM to 4:00 PM ET session, the Sandbox
+  page, the Ngrok/Public URL setting). `src/pages/flow/flowHelp.test.tsx`
+  renders each page and reads the panel.
+- The help says only what this branch does. Two facts shaped it: the
+  Sandbox page is in the sidebar for Indian brokers only, so the help points
+  a US trader to the Orderbook, which shows the sandbox's orders in analyzer
+  mode (`get_order_book` routes there); and the public webhook route, the
+  order-update poller and Telegram are Phase C's, so a "Not connected yet"
+  item says a webhook address does not receive alerts yet, an Order Update
+  trigger does not fire, and a Telegram Alert node stops with "Telegram is
+  not set up". Phase C replaces that item when it connects them.
+
+### Bundle note: React Flow's own chunk (applied in Follow-up 3)
+
+First reported (`vite.config.ts` was outside WP8's files), then applied
+with the coordinator's authorization (Follow-up 3 below). Before it, the
+`manualChunks` rule `id.includes('/react/')` also matched
+`node_modules/@xyflow/react/`, so React Flow landed in `vendor-react`, the
+chunk every page loads: `vendor-react` grew from 220.54 kB to 358.34 kB
+(minified) with a 15.87 kB stylesheet, and because React Flow imports
+`d3-zoom`/`d3-drag`/`d3-selection` (the `vendor-charts` rule), the entry
+also preloaded `vendor-charts` (247.33 kB) on every page. Measured with
+a copy of the config outside the repository, these two rules put React
+Flow in a `vendor-flow` chunk (136.49 kB + 15.87 kB CSS) that only the
+`/flow/editor` route loads, return `vendor-react` to 220.55 kB, and take
+`vendor-charts` off the startup preloads, with no circular-chunk warning.
+The first rule matters: without it Rollup's CommonJS helpers land in
+`vendor-flow`, React's chunk imports them back, and Rollup warns
+"Circular chunk: vendor-react -> vendor-flow -> vendor-react".
+
+```ts
+        manualChunks: (id) => {
+          // Rollup's CommonJS interop helpers (a virtual module, outside node_modules):
+          // with React's chunk, which every page loads, so a lazy vendor chunk never holds them.
+          if (id.includes('commonjsHelpers')) {
+            return 'vendor-react'
+          }
+          if (id.includes('node_modules')) {
+            // Flow editor (React Flow) - only /flow/editor. Before the React rule:
+            // '@xyflow/react/' contains '/react/'.
+            if (id.includes('/@xyflow/')) {
+              return 'vendor-flow'
+            }
+            // Core React - most stable, cached long-term
+```
+
+### Hand edits to carried files (Task B3)
+
+| File | Edit |
+| --- | --- |
+| `src/pages/flow/FlowIndex.tsx`, `FlowEditor.tsx`, `FlowKeyboardShortcuts.tsx` | `<HelpButton items={…} pageTitle="…" />` as the first child of the page's root (the editor's inside `FlowEditorContent`, before the Replace dialog), with the two imports. |
+| `src/pages/flow/FlowEditorMenu.pinned.test.tsx` | The header test's `getByText('Flow Editor')` scoped to the header bar: the help panel's title, in the DOM while closed, is "Flow Editor" too. |
+
+### Review fix pass (after the whole-branch review)
+
+| File | Edit |
+| --- | --- |
+| `src/lib/flow/constants.ts` | `EXCHANGES` gains this app's seven US venues after upstream's fourteen, in the run's order (`flow::support::US_EXCHANGES`: NYSE, NASDAQ, AMEX, ARCA, BATS, OTC, US), and `defaultProductForExchange` answers `CNC` on them (`US_VENUES`), as `node_contracts::default_product_for_exchange` does. Without them a US trader could not pick NASDAQ in any exchange field (the `{ }` text mode flips back to the select once the text has no `{{`), and a node imported on NASDAQ showed a blank exchange and MIS while the run sent CNC. New test `src/lib/flow/usExchanges.test.ts` reads the Rust list. |
+| `src/lib/flow/constants.pinned.test.ts`, `components/flow/panels/OrderFields.test.tsx`, `components/flow/panels/ConfigPanel.triggers.test.tsx` | Their pinned exchange lists (upstream's fourteen) gain the seven US venues; the OrderFields test's name says so. |
+| `src/api/flow.ts` (Task B2's) | `importWorkflow` also hands back the reply's `notes` and `migrations` when it has them (`ImportedWorkflow`). |
+| `src/pages/flow/FlowIndex.tsx` | The import's success toast: with notes (the Eastern-time sentence), a warning that carries them; with upgraded legacy fields only, their count, as Replace from JSON counts them; otherwise upstream's sentence. Test `src/pages/flow/flowImportNotes.test.tsx`. Review Focus 1's note now reaches the trader, not only the reply. |
+| `src/components/desktop/FlowLeaveGuard.tsx` | `askBeforeLeaving(action)` exported: runs the action at once, or asks with the editor's "Leave without saving?" prompt when the canvas has unsaved changes. `src/components/layout/AccountControls.tsx` sends Logout through it: upstream confirmed every logout with a dialog of its own (the reason the guard lets `/login` through), this app's header logs out at once, so Logout from the editor dropped unsaved edits without asking. Test `src/pages/flow/flowLogout.test.tsx`. |
+| `src/pages/flow/FlowEditor.tsx` | Export Workflow saves through this app's `saveTextFile` (`src/lib/exportFile.ts` → the `save_export_file` command: the file goes to Downloads and a toast gives its path) instead of upstream's `<a download>`, which does nothing in Tauri's macOS webview, as `exportFile.ts` records. Found after the review, while checking the Definition of Done. `FlowEditor.test.tsx` and `FlowEditorMenu.pinned.test.tsx` assert the saved file's name and two-space JSON and that no anchor is clicked; their blob and anchor capture, and the now-unused `readBlob` helper, were removed. |
+| `src/pages/flow/flowHelp.ts` | "What Flow is" says the true thing about Live mode: Flow orders reach `OrderService::place_order` with no acknowledged mode (`expected_mode: None`, as every `/api/v1` caller), so the app's per-order Live/Paper check does not apply; the help says a Live-mode workflow places real orders with no confirmation per order, instead of "the order checks apply". |
+
+### Known deviations after Phase B (recorded, not changed)
+
+- **Times on the Flow pages are upstream's.** The workflow list's dates
+  (`src/lib/flow/listDate.ts`) are written in Asia/Kolkata, so a workflow
+  saved after 1:30 PM ET (2:30 PM in summer) shows the next day's date,
+  and the Execution Log's times are 24-hour (`ExecutionLogPanel.tsx`).
+  CLAUDE.md asks for America/New_York, 12-hour with AM/PM: plan Task D4.
+- **New nodes carried upstream's NSE defaults** (exchange NSE, a 09:15
+  daily schedule gated 09:15–15:15 on NSE, a 09:15–15:30 Time Window,
+  which in this app let a default schedule run before the 9:30 AM ET open)
+  until Follow-up 2 below gave them this app's US defaults.
+- **The carried Flow UI keeps upstream's styling, not this app's design
+  tokens.** The Flow editor CSS block has literal colors (handle and node
+  glow `#e879f9`/`#22d3ee`, edges `#888888`, the hovered edge `#ffffff`),
+  the carried components use Tailwind palette colors directly
+  (`bg-purple-500`, `text-amber-500`, `bg-green-500`, `text-red-500` and
+  the like, hundreds of uses), and the editor's controls are mostly 32 px
+  (`h-8`) with a few 28 px and 24 px ones (`h-7`, `h-6`) that are outside
+  CLAUDE.md's button scale. Restyling upstream's 168 files was not part of
+  the carry; it would be its own piece of work.
+- **The editor's help trigger** (the shared `HelpButton`, fixed at the
+  bottom right) covers the MiniMap's corner, or the bottom of the side
+  panel when one is open. Where the editor's help icon goes is the user's
+  call; the shared component is outside WP8's files.
+### Follow-up 1: the `/api/v1` key (coordinator-authorized, after the review)
+
+Two holes the review found, fixed in `webhook/handlers.rs`,
+`webhook/server.rs` and `flow/support/dispatch.rs` (Phase A's and the app's
+files, opened to this phase for it):
+
+- **No key in a log line or an event.** The six order routes logged their
+  request with `{:?}` (`info!("Place order request: {:?}", req)`) and eight
+  routes sent it to the frontend in `api_*` events, `apikey` included: the
+  user's own OpenAlgo API key on an outside call, the internal token on a
+  Flow call. They now log and emit `redacted(&req)`, the request's JSON with
+  every `apikey`, at any depth, as `"[redacted]"`.
+- **The internal token works only in process.** It was accepted from any
+  request's body (`validate_api_key`) or header (`internal_trust`), so the
+  network listener, and a public URL in front of it, took it too.
+  `dispatch::run` now marks every request it hands the app's router
+  (`InProcessCall`, a request extension, which only code in this process
+  can add); `internal_trust` refuses the token header, as a wrong key, on a
+  request without the mark, and runs a marked request with the right token
+  inside the task-local `IN_PROCESS_CALL`; `WebhookState::is_internal`
+  honors the token only inside that scope, so over the network the token is
+  checked like any other key and refused with exactly a wrong key's answer.
+- Tests (`webhook/server.rs` `key_tests`, `webhook/handlers.rs`
+  `redaction_tests`): the six routes' log lines with the key `k-123` carry
+  no `k-123`; an order's `api_order` event with a user key carries
+  `"[redacted]"`; the listener refuses the internal token in a header and in
+  a body (no sandbox order); the in-process order path takes the token and
+  neither its log nor its event carries it; nested keys are masked. The
+  test-only `handlers::emitted` records what the handlers emit on the
+  test's thread (a headless state has no window).
+
+### Follow-up 2: US defaults for new nodes (coordinator-decided)
+
+The defaults a new node gets in the editor, and the ones the run reads for
+a field a saved node lacks, are this app's US market now (the coordinator's
+decision under the user's delegation):
+
+- **Start**: `time: '09:35'`, `marketHoursOnly: true`, `marketHoursStart:
+  '09:30'`, `marketHoursEnd: '16:00'`, `marketHoursExchange: 'US'` (was a
+  09:15 run gated 09:15–15:15 on NSE, which in this app let a default
+  schedule run before the 9:30 AM ET open). **Time Window**: 09:30 to 16:00.
+- **Equity and order nodes** whose default exchange was `NSE` start on `US`:
+  Price Alert, Place Order, Smart Order, Split Order, Close Positions,
+  Position Check, Price Condition, Get Quote, Get Depth, Multi Quotes,
+  History, Indicator, Prior Period OHLC, Bar Offset, Open Position, Symbol,
+  and the four streaming nodes. They store no product: it follows the
+  exchange, so `US` reads CNC (`defaultProductForExchange`), on the face and
+  in the panel as in the run.
+- **Kept as upstream** until Phase D's US lookups (Task D2): the option and
+  index nodes (`optionsOrder`/`optionsMultiOrder` NSE_INDEX with NRML,
+  `optionSymbol`, `optionChain`, `syntheticFuture` NSE_INDEX, `expiry` NFO)
+  and Margin (NSE: it needs an Indian broker). The Indian exchanges stay
+  selectable beside the US venues.
+- **The editor's fallbacks for a missing field** (`src/lib/flow/constants.ts`
+  defaults, `ConfigPanel.tsx`'s Time, Start, End, Calendar, Start Time, End
+  Time and every equity or order node's Exchange, `OrderFields.tsx`'s
+  `ExchangeField` fallback, the Product control and the node faces'
+  exchange, time and product) read the same values.
+- **The run's fallbacks** read them too: `flow::node_contracts::{
+  default_exchange, default_schedule_time, default_time_window}` replace the
+  literal `"NSE"` of the 17 equity and order node fallbacks (`nodes/data.rs`,
+  `history.rs`, `streaming.rs`, `conditions.rs`, `triggers.rs`,
+  `symbols.rs`, `indicator.rs`, `orders.rs`), the scheduler's `"09:15"`
+  (`triggers/scheduler.rs`) and the Time Window's `"09:15"`/`"15:30"`
+  (`nodes/timing.rs`). Margin's fallback stays `"NSE"`. Under test, a run
+  replaying OpenAlgo web (market zone set to IST, as the goldens and the
+  tests ported from the web set it) reads the web's NSE, 09:15 and
+  09:15–15:30, so that evidence holds unchanged: all six golden families
+  still match.
+- **Help** (`flowHelp.ts`): a new node starts on the US exchange, product
+  CNC, with the Indian exchanges still in the list; a new Schedule runs at
+  9:35 AM ET held to the session, and a new Time Window covers it.
+- **Tests added**: `src/lib/flow/usDefaults.test.ts` (a new Start node's
+  defaults, Time Window, every equity or order node on US with CNC, the
+  option/index/margin nodes unchanged, Indian exchanges selectable);
+  `src/components/flow/usDefaults.test.tsx` (the panel and the faces for a
+  node saved without its exchange, times or product); Rust
+  `node_contracts::us_default_tests`, `nodes::data_tests::us_defaults`
+  (Get Quote with no exchange asks for US),
+  `scheduler::market_time_tests::a_daily_schedule_without_a_time_runs_at_0935_eastern`,
+  `timing::tests::eastern::a_time_window_without_times_is_the_us_regular_session`.
+- **Carried tests updated** (they pinned upstream's defaults): frontend
+  `constants.pinned.test.ts` (new-node defaults), `marketHoursDefaults.test.ts`,
+  `orderNodeDefaults.test.ts`, `nodeFaces.pinned.test.tsx`,
+  `nodeFaces.data.pinned.test.tsx`, `ConfigPanel.{data, desktop, indicator,
+  logic, orders, streaming, triggers}.test.tsx` and `OrderFields.test.tsx`
+  (the unset value read as US, 09:35, 09:30–16:00 or CNC; "stores the
+  window edited" now types 09:45, since 09:30 is the default and React
+  fires no change for it; the desktop test reads `default_exchange()` in
+  `history.rs` instead of the literal); Rust `nodes/streaming/tests.rs` and
+  `nodes/triggers/tests.rs` (ported from the web, their harnesses now set
+  the IST web replay, as the other ported tests do).
+
+### Follow-up 3: React Flow's own chunk
+
+`vite.config.ts` gains the two rules in the bundle note above
+(`commonjsHelpers` → `vendor-react` before the `node_modules` check,
+`/@xyflow/` → `vendor-flow` before the React rule), with the coordinator's
+authorization.
+
+## Phase C — triggers and Telegram alerts (`wp8c-flow-triggers`)
+
+Phase A carried the trigger side (scheduler, price monitor, order-update
+monitor, start-up restore) and installs it at app start (`flow::start` ->
+`TriggerSide::install`). Phase C proves it in Eastern time, fixes what the
+proof found, connects what this app lacked (the public webhook route, an
+order-book poller in place of upstream's event bus, Telegram), and adds the
+Live-mode confirmation on activation.
+
+### Task C1: schedules in Eastern time
+
+- `triggers/tests/eastern.rs` (new): the plan's C1 list on the headless
+  harness, market zone `America/New_York`, a manual clock, each fire stepped
+  as the driver steps it (`Scheduler::tick`, then `run_scheduled`), so no
+  test waits on wall time. Every 1 minute activated at 10:00:30 AM ET runs at
+  10:01:02 and 10:02:02 AM ET (upstream's alignment, the minute plus 2 s) and
+  not between; a daily 9:35 AM ET schedule runs once a day, at 13:35Z while
+  the zone is EDT and 14:35Z after 2026-11-01 (Review Focus 2); a one-time
+  10:05 AM ET schedule runs once and stands its workflow down; a fire while
+  signed out is recorded with the reason and the next fire after sign-in
+  runs; reopening the app (`AppState::open` on the same folder) registers an
+  active schedule again and records its next fire.
+- **Fix, hand edit to a carried file** (`triggers/scheduler.rs`,
+  `Schedule::next_at_or_after`): an interval's next fire was computed on
+  whole seconds, so for a time a few milliseconds after a fire (the tick asks
+  from `now + 1 ms`) it answered that same fire. The driver, which re-ticks
+  at most every 50 ms while something is due, then fired an interval
+  schedule again and again for the first second after each fire: a short
+  run ran again, and a Place Order node sent again. The answer is now never
+  before the time asked. Test `a_fire_moves_an_interval_job_a_whole_interval_on`
+  (failed first: the next fire stayed `15:03:02Z`).
+- Against the plan: the "tokio 1 s tick task owned by `FlowModule::spawn`"
+  is upstream's driver instead (sleeps until the next fire, at most 60 s,
+  woken when a job is added, owned by `TriggerSide`, stopped by
+  `TriggerHooks::stop`); and a signed-out fire is recorded as upstream
+  records it (status `failed`, error "Skipped: OpenAlgo was signed out when
+  this schedule fired, …"), not with a `skipped` status the run history
+  does not know.
+- Times: run records are stored in UTC (`flow_workflow_executions.started_at`
+  and `completed_at`, `flow_workflows.next_run_at`); the lines inside a run's
+  log carry market time (upstream's `iso_market`). Showing them in Eastern
+  12-hour time is Phase D's Task D4.
+
+### The flaky `lifecycle::a_monitor_run_logs_its_result`
+
+- Cause, found from the failing run's own log: the run had finished (its
+  one-shot watch was retired) and only two lines were missing, both
+  `drive.rs` call sites the test thread itself reached. tracing-core caches,
+  for the whole process, whether any subscriber wants a call site and the
+  highest level any wants; while at most one subscriber is registered it
+  asks only the current thread's, so a line first logged on a thread with
+  no subscriber (another test's task) was cached as off everywhere until
+  the next registration. A longer wait could never have seen it.
+- Fix (`triggers/tests/support.rs`, `triggers/tests/lifecycle.rs`):
+  `logged()` installs once per test process a global subscriber that wants
+  every line and prints none (a bare `tracing_subscriber::registry()`), so
+  no call site is cached off; and the test waits on the side's run tasks
+  (`settle`, a join, no time bound) instead of polling the log for 5 s.
+  Tests that capture with `flow::support::testkit::capture_logs` (outside
+  Phase C's files) get the same protection once any `logged()` has run in
+  the process.
+
+### Task C2: price alerts on the quote poll
+
+- The price monitor was carried: every 5 s while an alert is armed, each
+  alert asks for its quote through this app's own `/api/v1/quotes` in
+  process (`QuotesService::get_quote` on the broker session; Alpaca reads
+  the symbol and ignores the venue, so `US` works) and applies its
+  condition; while signed out the poll pauses (logged once); with no broker
+  logged in each quote fails at debug level and nothing fires.
+- **Hand edit** (`triggers/drive.rs`): `check_alerts(client: &dyn
+  FlowClient)` split out of `check_prices` (and `check_alert` takes any
+  `FlowClient`), so a test scripts the quotes. The poll's behaviour is
+  unchanged.
+- Tests (`triggers/tests/price_poll.rs`, Eastern time): "crosses above 190"
+  on AAPL fires once when the quote goes 189 -> 191, not again at 192, and
+  the one-time alert stands its workflow down; an every-time alert fires on
+  each new cross and never while the price stays above; one run at a time
+  per workflow (a second cross while the first run is queued is dropped);
+  an alert past its one-hour window stands down without asking for a quote.
+- Against the plan: the poll keeps upstream's in-process `/api/v1/quotes`
+  call instead of calling `QuotesService::get_quote` directly; the handler
+  calls it, with the key check, the rate limit and the reply shape the
+  monitor reads.
+- Not changed: `price_monitor::Alert::from_node` keeps upstream's `NSE` for
+  a node with no exchange. It cannot be reached here: the strict validator
+  refuses a Price Alert without an exchange before activation, and a new
+  node stores `US`.
+
+### Task C3: the public webhook
+
+- `webhook/server.rs` (this app's file): `POST /flow/webhook/:token` and
+  `POST /flow/webhook/:token/:symbol` on the app's listener, answered by the
+  carried `flow::service::webhooks::trigger` (token, switch, active, lock,
+  secret in the JSON or `?secret=` per the auth type, strict validator,
+  run). The body is read as upstream's route read it: a JSON object as the
+  payload, other JSON kept under `message`/`payload`, an urlencoded form's
+  fields, other text under `message`; a multipart body is read as text
+  (axum's `multipart` feature is not enabled in this app). The path's
+  symbol replaces the body's. `flow/service/{webhooks.rs, webhook_guard.rs}`
+  are unchanged.
+- The routes are merged after the `/api/v1` rate limiter, so they are
+  outside it: that limiter logs the path it refuses (here the token) and is
+  the SDK's budget, which an internet sender would spend. Upstream's own
+  Flow webhook limit (100 a minute per address and per token) is not
+  carried; the guards are the secret, the lockout (10 wrong secrets in 10
+  minutes lock the webhook for 15) and one run at a time per workflow.
+- Request log: tower-http's span is built by `request_span`, which shows
+  `redacted_uri`: `/flow/webhook/[redacted]` (a symbol after it kept) and
+  `secret=[redacted]` for any `secret` in the query (its key read
+  percent-decoded, as the webhook reads it). The listener's start-up log
+  lists the route with a `{token}` placeholder.
+- The address shown is `http://127.0.0.1:5000/flow/webhook/<token>` by
+  default (`public_base_url`: the webhook settings' host and port, or the
+  Ngrok/Public URL). No carried Flow code builds a `localhost` address; the
+  listener binds IPv4 127.0.0.1 only and `localhost` can resolve to `::1`,
+  so the test pins 127.0.0.1.
+- Tests (`webhook/server.rs`, `flow_webhook_tests`, through the listener's
+  router): the right secret runs the workflow and answers upstream's JSON
+  (`message`, `status`, `errors`, `execution_id`, `workflow_id`); the
+  symbol route; an unknown token 404; ten wrong secrets 401 each, then the
+  right one 403 with the lock's sentence; the same alert twice while the
+  first (waiting) run holds the workflow, 202 then 409 "Workflow is already
+  running" (Review Focus 4); neither the token nor a secret in the request
+  log, every way a caller can send them.
+
+### Task C4: order-update triggers from an order-book poller
+
+- `triggers/order_poll.rs` (new): this app has no order stream, so while any
+  order-update watch is active the trigger side reads the order book every
+  5 s through `OrderbookService::get_orderbook` (the sandbox's book in
+  analyzer mode, the broker's otherwise; the service logs one info line per
+  read) and sends one `OrderUpdate` for each order new to the book or whose
+  status changed since the last read, on `AppState::order_updates`, which
+  the carried watches already read. The first read of a book is its
+  baseline (turning a watch on never fires for orders already done), and a
+  new source (analyzer mode switched, another broker) is a new baseline. A
+  failed read keeps the last book. With no watch the poller reads nothing.
+- Statuses are given in the watches' words (`watch_status`): the brokers'
+  `COMPLETE`/`FILLED` -> `complete`; `OPEN`, `PARTIALLY_FILLED`, `PENDING`
+  and the sandbox's `pending` -> `open`; `TRIGGER PENDING` -> `trigger
+  pending`; `CANCELLED`/`EXPIRED` -> `cancelled`; `REJECTED` -> `rejected`;
+  anything else lower-cased, so an `any` watch still hears it.
+- Limits a trader may notice: a change is seen up to 5 s late and only as
+  the status a read finds (a partial fill shows `open` until the order
+  completes; an order that opens and fills between two reads is one
+  `complete` update). A watch turned on within 5 s after an order changed can
+  hear that change at the next read. The sandbox fills a MARKET order at once
+  and has no fill engine for resting orders, so in analyzer mode a watch
+  hears new market orders (`complete`) and cancels.
+- **Hand edits**: `triggers/mod.rs` (`wake_orders`, the poller started with
+  the other drivers, woken when a watch registers), `triggers/restore.rs`
+  (woken after watches are restored), `triggers/order_monitor.rs`
+  (`Watches::is_empty`), `events.rs` (its doc). Carried test
+  `triggers/tests.rs::stop_ends_every_task_and_reset_forgets_everything`
+  counts three drivers now (was two).
+- Tests: `order_poll.rs` (the status words; a book reports each new order
+  and each change once, the baseline nothing; a new source is a new
+  baseline) and `triggers/tests/order_updates.rs` (a sandbox limit order
+  filling between two reads sends exactly one `complete` update with the
+  order's fields and runs the watching workflow once; the book is read only
+  while a watch is active, and no run starts).
+
+### Task C5: Telegram alerts and settings
+
+- Storage (the coordinator's decision): this app's `settings` table is one
+  fixed-column row with no key/value API, so the plan's "settings keys" are
+  provider keys instead: the bot token under `telegram` and the chat id
+  under `telegram_chat_id` in `provider_api_keys`, both encrypted by
+  `SqliteDb::save_provider_key` with the app's `SecurityManager`. No
+  migration. The Data Providers page lists only its own providers, so these
+  rows do not appear there.
+- `messaging/telegram.rs` (new): `load`/`save` (a token is refused before
+  it is stored unless it has Telegram's shape, the bot's number, a colon
+  and a secret of 30 or more letters, digits, `_` or `-`, so nothing else
+  can reach the request URL; a chat id is a number, a group's negative, or
+  a channel's `@name`; a blank token keeps the saved one), `mask` (four
+  dots and the last four characters), `send_message` (`POST
+  https://api.telegram.org/bot<token>/sendMessage` with `{chat_id, text}`
+  as JSON, 15 s timeout; the error is Telegram's own `description`, or
+  "could not be reached" with the HTTP client's error stripped of its URL),
+  `alert_text`, `send_alert` (the node's answer in upstream's client shape)
+  and `send_test`. Checked against Telegram's Bot API and bots pages on
+  2026-11-12 (URL form, JSON bodies, `ok`/`description`/`error_code`,
+  `chat_id` as a number or `@name`, BotFather's `/newbot`).
+- Alert text: upstream's heading and 21-character rule, the message, then
+  `Time: 3:45:12 PM ET` (12-hour Eastern, CLAUDE.md), where upstream wrote
+  `*Flow Alert*` for Markdown and the host's 24-hour time. No `parse_mode`
+  is sent, so a message with `_` or `*` is never refused for its Markdown.
+- `commands/telegram.rs` (new): `telegram_get_settings`,
+  `telegram_save_settings(bot_token, chat_id)`, `telegram_send_test`,
+  registered after the 22 `flow_*` commands. They answer plain sentences
+  (`Result<_, String>`): an `AppError` reaches the page as "Internal error:
+  Validation error: ...".
+- **Hand edit** (`flow/nodes/alerts.rs`): in the app a Telegram Alert sends
+  through `messaging::telegram` (the saved settings); a context with no app
+  (the carried node tests) still asks the run's client. The app's client,
+  `AppFlowClient::telegram` in `flow/contract/client/app.rs`, is outside
+  Phase C's files and still answers only the not-set-up sentence; no run in
+  the app reaches it. Moving the send there and dropping the node's fork is
+  a clean-up for when that file is open.
+- Tests: `messaging/telegram.rs` (the token in no row of any table, read
+  back whole, shown masked; what a save refuses; the exact URL and JSON; a
+  refusal's text never names the token; the Eastern 12-hour stamp; the test
+  message), `commands/telegram.rs`, and `flow/nodes/alerts.rs` (`app_tests`:
+  not set up fails with the sentence that names the Telegram page and sends
+  nothing; set up, it sends the interpolated message to the saved chat).
+  Telegram itself is never called: a fake Bot API (`telegram::fake`) is
+  installed per test thread.
+- Frontend: `src/api/telegram.ts` (the web version's stubs, which nothing
+  imported) is replaced by the three commands (`botToken`/`chatId`
+  arguments). `src/pages/telegram/TelegramIndex.tsx`: a "Bot settings" card
+  (the Bot token as a password field that only ever shows the saved token
+  masked, the Chat ID, Save and Send test message as 40 px buttons, the
+  second secondary and enabled once both are saved), a skeleton while
+  loading, an inline error with Retry, and the Help button
+  (`telegramHelp.ts`). The web bot's sections (status, Start/Stop, users,
+  analytics, broadcast) were removed: they read the web client stub, so the
+  page always stopped at "Failed to load Telegram data" and never showed
+  them. The `/telegram/config`, `/users` and `/analytics` pages are
+  untouched (still routed, still linked from nowhere, as before).
+
+### Navigation: Telegram Bot for every region (coordinator decision)
+
+- `src/config/navigation.ts`: the profile menu's `Telegram Bot` entry
+  (`/telegram`) had `region: ['india']`; it now shows for every region, so
+  a US or generic user reaches the page a Telegram Alert node's error names.
+  Test: a new `it` in `src/config/navigation.test.ts` (Alpaca, generic,
+  Zerodha); the file's three stale assertions are the base branch's and
+  were left alone.
+
+### Live-mode confirmation on activation (coordinator decision)
+
+- The carried UI activated a workflow with one click in either mode, and a
+  Flow order goes through the API order path, which skips the app's
+  per-order Live/Paper confirmation. `src/components/desktop/
+  FlowLiveActivation.tsx` (new): `useLiveActivation(activate)` reads the
+  app's own mode when Activate is chosen (`settingsCommands.getAnalyzeMode`,
+  the setting that routes orders; an API client can switch it behind the
+  header, and a mode that cannot be read counts as Live). In Live mode it
+  asks first: "Activate in Live mode?" / "This workflow will place real
+  orders on the live account without asking each time.", with Cancel and
+  Activate (40 px buttons) and a close button in the header; a 16 px
+  radius, `max-w-lg`, backdrop and Escape close it, closing in 150 ms, no
+  motion under reduced motion. In Analyze mode Activate stays one click.
+- **Hand edits**: `src/pages/flow/FlowIndex.tsx` (the card menu's Activate
+  calls the guard; its dialog renders beside the card's other
+  confirmations) and `src/pages/flow/FlowEditor.tsx` (the header's
+  Activate calls the guard and is disabled while the mode is read; its
+  dialog renders beside the Help button).
+- Test: `src/pages/flow/flowLiveActivation.test.tsx` (from the list and
+  from the editor: Live asks and the dialog's Activate activates, Cancel
+  activates nothing, an unreadable mode asks, Analyze activates at once).
+  Carried tests that pin activation itself (`FlowEditor.test.tsx`,
+  `FlowEditor.pinned.test.tsx`, `FlowEditorMenu.pinned.test.tsx`,
+  `FlowIndex.test.tsx`, `FlowIndex.pinned.test.tsx`) now read the app as
+  Analyze mode through a partial `@/api/tauri-client` mock, so Activate is
+  one click there as before; 10 of their tests would otherwise meet the
+  dialog (jsdom cannot read the mode, which counts as Live).
+- Not covered: a workflow activated in Analyze mode places live orders if
+  the app is switched to Live later, without asking again. The Flow help
+  says so.
+
+### Help: the triggers, Telegram and the Live-mode question (coordinator decision)
+
+- `src/pages/flow/flowHelp.ts`: Phase B's "Not connected yet" item is
+  replaced by five items, each checked against this branch's code:
+  Schedules (America/New_York; every 1 minute at 2 s past each minute,
+  10:01:02 AM ET then 10:02:02 AM ET; Market hours only skips a run outside
+  the session without a history entry; a one-time schedule deactivates its
+  workflow; a fire missed while the app was closed runs only within a
+  minute), Price alerts (the broker's quote every 5 s, a broker logged in;
+  one-time and every-time; expiry), Webhook alerts
+  (`http://127.0.0.1:5000/flow/webhook/<token>`, never `localhost`; the
+  secret in the JSON or with Secret in URL; `/AAPL` for the symbol;
+  `{{webhook.symbol}}`; Enable API Server on Admin -> Server Settings,
+  applied after a restart; active and signed in; the 15-minute lock after
+  ten wrong secrets, Regenerate URL & Secret; already running), Order
+  Update triggers (the order book every 5 s, the sandbox's in analyzer
+  mode, up to 5 s late, orders already there do not fire) and Telegram
+  alerts (the Telegram page from the profile menu; the not-set-up
+  sentence). The two Activate items say that Live mode asks first, and that
+  a workflow activated in analyzer mode trades live if the app is switched
+  to Live later.
+- `src/pages/flow/flowHelp.test.tsx`: the "Not connected yet" assertion is
+  replaced by assertions on those facts (the Eastern 12-hour times, the
+  127.0.0.1 address and no `localhost` anywhere in the panel, Enable API
+  Server, the lock, the order-book poll, the Telegram page, the Live-mode
+  question).
+
+### Review fixes (after the whole-branch review)
+
+- **Order-book poller, another account** (`triggers/order_poll.rs`): the
+  book's source was the mode and the broker only, so signing in with
+  another account on the same broker (Alpaca's paper keys, then its live
+  keys: both `alpaca`) made the new account's last orders, filled and
+  cancelled, "new" at the next read, and a watch on one of them would have
+  run its workflow. The source is now the mode, the broker and the account
+  (the session's user id; Alpaca's is the account number), read before the
+  fetch; a read made while the session changed is dropped. A same-account
+  sign-in again (after the daily auto-logout) keeps the book. Test
+  `another_account_on_the_same_broker_is_a_new_baseline`. Status words, for
+  the record: `done for day` reads as `complete` and `replaced` as
+  `cancelled` (Alpaca's own mapping already turns them into `COMPLETE` and
+  `CANCELLED`).
+- **The request span stays tower-http's** (`webhook/server.rs`): Task C3's
+  redacting span was created under this crate's log target, which the app's
+  default filter (`openalgo_desktop=debug`) turns on, so every log line
+  inside every request gained a `request{method=… uri=…}` prefix (a
+  strategy webhook's id is in its path). It now uses tower-http's target,
+  off by default as before Phase C; turned on, it shows the redacted URI.
+  Test `the_apps_default_log_filter_leaves_the_request_span_off`.
+- **The Live-mode question** (`desktop/FlowLiveActivation.tsx`): its title
+  inherited the shared dialog's 18 px, off CLAUDE.md's type scale, and the
+  shared content's overlay faded under reduced motion. The dialog is now
+  built from the alert-dialog's parts: a 16 px, weight 600 title and an
+  overlay and content that stay still under reduced motion. Test in
+  `flowLiveActivation.test.tsx`.
+- Recorded, not changed (outside Phase C's files): `contract/client/app.rs`
+  still holds `telegram_text`, upstream's Markdown alert text, now unused
+  (the send formats its own in `messaging::telegram::alert_text`).
+
+### Gates (Phase C, 2026-11-12)
+
+`git merge feat/historify-desktop-backend`: already up to date (integration
+head `69758baf`, this branch's base). On the branch head:
+
+| Gate | Result | Whose |
+| --- | --- | --- |
+| `cd src-tauri && cargo test --lib` | `test result: ok. 1398 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 50.18s` (no compiler warnings; base 1368) | passes |
+| `npx vitest run` | `Test Files  4 failed \| 119 passed (123)`, `Tests  40 failed \| 2441 passed \| 1 skipped (2482)` | the base's 40: `MobileBottomNav.test.tsx` (13) and `ui/button.test.tsx` (20) have no jsdom pragma, `ui/page-loader.test.tsx` (4) and `config/navigation.test.ts` (3 stale assertions) |
+| `npm run build` | exit 2 on the base's seven `tsc` errors (`src/api/trading.ts` 384-388, `PlaceOrderDialog.tsx:552`, `Historify.tsx:570`); `npx vite build` alone: `✓ built in 32.18s` | the base's |
+| `npm run lint` | exit 1: `Found 2 errors.` (`backtest/TradeTable.tsx:402`, `trading/ActionReviewModal.test.tsx:764`), 152 warnings, 21 infos; every file Phase C touched lints clean | the base's |
+
+## Phase D — parity and extras (`wp8d-flow-parity`)
+
+Phase D finishes the parity table, gives the editor's lookups US meaning,
+proves the import and export round trips, shows every Flow time in Eastern
+12-hour time, adds a run-history screen and the selection system on the
+Flow cards, closes two ways a trigger could re-run itself, rate-limits the
+public webhook, matches the US venues as one market, moves the Telegram
+send into the app's client, and writes the user guide.
+
+### Task D1: the goldens' `app` hook
+
+- **Hand edit** (`flow/goldens/replay.rs`): `HOOKS` gains `app`, and a
+  golden marked `special` (the three `core` scenarios `already_running`,
+  `workflow_missing`, `no_execution_record`) is replayed by
+  `replay_with_app`: the app's own executor on the headless harness, with
+  the store arranged as the scenario says (another run holds the claim; the
+  id names nothing stored; a trigger refuses the run's record), on a thread
+  and runtime of its own in real time (the harness starts the trigger
+  side's drivers; the goldens' clock is paused). The answer and the record
+  are compared with the web's; a run with no record made no call, logged
+  nothing and set no variable. `golden_clock` is split out of `context`.
+- Result: `core` 61 of 61 match (upstream's harness reported those three
+  "needs a hook"). Every golden that is replayed matches; the three web
+  evidence only and two not applicable here are set aside with their
+  reasons in `docs/flow/parity.md`, which is now the final table.
+
+### Task D2: the editor's lookups with US semantics
+
+- `flow_index_symbols` and `flow_symbol_lotsizes` already read this app's
+  symbol cache (`AppState::symbols` is loaded with `symbol_cache` in
+  `load_symbol_cache`): an Indian broker's master contract sizes NIFTY, a
+  US broker's (equities only) lists no index underlying. **Hand edit**
+  (`flow/lookups.rs`): a lot-size pair on a US label finds the symbol on
+  whichever US venue the cache lists it (`AAPL` on `US` or `NYSE` is the
+  cache's `NASDAQ:AAPL`, lot 1), since a US ticker is the same on every US
+  venue; Indian labels stay exact.
+- `flow_option_strikes`: `support::options::{expiry, option_chain_structure}`
+  (Phase A's 501 stubs and `LOOKUPS_NOT_AVAILABLE`, removed) answer from
+  this app's `SymbolService::get_expiry_dates` and
+  `OptionsService::get_option_chain`. `chain_structure` turns the app's
+  chain into upstream's structure (`chain: [{strike, ce, pe}]`, labels ATM,
+  ITMn, OTMn from the strike nearest the chain's ATM, `strike_count` either
+  side), keeping only positive strikes and leaving out a contract the
+  chain names for more than one strike. **Hand edit** (`flow/lookups.rs`):
+  a US underlying (a US label in the query, or no exchange and the cache
+  lists it on a US venue, unless it is one of the editor's index or MCX
+  underlyings; Barrick's `GOLD` stays MCX `GOLD`) is asked on its US venue,
+  never NFO, and an empty expiry list is not a refusal for it (the app's
+  chain takes no expiry). `StrikeSource::us_venue` is new (default `None`).
+- Limits, recorded for the user's check: this app's chain service centres
+  a ladder of 21 strikes on the quote at its default 50-point spacing for
+  an underlying it does not know (AAPL among them), and a US broker's
+  symbol cache holds no US option contracts, so for AAPL the lookup lists
+  that ladder's positive strikes with no contract symbols, not the listed
+  AAPL strikes; and the editor's options nodes offer only the web's index
+  and MCX underlyings (`INDEX_SYMBOLS`), so no screen asks the lookup for
+  AAPL yet. Listed US strikes need a broker contract source in
+  `services/options_service.rs`, outside WP8's files.
+- **Hand edit** (`flow/contract/client/app.rs`, the Global Constraints'
+  "margin lookups that need an Indian broker"): with a broker logged in
+  that is not one of this app's Indian adapters (Zerodha, Angel One,
+  Fyers), a Margin call, and an option, expiry, chain or synthetic-future
+  call on an Indian exchange, answer the node at once with one sentence:
+  "Margin needs an Indian broker's margin calculator: log in to Zerodha,
+  Angel One or Fyers. The broker logged in now (Alpaca Markets) trades US
+  markets in this app." or "NIFTY on NFO needs an Indian broker: ...",
+  where before a margin of zero or an empty expiry list came back. With no
+  broker logged in the handlers' own no-broker answer stands; a US or
+  crypto exchange goes through.
+- Tests: `nodes/data_tests/us_lookups.rs` (a seeded fake chain: AAPL on
+  NASDAQ, on `US`, and with no exchange; GOLD stays MCX),
+  `support/options.rs` (the app's chain as the leg builder's structure;
+  the ladder below zero and one contract for every strike left out),
+  `commands/flow.rs` (lot sizes on any US label; the index lookup from the
+  cache), `contract/client/app.rs` (margin and index lookups with a US
+  broker; every index contract call; what the gate lets through).
+
+### Task D3: web and US round trips
+
+- Fixtures (`tests/fixtures/flow/`): `web-8.6-nifty-custom-iron-fly.json`
+  carried byte for byte from upstream's `e2e/flow/fixtures/`, and this
+  app's `us-schedule-quote-order.json` (Schedule daily 9:35 AM ET held to
+  the session, Get Quote AAPL, Price Condition ltp > 100, Place Order 1
+  share MARKET CNC, Telegram Alert with the quote and the order id), on
+  exchange `US`, the app's default since Phase B, where the plan named
+  NASDAQ.
+- Tests (`flow/service/tests/round_trips.rs`): the iron fly passes the
+  validator unchanged and imports as "NIFTY Custom Iron Fly (imported)",
+  inactive, with the Eastern-time note; run with a US broker logged in it
+  stops at the options node, whose expiry lookup the app answers with
+  "NIFTY on NFO needs an Indian broker: ..." (Task D2), a line the run's
+  log keeps, before the node's own failure, the web's "Could not resolve
+  expiry for current_week". The US workflow imports with the Eastern-time
+  note and exports its nodes, edges and description byte for byte (keys
+  sorted), named "AAPL morning buy (imported)"; and its graph runs end to
+  end in analyzer mode on the harness: the quote is scripted (no broker in
+  tests), the condition passes, one AAPL share goes to the sandbox through
+  the app's own `/api/v1/placeorder` (BUY, 1, MARKET, CNC, `US`), and the
+  Telegram alert reaches the saved chat through the app's send (a fake Bot
+  API) with the quote and the sandbox's order id filled in.
+
+### Task D4: run times in Eastern 12-hour time
+
+- `src/lib/flow/listDate.ts` (carried, rewritten): every Flow time is
+  America/New_York, 12-hour with AM/PM and "ET", whatever this computer's
+  zone, built from `Intl.DateTimeFormat` parts (so no ICU's narrow space
+  before AM/PM can creep in). `listDate` (the cards' last change): `Nov 12,
+  2026, 2:35 PM ET`, where upstream showed an IST date. New beside it:
+  `runTime` for a run's start or end (`Nov 12, 2:35:02 PM ET`, a dash for
+  none) and `logTime` for a log line (`9:20:05 AM ET`). Workflow and run
+  times are stored as naive UTC and read as UTC; a log line's `time` is
+  naive Eastern already (`iso_market`) and is shown as it is, never
+  shifted; a line the editor writes itself (`failedRunLog`, with a `Z`) is
+  converted; unreadable text still shows "Invalid Date".
+- **Hand edit** (`src/components/flow/panels/ExecutionLogPanel.tsx`): the
+  panel's 24-hour `formatTime` is replaced by `logTime`. This closes the
+  first "Known deviation after Phase B" above.
+- Tests: `src/lib/flow/listDate.test.ts` (rewritten: EST and EDT dates,
+  the evening date, zones kept, midnight and noon; the run times; the log
+  times under two other computer zones; the editor's own `Z` lines);
+  carried tests updated: `ExecutionLogPanel.pinned.test.tsx` ("shows the
+  time as Eastern 12-hour time with ET") and `FlowIndex.test.tsx` ("dates
+  each workflow in Eastern time").
+
+### Run Now asks first in Live mode (coordinator decision 6c)
+
+- Run Now places the workflow's orders at once, through the API order
+  path that skips the app's per-order Live/Paper confirmation, so in Live
+  mode it asks first, the way Activate does: "Run in Live mode?" / "This
+  run will place real orders on the live account without asking for each
+  order.", with Cancel and Run. The mode is read from the backend
+  (`settingsCommands.getAnalyzeMode`) when Run Now is chosen, and a mode
+  that cannot be read counts as Live; in Analyze mode Run Now stays one
+  click.
+- `src/components/desktop/FlowLiveActivation.tsx`: the dialog takes its
+  words (`LiveQuestion`), `useLiveQuestion` is the shared guard, and
+  `useLiveRun` is `useLiveActivation`'s sibling for a run (the activation
+  dialog's look, sizes and reduced-motion behaviour are unchanged).
+- **Hand edit** (`src/pages/flow/FlowEditor.tsx`): the ... menu's Run Now
+  calls the guard (disabled while the mode is read) and its dialog renders
+  beside the activation one. The run-history screen's empty state uses the
+  same guard (decision 6a, below).
+- Tests: `src/pages/flow/flowLiveRun.test.tsx` (Live asks and Run runs
+  once; Cancel runs nothing; an unreadable mode asks; the mode is read at
+  the click; Analyze runs at once). The carried
+  `FlowEditor.w6.test.tsx`, whose two Run Now tests are about the run
+  itself, reads the app as Analyze mode through a partial
+  `@/api/tauri-client` mock, as Phase C did for activation.
+
+### The run-history screen (coordinator decision 6a)
+
+- Phase C's Definition of Done reads "a run appears each minute in its
+  history", but no screen listed a workflow's runs (`flow_list_executions`
+  and `getWorkflowExecutions` had no caller). `src/components/desktop/
+  FlowRunHistory.tsx` (new) is that screen: a dialog of fixed size (75% of
+  the window high, up to 896 px wide, 16 px radius, a fixed header with the
+  title, the workflow's name and Close; the body scrolls), opened from
+  **Run history** in the workflow card's ... menu on the Flow page and in
+  the editor's ... menu (a dialog, not a route: `src/App.tsx` is outside
+  WP8 Phase D's files).
+- Each row: when the run started (`Nov 12, 2:35:02 PM ET`, `runTime`), its
+  status (Completed, Failed, Running, Pending), its duration
+  (`runDuration`: `3s`, `1m 5s`, a dash while it runs) and its error.
+  Opening a run (double-click, Enter, or its Open button) shows its log
+  lines with `logTime` (Eastern 12-hour; a stored line's naive Eastern
+  time shown as it is) and Back to runs. It reads the newest 200 runs (the
+  read's cap; the store keeps the newest 500 and 30 days, `executions::
+  prune`) again every 10 seconds and when the window gets focus while it is
+  open (the backend sends no event when a run ends), and at once when a Run
+  Now from the page or the editor ends.
+- States: a skeleton of the rows while loading; "No runs yet" with a Run
+  Now button that goes through decision 6c's question; an inline error
+  with a danger border and Retry.
+- Selection (CLAUDE.md's TABLE INTERACTION DESIGN SPEC), from
+  `src/hooks/useListSelection.ts` (new, shared with the Flow cards): a click
+  anywhere on a row selects it (the checkbox shows it); the header checkbox
+  selects all, indeterminate for some (from some it selects all, the spec's
+  rule, where `TradeTable` cleared); Shift+click ranges from the anchor;
+  Cmd/Ctrl+click toggles; a row's checkbox adds or takes away; Cmd/Ctrl+A,
+  arrows, Shift+arrows, Shift+Home/End, Shift+Page Up/Down, Space, Enter;
+  Escape closes the right-click menu, then clears a selection, and only
+  then closes the window. The action bar (`src/components/desktop/
+  FlowSelectionParts.tsx`, new, shared): the count, Clear selection, Copy,
+  Move (disabled: "Runs stay with their workflow"), Delete rightmost in the
+  danger colour. The right-click menu: Copy, Move to… (disabled, with the
+  reason), Delete, Select All, Deselect All, Open (one run), Duplicate
+  (disabled: "Runs can't be duplicated"); a right-click on an unselected row
+  selects only it. `aria-selected` rows, an `aria-live` count, and
+  `data-selectable`, `data-selected`, `data-item-id`, `data-select-all`,
+  `data-action-bar`. Not built: the spec's long-press for touch (this is a
+  desktop app).
+- Copy puts the chosen runs on the clipboard as text: per run its start in
+  ET, status and duration, its error, then each log line (time, level,
+  message), runs apart by a blank line. Delete always asks first ("Delete 3
+  runs?" / "This can't be undone."), then deletes them in one call.
+- Backend: `flow::store::executions::delete(conn, workflow_id, ids)`
+  deletes only that workflow's rows and refuses the whole call when one of
+  them is still going (`Deleted::StillRunning`), since its end would have
+  no row; `flow::service::delete_runs` answers 400 for an empty choice, 404
+  for an unknown workflow, 409 "Run N is still going, so nothing was
+  deleted. Delete it once it has ended." and 200 `{status, deleted}`;
+  `flow_delete_executions(id, ids)` is the command (WP8 handler anchor,
+  after the other `flow_*` lines), `deleteWorkflowExecutions` its wrapper.
+- **Hand edits**: `src/pages/flow/FlowIndex.tsx` (the card's menu item, its
+  dialog, a Run Now mutation guarded by `useLiveRun` that refreshes the
+  card list and the history), `src/pages/flow/FlowEditor.tsx` (the menu
+  item and dialog; Run Now refreshes the history when it ends),
+  `src/api/flow.ts` (the wrapper); carried pinned tests updated for the new
+  menu item (`FlowIndex.pinned.test.tsx`, `FlowEditorMenu.pinned.test.tsx`).
+- Tests: `src/hooks/useListSelection.test.ts`,
+  `src/components/desktop/FlowRunHistory.test.tsx`,
+  `src/pages/flow/flowRunHistory.test.tsx`, `src/api/flow.test.ts` (the
+  command and its arguments), `src/lib/flow/listDate.test.ts`
+  (`runDuration`), Rust `flow/store/executions/delete_tests.rs` and
+  `commands/flow.rs::chosen_runs_are_deleted_in_one_call`.
+
+### The Flow cards' selection system (coordinator decision 6b)
+
+- The carried card opened the editor on a click (`FlowIndex.tsx`, a
+  `role="link"` card), which CLAUDE.md's table spec bans. Each card is now
+  a selectable row of the page's grid (`role="grid"` "Workflows", each card
+  `role="row"` "Workflow <name>" with one grid cell): a click anywhere on
+  the card selects it, with a visible checkbox; double-click, Enter on the
+  list, or the card's new **Open** button opens the editor; the card's ...
+  menu, its items, the checkbox and the Open button stop their clicks, so
+  they never select. The page's toolbar holds **Select all** (indeterminate
+  for some) and, while anything is selected, the shared action bar: the
+  count, Clear selection, Copy, Move (disabled: "Workflows have no
+  folders"), Delete rightmost in the danger colour. Keys on the list:
+  Cmd/Ctrl+A, arrows, Shift+arrows, Shift+Home/End, Shift+Page Up/Down,
+  Space, Enter, Escape (only when the list itself has the focus, never a
+  key typed in a card's control or a dialog a card opens). The right-click
+  menu: Copy, Move to… (disabled, with the reason), Delete, Select All,
+  Deselect All, Open (one workflow), Duplicate.
+- Copy puts the chosen workflows' export JSON on the clipboard, the format
+  Export Workflow writes (two-space JSON; several as one array).
+  Duplicate makes "<name> (copy)" for each chosen workflow through the
+  create command with the copied graph: a new workflow, inactive, with its
+  own webhook address and its webhook off. Delete always asks first ("Delete
+  2 workflows?" / "This can't be undone. Each goes with its schedule, its
+  webhook address and its run history; an active one is stopped first.")
+  and then deletes them one call each (no command takes several), with one
+  toast for all, naming any that failed.
+- **Hand edit** (`flow/service/mod.rs`, `delete`): an active workflow is
+  recorded inactive after its registrations are removed and before its row
+  is deleted, so a delete the store refuses leaves it stood down (inactive,
+  nothing registered) rather than showing Active with no trigger, and a
+  restart restores nothing for it. Rust tests
+  (`triggers/tests/delete_stops.rs`): deleting active workflows leaves no
+  schedule, price alert, order watch or webhook (the old token answers 404);
+  a refused delete leaves the workflow inactive with nothing registered.
+  `commands/flow.rs::a_duplicate_is_a_new_inactive_workflow_with_its_webhook_off`.
+- **Hand edits** to carried tests: `FlowIndex.pinned.test.tsx` (the cards
+  are rows named "Workflow <name>"; "a click selects, a double-click opens"
+  and "Space selects, Enter opens" replace "a focusable link that opens on a
+  click" and "opens on the Space key"), `FlowIndex.test.tsx` (opens by the
+  Open button), `FlowIndex.w6.test.tsx` (the card lookup). New:
+  `src/pages/flow/flowCardSelection.test.tsx`. Help (`flowHelp.ts`, "New
+  Workflow"): a click selects a card; double-click or Open opens it.
+
+### Two triggers that re-ran themselves (coordinator decision 6d)
+
+Two departures from the web, each recorded in the doc comment of the file
+it changes ("Departures from the web"):
+
+- **An order-update watch never fires on an order its own workflow
+  placed.** `flow/triggers/own_orders.rs` (new): `OwnOrders` keeps, per
+  workflow, the newest 200 order ids its runs placed, in memory
+  (`FlowModule::own_orders`). The app's client of a run
+  (`AppFlowClient::for_workflow`, set by the executor) takes them from the
+  replies to its order calls (`placeorder`, `placesmartorder`,
+  `basketorder`, `splitorder`, `optionsorder`, `optionsmultiorder`, and a
+  scoped close: every `orderid` in the reply). **Hand edits**:
+  `order_monitor.rs` (`Watches::claim_except`: a matching watch whose
+  workflow placed the order is skipped, with the line "Order-update watch
+  of workflow N skipped order X (complete): its own run placed it"; `claim`
+  is `claim_except` with no exception), `drive.rs` (`on_order_update`
+  passes the app's `OwnOrders`), `executor/mod.rs` (the run's client knows
+  its workflow), `contract/client/app.rs` (the record). Without this an
+  every-time watch on AAPL whose run buys AAPL re-ran itself on each of its
+  own fills. Test `triggers/tests/own_orders.rs`: another workflow's AAPL
+  order runs the watching workflow, whose run buys AAPL; that order's fill
+  does not run it again (and the line says why); the other workflow's next
+  AAPL order runs it again. Unit tests: the ids in an order reply; the
+  bound per workflow.
+- **An every-time price alert with a level condition fires when its
+  condition becomes true, and again only after a poll where it was
+  false.** **Hand edit** (`triggers/price_monitor.rs`): `Alert::held` (the
+  condition held on the previous poll) and `Alert::fires_on_change` (an
+  every-time alert whose condition is not `crossing_up` or `crossing_down`:
+  greater than, less than, at the level, inside or outside a channel, and
+  the moving conditions, which can all stay true across polls). The
+  crossings already fire once per crossing and are unchanged, and so are
+  one-time alerts (their latch). The web re-ran a "greater than" alert
+  every 5 seconds while the price stayed above the level. Tests
+  (`triggers/tests/price_poll.rs`): every-time "greater than 100" over 101,
+  102, 103 runs once, then 99 and 101 run it a second time; every-time
+  "inside the channel" 95 to 105 over 100, 101, 110, 100 runs twice.
+
+### The public webhook's rate limits (coordinator decision 6e)
+
+- Carried from upstream (`server/ratelimit.rs`, rows `FlowWebhook` and
+  `WebhookFail`; `server/routes/flow/triggers.rs`, `admit` and
+  `rate_limited`) as `flow/service/webhook_limits.rs` (new), held on
+  `FlowModule::webhook_limits`, so every router the app builds shares one
+  table: 100 requests a minute per caller address, checked before the body
+  is read; 100 a minute per token, once the token names a workflow (an
+  invented token never gets a window: it is a failed authentication); 10
+  failed authentications (an unknown token or a wrong secret) a minute per
+  caller. Over a limit the answer is upstream's JSON 429, `{"status":
+  "error", "message": "Rate limit exceeded. Please slow down your
+  requests.", "limit": "100 per 1 minute", "retry_after": 60}`, with
+  `Retry-After: 60`, for either kind of limit, as upstream answered.
+- One departure, to keep upstream's intent ("never a valid webhook
+  address") with this app's addresses: once a caller has spent its
+  failures, its unknown tokens and its wrong or missing secrets are answered
+  429 at once (upstream refused only unknown tokens), and a wrong one is
+  still counted by the lockout; an alert with the workflow's right secret
+  goes on. Every sender behind a local tunnel (ngrok forwarding to
+  127.0.0.1) reaches this app from 127.0.0.1, so a stranger guessing tokens
+  through the public URL must not be able to shut out TradingView's alerts;
+  and the per-address limit of 100 a minute is, through a tunnel, one
+  limit for all senders together (upstream exempted its built-in tunnel's
+  traffic from the per-address limit; this app cannot tell a tunnel's
+  traffic from a local program's).
+- With the lockout (`webhook_guard`: 10 wrong secrets in 10 minutes lock a
+  webhook for 15 minutes): the 10th wrong secret from a caller within a
+  minute both spends that caller's failure budget and locks the webhook.
+  The 11th wrong secret within the minute is answered 429 (the limit comes
+  first) and still counted by the lockout; the right secret, from that
+  caller or any other, is answered 403 with the lock's sentence until the
+  lock ends or the webhook's URL and secret are regenerated (or the webhook
+  turned off and on); after the minute, a wrong secret is answered 403
+  locked again. Ten wrong secrets spread over more than a minute lock the
+  webhook without a 429.
+- `webhook/server.rs` (this app's file, for 6e only): the listener serves
+  `into_make_service_with_connect_info::<SocketAddr>()`, so each request
+  carries its caller's address; the Flow routes stay outside the `/api/v1`
+  limiter; the refusal is logged as "Flow webhook: the caller at <address>
+  is over its limit; answered 429", never with the token, and a token's
+  window is keyed by a keyed hash. `flow/service/webhooks.rs`:
+  `secret_given` reads a call's secret against its workflow's without
+  touching the call or the lockout; `token_known` (Phase C's, unused until
+  now) is the limits' known-token check.
+- Tests (`webhook/server.rs`, `flow_webhook_tests`): the 101st call in a
+  minute from one address answers 429 (another address is not held); the
+  101st on one token from addresses that sent nothing; the 11th wrong secret
+  in a minute answers 429 and the right one is then 403 locked from any
+  address; ten unknown tokens from 127.0.0.1 spend that address's failures
+  (the 11th is 429) but the right secret from it still runs the workflow;
+  no line logged while limiting carries the token. Unit tests in
+  `webhook_limits.rs`: the moving window, the per-token window, the
+  failure budget, the token kept as a hash, the full table.
+
+### US exchanges as one market when matching (coordinator decision 6f)
+
+- What this app really writes: the Alpaca adapter puts `US` in every order
+  (`map_alpaca_orders`, the order and trade books) and every quote
+  (`get_quote`, `get_market_depth`); positions keep Alpaca's own label or
+  `US`; the master contract maps assets to `NASDAQ`, `NYSE`, `ARCA`,
+  `BATS`, `OTC`, `AMEX` or `US`. The sandbox keeps the exchange an order was
+  placed on: `US` for a new node (Phase B's default) or the venue the
+  trader picked. So a watch on NASDAQ never heard an Alpaca order (`US`),
+  and a watch on `US` never heard a sandbox order placed on NASDAQ.
+- `flow::support::same_market` (new): two labels are one market when they
+  are equal, or both US labels (`NYSE, NASDAQ, AMEX, ARCA, BATS, OTC, US`),
+  a US ticker being the same on every US venue. **Hand edit**
+  (`triggers/order_monitor.rs`, `Watch::matches`, and its "Departures from
+  the web"): a watch's exchange is matched with it. Indian and crypto
+  labels still match only themselves. A price alert asks for its quote on
+  its own label and reads only the price, so it already fires on Alpaca's
+  `US` quotes (pinned by a test).
+- Tests (`triggers/tests/us_markets.rs`), through the poller's own diff
+  (`Book::changes`): a NASDAQ watch hears Alpaca's `US` order; a `US`
+  watch hears an order on every US venue and every US watch hears `US`;
+  NSE, BSE and CRYPTO match only themselves; a sandbox order placed on
+  NASDAQ, filled between two reads of the book, runs a workflow watching
+  `US`; a NASDAQ alert fires on Alpaca's `US` quote.
+
+### The Telegram send in the app's client (coordinator decision 6g)
+
+- `AppFlowClient::telegram` (`flow/contract/client/app.rs`) sends through
+  `messaging::telegram::send_alert`: the app's saved bot token and chat id,
+  the message stamped in Eastern 12-hour time, Telegram's own refusal or
+  the not-set-up sentence as the node's error. **Hand edit**
+  (`flow/nodes/alerts.rs`): the Telegram Alert node hands its text to the
+  run's client only, as upstream's node did; Phase C's fork (the app's
+  send when the context had an app, the client otherwise) is gone, and its
+  `app_tests` run the node over an `AppFlowClient`.
+- Removed, after a grep showed no other use: the client's not-set-up stub
+  (`TELEGRAM_NOT_SET_UP` in `contract/client/app.rs`; its sentence is now
+  `messaging::telegram::NOT_SET_UP`'s own literal) and `telegram_text`
+  (upstream's Markdown alert text, unused since Phase C: the send formats
+  its own, `messaging::telegram::alert_text`) with its test. This closes the
+  last "Recorded, not changed" item of Phase C's review fixes above.
+- Kept: `webhooks::token_known` and `triggers::store::token_exists`, which
+  Phase C left unused: the webhook's limits use them now (decision 6e, the
+  per-token window is for known tokens only).
+- Tests (`contract/client/app.rs`): a run's Telegram alert goes through the
+  app's settings to the saved chat (a fake Bot API); without settings it
+  answers the sentence that names the Telegram page and sends nothing.
+
+### Task D5: the user guide and the in-app help
+
+- `docs/flow/user-guide.md` (new): upstream's chapter 21 adapted to this
+  app: US examples (AAPL on `US`, whole shares, CNC), Eastern time
+  throughout, no built-in tunnel (the Ngrok/Public URL on Admin → Server
+  Settings, Enable API Server), Telegram only (WhatsApp, Strategy P&L and
+  the Indian-broker lookups are named as not available), and Phase D's
+  additions: the card selection, Run history, Run Now's Live-mode question,
+  the guards against triggers that re-ran themselves, the webhook's limits,
+  US venues as one market. The Delay (5 minutes), Wait Until (30 minutes),
+  HTTP Request (public addresses, no redirect, 5 MB) and run-history (500
+  runs, 30 days) limits it states were checked against the carried code.
+  Upstream's Semi-Auto, Action Center, Agent and built-in-tunnel sections
+  are left out (not in this app).
+- The app cannot open a file of this repository, so no link to the guide
+  was added (the plan's "link it from the Help content"). Instead the
+  in-app help (`src/pages/flow/flowHelp.ts`, the Help button on the three
+  Flow pages) carries its how-tos briefly: new items on the Flow page,
+  "Selecting workflows", "Run history", "Webhook limits" (with how they meet
+  the lock) and "Not available in this app"; the price-alert item says an
+  every-time level alert runs when its condition becomes true, the order
+  update item that a watch never runs on its own workflow's order and that
+  the US venues are one market; on the editor, Run Now's "Run in Live
+  mode?" question, the log's Eastern 12-hour times and a "Run history"
+  item; the shortcuts page says a card opens on a double-click or its Open
+  button. `src/pages/flow/flowHelp.test.tsx` asserts those facts.
+
+### Review fixes (after the whole-branch review)
+
+A fresh reviewer read the whole branch (b2a0a85d..35311e8e): "with fixes",
+no critical finding. Each fix below was first reproduced by a test that
+failed.
+
+- **Own-order follow-up** (`triggers/drive.rs`, `run_order_update`): an
+  update kept as an every-time watch's follow-up while its run went on can
+  be that run's own order, recorded only after the reply; the guard is
+  checked again when the follow-up would run. Test
+  `own_orders::a_follow_up_for_the_watchers_own_order_does_not_run`.
+- **A level alert's lost rise** (`triggers/drive.rs`, `price_monitor.rs`,
+  `Alerts::release_held`): when an every-time fire cannot be queued (one run
+  at a time) or its run does not execute, the alert forgets that its
+  condition held, so the next check where it holds runs it. Test
+  `price_poll::a_level_alert_that_becomes_true_while_its_run_is_queued_runs_after`.
+- **The tunnel's address** (`service/webhook_limits.rs`,
+  `WebhookLimits::admit_caller`): this computer's own address (loopback,
+  every sender behind a local tunnel) has no per-address window, so a
+  stranger's flood through the tunnel never holds a real alert; each
+  webhook's 100 a minute and the failure budget still apply. Test
+  `flow_webhook_tests::a_flood_through_the_tunnel_address_never_holds_a_real_alert`.
+  Help and guide reworded (the per-address limit spans all webhooks).
+- **No listed contract, no strikes** (`support/options.rs`,
+  `listed_structure`): when none of the app's chain's strikes has a listed
+  contract (every US underlying today), the strike lookup refuses with "No
+  listed option contracts for AAPL in this app's symbol list, so there are no
+  strikes to choose from. A typed strike still works." instead of listing the
+  chain service's 50-point ladder. Test
+  `options::a_chain_without_one_listed_contract_is_refused`.
+- **The list keys after a click** (`src/hooks/useListSelection.ts`,
+  `keyIsForTheList`): a key belongs to the list when typed on the list or on
+  an item's body (a card's cell, a row's cell), never on an item's own
+  control (a checkbox, an Open button) or in a dialog an item opens. A mouse
+  click on a card's content focuses its cell, where the cards' keys did
+  nothing; and in the run history Space on "Select all" and Enter on a row's
+  Open button acted on the focused row. Tests in
+  `flowCardSelection.test.tsx` and `FlowRunHistory.test.tsx`.
+- **Copy of several workflows in WebKit** (`src/lib/flow/clipboard.ts`,
+  `copyLater`, used by the cards' Copy): the clipboard write is made inside
+  the click with a `ClipboardItem` whose text is a promise, since WebKit (the
+  app's webview on a Mac) refuses a write made after the exports were read;
+  without `ClipboardItem` the text is written when ready. Test
+  `src/lib/flow/clipboard.test.ts`. Not provable without the app: the user
+  copies workflows once on the Flow page.
+- **The editor's keys under a dialog** (`src/pages/flow/FlowEditor.tsx`,
+  re-graded from minor): the editor's window shortcuts (Delete, Backspace,
+  `?`, Ctrl+S, Escape) no longer act from inside a dialog; Delete pressed in
+  Run history had deleted the canvas's selected node. Test in
+  `flowRunHistory.test.tsx`.
+
+### Gates (Phase D, 2026-11-13)
+
+`git merge feat/historify-desktop-backend`: already up to date (integration
+head `b2a0a85d`, this branch's base). On the branch head:
+
+| Gate | Result | Whose |
+| --- | --- | --- |
+| `cd src-tauri && cargo test --lib` | `test result: ok. 1448 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 57.45s` (no compiler warnings; base 1398) | passes |
+| `npx vitest run` | `Test Files  4 failed \| 125 passed (129)`, `Tests  40 failed \| 2507 passed \| 1 skipped (2548)` | the base's 40: `MobileBottomNav.test.tsx` (13) and `ui/button.test.tsx` (20) have no jsdom pragma, `ui/page-loader.test.tsx` (4) and `config/navigation.test.ts` (3 stale assertions) |
+| `npm run build` | exit 2 on the base's seven `tsc` errors (`src/api/trading.ts` 384-388, `PlaceOrderDialog.tsx:552`, `Historify.tsx:570`); `npx vite build` alone: `✓ built in 30.76s` | the base's |
+| `npm run lint` | exit 1: `Found 2 errors.` (`backtest/TradeTable.tsx:402`, `trading/ActionReviewModal.test.tsx:764`), 152 warnings, 21 infos; every file Phase D touched lints clean | the base's |

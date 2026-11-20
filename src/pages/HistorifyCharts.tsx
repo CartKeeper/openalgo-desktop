@@ -7,6 +7,7 @@ import {
   type IChartApi,
   type ISeriesApi,
 } from 'lightweight-charts'
+import type { OHLC } from 'lightweight-charts-drawing'
 import {
   ArrowLeft,
   BarChart3,
@@ -24,11 +25,18 @@ import {
   Sun,
   Zap,
 } from 'lucide-react'
+import type { Bar } from 'oakscriptjs'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { authApi } from '@/api/auth'
+import { getChartPreference, saveChartPreference } from '@/api/chartPreferences'
 import { historifyCommands } from '@/api/tauri-client'
+import { DrawingTextEditor } from '@/components/charts/DrawingTextEditor'
+import { DrawingToolbar } from '@/components/charts/DrawingToolbar'
+import { IndicatorChips } from '@/components/charts/IndicatorChips'
+import { IndicatorPicker } from '@/components/charts/IndicatorPicker'
+import { HelpButton } from '@/components/HelpButton'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -57,6 +65,16 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { profileMenuItems } from '@/config/navigation'
+import { useChartDrawings } from '@/hooks/useChartDrawings'
+import { useChartIndicators } from '@/hooks/useChartIndicators'
+import {
+  type ActiveIndicator,
+  buildChartContext,
+  newActiveIndicator,
+  parseIndicators,
+  serializeIndicators,
+} from '@/lib/chartTools/activeIndicators'
+import { type CatalogEntry, getCatalogEntry } from '@/lib/chartTools/indicatorCatalog'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { useThemeStore } from '@/stores/themeStore'
@@ -208,6 +226,154 @@ export default function HistorifyCharts() {
     // W, MO, Q, Y are NOT intraday
     return false
   }, [effectiveInterval, isCustomInterval, customIntervalUnit])
+
+  // ---- Drawing tools and indicators (WP1) ----
+  // Drawings and indicators are saved per `exchange:symbol` in chart_preferences.
+  const storageKey =
+    selectedSymbol && selectedExchange ? `${selectedExchange}:${selectedSymbol}` : ''
+  const [chartApi, setChartApi] = useState<{
+    chart: IChartApi
+    series: ISeriesApi<'Candlestick'>
+  } | null>(null)
+  const [pref, setPref] = useState<{ key: string; drawings: string | null } | null>(null)
+  const [activeIndicators, setActiveIndicators] = useState<ActiveIndicator[]>([])
+  const activeIndicatorsRef = useRef(activeIndicators)
+  activeIndicatorsRef.current = activeIndicators
+  const drawingsJsonRef = useRef<string | null>(null)
+  const loadErrorKeyRef = useRef<string | null>(null)
+  const saveErrorKeyRef = useRef<string | null>(null)
+  const indicatorErrorsRef = useRef<Set<string>>(new Set())
+
+  // Load the saved drawings and indicators when the symbol changes
+  useEffect(() => {
+    setPref(null)
+    setActiveIndicators([])
+    drawingsJsonRef.current = null
+    indicatorErrorsRef.current = new Set()
+    if (!storageKey) return
+    let cancelled = false
+    getChartPreference(selectedExchange, selectedSymbol)
+      .then((row) => {
+        if (cancelled) return
+        drawingsJsonRef.current = row?.drawings ?? null
+        setActiveIndicators(parseIndicators(row?.indicators ?? null))
+        setPref({ key: storageKey, drawings: row?.drawings ?? null })
+      })
+      .catch((error) => {
+        if (cancelled) return
+        console.error('Error loading chart preference:', error)
+        if (loadErrorKeyRef.current !== storageKey) {
+          loadErrorKeyRef.current = storageKey
+          toast.error('Could not load chart drawings')
+        }
+        // Keep working with an empty canvas; nothing is written until the user changes something.
+        setPref({ key: storageKey, drawings: null })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [storageKey, selectedExchange, selectedSymbol])
+
+  const initialDrawings = pref && pref.key === storageKey ? pref.drawings : undefined
+
+  const persistPreference = useCallback(
+    (drawings: string | null, indicators: ActiveIndicator[]) => {
+      if (!storageKey) return
+      const key = storageKey
+      saveChartPreference(selectedExchange, selectedSymbol, {
+        indicators: serializeIndicators(indicators),
+        drawings,
+      }).catch((error) => {
+        console.error('Error saving chart preference:', error)
+        if (saveErrorKeyRef.current !== key) {
+          saveErrorKeyRef.current = key
+          toast.error('Could not save chart drawings')
+        }
+      })
+    },
+    [storageKey, selectedExchange, selectedSymbol]
+  )
+
+  const handleDrawingsSave = useCallback(
+    (json: string) => {
+      drawingsJsonRef.current = json
+      persistPreference(json, activeIndicatorsRef.current)
+    },
+    [persistPreference]
+  )
+
+  const updateIndicators = useCallback(
+    (next: ActiveIndicator[]) => {
+      setActiveIndicators(next)
+      persistPreference(drawingsJsonRef.current, next)
+    },
+    [persistPreference]
+  )
+
+  const handleAddIndicator = (entry: CatalogEntry) =>
+    updateIndicators([...activeIndicatorsRef.current, newActiveIndicator(entry)])
+  const handleChangeIndicatorInputs = (key: string, inputs: ActiveIndicator['inputs']) =>
+    updateIndicators(
+      activeIndicatorsRef.current.map((a) => (a.key === key ? { ...a, inputs } : a))
+    )
+  const handleRemoveIndicator = (key: string) =>
+    updateIndicators(activeIndicatorsRef.current.filter((a) => a.key !== key))
+
+  const handleIndicatorError = useCallback((key: string, message: string) => {
+    const stamp = `${key}:${message}`
+    if (indicatorErrorsRef.current.has(stamp)) return
+    indicatorErrorsRef.current.add(stamp)
+    const item = activeIndicatorsRef.current.find((a) => a.key === key)
+    const name = item ? (getCatalogEntry(item.id)?.name ?? item.id) : 'Indicator'
+    toast.error(`${name}: ${message}`)
+  }, [])
+
+  // Bars for the indicator library and the data-driven drawing tools (epoch seconds, as the candles)
+  const bars = useMemo<Bar[]>(
+    () =>
+      chartData.map((d) => ({
+        time: d.timestamp,
+        open: d.open,
+        high: d.high,
+        low: d.low,
+        close: d.close,
+        volume: d.volume,
+      })),
+    [chartData]
+  )
+  const barsRef = useRef(bars)
+  barsRef.current = bars
+  const drawingBars = useCallback(() => barsRef.current as unknown as OHLC[], [])
+
+  const chartContext = useMemo(
+    () =>
+      buildChartContext({
+        exchange: selectedExchange,
+        symbol: selectedSymbol,
+        interval: effectiveInterval,
+      }),
+    [selectedExchange, selectedSymbol, effectiveInterval]
+  )
+
+  const drawings = useChartDrawings({
+    chart: chartApi?.chart ?? null,
+    series: chartApi?.series ?? null,
+    storageKey,
+    initialJson: initialDrawings,
+    onSave: handleDrawingsSave,
+    onError: (message) => toast.error(message),
+    bars: drawingBars,
+    intraday: isIntradayInterval,
+  })
+
+  useChartIndicators({
+    chart: chartApi?.chart ?? null,
+    mainSeries: chartApi?.series ?? null,
+    bars,
+    active: activeIndicators,
+    context: chartContext,
+    onError: handleIndicatorError,
+  })
 
   // Unique symbols from catalog
   const uniqueSymbols = useMemo(() => {
@@ -422,6 +588,8 @@ export default function HistorifyCharts() {
       chartRef.current = chart
       candleSeriesRef.current = candleSeries
       volumeSeriesRef.current = volumeSeries
+      // Hand the live chart to the drawing and indicator hooks
+      setChartApi({ chart, series: candleSeries })
 
       // Set data if available
       if (chartData.length > 0) {
@@ -467,6 +635,7 @@ export default function HistorifyCharts() {
       clearTimeout(initTimer)
       resizeObserver.disconnect()
       window.removeEventListener('resize', handleResize)
+      setChartApi(null)
       if (chartRef.current) {
         chartRef.current.remove()
         chartRef.current = null
@@ -685,6 +854,9 @@ export default function HistorifyCharts() {
             </div>
           )}
 
+          {/* Indicator library (WP1) */}
+          <IndicatorPicker onAdd={handleAddIndicator} />
+
           {/* Date Range */}
           <div className="flex items-center gap-2">
             <Calendar className="h-4 w-4 text-muted-foreground" />
@@ -828,6 +1000,17 @@ export default function HistorifyCharts() {
       <div className="flex-1 flex flex-col overflow-hidden p-4">
         {selectedSymbol ? (
           <div className="h-full flex flex-col">
+            {/* Active indicators (WP1) */}
+            {activeIndicators.length > 0 && (
+              <div className="mb-3">
+                <IndicatorChips
+                  active={activeIndicators}
+                  onChangeInputs={handleChangeIndicatorInputs}
+                  onRemove={handleRemoveIndicator}
+                />
+              </div>
+            )}
+
             {/* Symbol Info Bar */}
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-3">
@@ -852,9 +1035,25 @@ export default function HistorifyCharts() {
               )}
             </div>
 
-            {/* Chart Container */}
-            <div className="flex-1 min-h-0 border rounded-lg bg-card overflow-hidden relative">
-              <div ref={chartContainerRef} className="absolute inset-0" />
+            {/* Chart Container: drawing rail (WP1) + chart */}
+            <div className="flex-1 min-h-0 flex border rounded-lg bg-card overflow-hidden">
+              <DrawingToolbar
+                activeTool={drawings.activeTool}
+                onSelectTool={drawings.setTool}
+                allHidden={drawings.allHidden}
+                onToggleHidden={drawings.toggleHidden}
+                onClearAll={drawings.clearAll}
+                onDeleteSelection={drawings.deleteSelection}
+                hasSelection={drawings.hasSelection}
+              />
+              <div className="relative flex-1 min-w-0">
+                <div ref={chartContainerRef} className="absolute inset-0" />
+                <DrawingTextEditor
+                  edit={drawings.textEdit}
+                  onCommit={drawings.commitText}
+                  onCancel={drawings.cancelText}
+                />
+              </div>
             </div>
 
             {/* Price Info */}
@@ -923,6 +1122,48 @@ export default function HistorifyCharts() {
           </div>
         )}
       </div>
+
+      {/* Contextual Help */}
+      <HelpButton
+        pageTitle="Historify Charts"
+        items={[
+          {
+            title: 'Drawing tools',
+            description:
+              'The rail on the left of the chart holds the tools. Click one to arm it, then click the points on the chart: a trend line or a ray takes two clicks, a horizontal line one, a rectangle its two corners, a Fibonacci retracement the two ends of the move. The pointer (arrow) puts the mouse back to panning and selecting.',
+          },
+          {
+            title: 'More tools',
+            description:
+              'The "..." button lists the rest of the library: channels, pitchforks, Fibonacci and Gann tools, patterns, Elliott waves, cycles, long/short positions, ranges, shapes and notes.',
+          },
+          {
+            title: 'Escape and Delete',
+            description:
+              'Escape drops the points of a half-placed drawing, then disarms the tool, then clears the selection. Delete or Backspace removes the selected drawing. Click a drawing to select it and drag its anchors to reshape it.',
+          },
+          {
+            title: 'Text',
+            description:
+              'Place a Text drawing and type in the box that opens: Enter keeps it, Escape or an empty text removes it. Double-click a text drawing to edit it again.',
+          },
+          {
+            title: 'Hide, clear, delete',
+            description:
+              'Under the tools: the eye hides every drawing without removing it, the eraser clears them all, the bin removes the selection.',
+          },
+          {
+            title: 'Saved per symbol',
+            description:
+              'Drawings and indicators are saved for each symbol (exchange and ticker) and restored when you open it again, also after restarting the app. If saving fails you see a message once and can keep drawing.',
+          },
+          {
+            title: 'Indicators',
+            description:
+              'The Indicators button next to the interval opens a search over 1,800+ indicators. Type a name (RSI, MACD, Bollinger...) and pick one: overlays draw on the price candles, oscillators open their own pane under the chart. The chips above the chart show what is active: the gear changes the numeric settings, the x removes the indicator.',
+          },
+        ]}
+      />
     </div>
   )
 }

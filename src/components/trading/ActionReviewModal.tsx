@@ -1,9 +1,20 @@
 import { Check, Copy, Loader2, ShoppingCart, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { emit } from '@tauri-apps/api/event'
-import { settingsCommands } from '@/api/tauri-client'
-import { tradingApi } from '@/api/trading'
+import {
+  fundsCommands,
+  marketStatusCommands,
+  type OrderRequest,
+  orderCommands,
+  providerCommands,
+  quoteCommands,
+  settingsCommands,
+  type StrategyLeg,
+} from '@/api/tauri-client'
+import { type PlaceOrderRequest, tradingApi } from '@/api/trading'
+import { reconcileRecommendationsWithAccount } from '@/lib/affordability'
+import { needsLivePrice, priceScenarioItems } from '@/lib/scenarioPricing'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -25,8 +36,8 @@ import {
 } from '@/components/ui/select'
 import { formatRecommendationsAsCsv } from '@/lib/csvRecommendations'
 import { cn } from '@/lib/utils'
-import { useActionQueueStore } from '@/stores/actionQueueStore'
-import type { OrderRecommendation } from '@/types/actionQueue'
+import { groupHeader, useActionQueueStore } from '@/stores/actionQueueStore'
+import type { BasketOrderResult, OrderRecommendation, StrategyLegResult } from '@/types/actionQueue'
 
 const ORDER_TYPE_LABELS: Record<string, string> = {
   MARKET: 'Market',
@@ -36,14 +47,148 @@ const ORDER_TYPE_LABELS: Record<string, string> = {
   TRAILING_STOP: 'Trailing Stop',
 }
 
+/** How often the market clock is re-read while a gated batch sits in review. */
+const MARKET_CLOCK_POLL_MS = 60_000
+
+/** Price, validity and trailing fields — identical on both placement paths. */
+function orderTerms(item: OrderRecommendation) {
+  const isTrailing = item.orderType === 'TRAILING_STOP'
+  return {
+    price: item.orderType === 'MARKET' || isTrailing ? 0 : item.price,
+    trigger_price: item.triggerPrice,
+    validity: item.validity ?? 'DAY',
+    amo: false,
+    trail_price: isTrailing ? item.trailPrice : undefined,
+    trail_percent: isTrailing ? item.trailPercent : undefined,
+  }
+}
+
+/** Ungrouped batches: the `tradingApi.placeBasketOrder` request shape. */
+function toBasketRequest(item: OrderRecommendation): PlaceOrderRequest {
+  return {
+    symbol: item.symbol,
+    exchange: item.exchange,
+    action: item.side,
+    product: item.product,
+    pricetype: item.orderType,
+    quantity: item.quantity,
+    ...orderTerms(item),
+  }
+}
+
+/** Grouped batches: one strategy leg per item, in item order. */
+function buildStrategyLegs(items: OrderRecommendation[]): StrategyLeg[] {
+  return items.map((item) => {
+    if (item.role === 'cancel') {
+      return {
+        group: item.group ?? null,
+        role: 'cancel',
+        symbol: item.symbol,
+        cancel_order_id: item.cancelOrderId,
+      }
+    }
+    const order: OrderRequest = {
+      symbol: item.symbol,
+      exchange: item.exchange,
+      side: item.side,
+      quantity: item.quantity,
+      order_type: item.orderType,
+      product: item.product,
+      ...orderTerms(item),
+    }
+    return {
+      group: item.group ?? null,
+      role: item.role ?? 'standalone',
+      symbol: item.symbol,
+      order,
+    }
+  })
+}
+
+/** Strategy leg results in the shape the results view renders (`SYMBOL · role`). */
+function legResultsToBasketResults(
+  results: StrategyLegResult[],
+  items: OrderRecommendation[]
+): BasketOrderResult[] {
+  return results.map((r) => ({
+    symbol: `${r.symbol} · ${r.role}`,
+    exchange: items.find((i) => i.symbol === r.symbol)?.exchange ?? '',
+    orderId: r.order_id,
+    success: r.success,
+    message: r.message,
+  }))
+}
+
+/** A sell that turns shares into cash (not a stop, not a cancel). */
+const isLiquidatingSell = (item: OrderRecommendation) =>
+  item.side === 'SELL' &&
+  (item.orderType === 'MARKET' || item.orderType === 'LIMIT') &&
+  item.role !== 'cancel'
+
+interface MarketClockState {
+  isOpen: boolean
+  readFailed: boolean
+}
+
+/** One market-clock read; a failed read counts as closed. */
+async function readMarketClock(): Promise<MarketClockState> {
+  try {
+    const clock = await marketStatusCommands.getMarketClock()
+    return { isOpen: clock.is_open, readFailed: false }
+  } catch {
+    return { isOpen: false, readFailed: true }
+  }
+}
+
+/**
+ * Market-hours gate: while enabled, reads the market clock immediately and then
+ * every 60 s. `recheck` reads it once more (used at the top of Place).
+ * `marketClock` is null until the first read lands. The last-ISSUED read wins:
+ * a slower, older read never overwrites a newer one.
+ */
+function useMarketGate(enabled: boolean) {
+  const [marketClock, setMarketClock] = useState<MarketClockState | null>(null)
+  // Sequence number of the most recently issued read (bumped on disable too,
+  // so reads in flight when the gate turns off are ignored).
+  const latestRead = useRef(0)
+
+  const issueRead = useCallback(async () => {
+    const seq = ++latestRead.current
+    const state = await readMarketClock()
+    if (seq === latestRead.current) setMarketClock(state)
+    return state
+  }, [])
+
+  useEffect(() => {
+    if (!enabled) return
+    setMarketClock(null)
+    void issueRead()
+    const timer = setInterval(() => void issueRead(), MARKET_CLOCK_POLL_MS)
+    return () => {
+      clearInterval(timer)
+      latestRead.current++
+    }
+  }, [enabled, issueRead])
+
+  const recheck = useCallback(async () => (await issueRead()).isOpen, [issueRead])
+
+  return { marketClock, recheck }
+}
+
+/** Scenario mode, $0 trade: 'loading', the live quote it applies at, or null (no quote). */
+type ScenarioPrice = 'loading' | number | null
+
 function RecommendationCard({
   item,
   onUpdate,
   onRemove,
+  scenarioPrice,
 }: {
   item: OrderRecommendation
   onUpdate: (id: string, patch: Partial<OrderRecommendation>) => void
   onRemove: (id: string) => void
+  /** Only set for a scenario trade with no price of its own. */
+  scenarioPrice?: ScenarioPrice
 }) {
   return (
     <div className="rounded-lg border p-3 space-y-2">
@@ -61,7 +206,9 @@ function RecommendationCard({
             {item.side}
           </Badge>
           <Badge variant="outline" className="text-[10px]">
-            {ORDER_TYPE_LABELS[item.orderType] || item.orderType}
+            {item.validity === 'GTC'
+              ? `${ORDER_TYPE_LABELS[item.orderType] || item.orderType} · GTC`
+              : ORDER_TYPE_LABELS[item.orderType] || item.orderType}
           </Badge>
         </div>
         <Button
@@ -76,6 +223,29 @@ function RecommendationCard({
 
       {item.rationale && (
         <p className="text-xs text-muted-foreground leading-relaxed">{item.rationale}</p>
+      )}
+
+      {scenarioPrice !== undefined && (
+        <p
+          data-testid="scenario-price"
+          className={cn(
+            'text-xs font-semibold leading-[1.4]',
+            scenarioPrice === null ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground'
+          )}
+        >
+          {scenarioPrice === 'loading'
+            ? 'Getting live price…'
+            : scenarioPrice === null
+              ? "No live price — this trade won't be applied."
+              : (
+                  <>
+                    Applies at live price{' '}
+                    <span className="font-mono tabular-nums">
+                      {scenarioPrice.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}
+                    </span>
+                  </>
+                )}
+        </p>
       )}
 
       <div className="grid grid-cols-3 gap-2">
@@ -165,6 +335,40 @@ function RecommendationCard({
   )
 }
 
+/** A strategy `cancel` leg: cancels an open broker order; nothing to edit. */
+function CancelCard({
+  item,
+  onRemove,
+}: {
+  item: OrderRecommendation
+  onRemove: (id: string) => void
+}) {
+  return (
+    <div data-testid="cancel-card" className="rounded-lg border p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold">{item.symbol}</span>
+          <Badge variant="outline" className="text-[10px]">
+            Cancel order
+          </Badge>
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
+          onClick={() => onRemove(item.id)}
+        >
+          <X className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+
+      {item.rationale && (
+        <p className="text-xs text-muted-foreground leading-relaxed">{item.rationale}</p>
+      )}
+    </div>
+  )
+}
+
 export interface ActionReviewModalProps {
   /**
    * Optional override for the Apply action. When provided, the modal calls this
@@ -183,17 +387,49 @@ export function ActionReviewModal({
   cloneNameRequired = false,
   applyButtonLabel,
 }: ActionReviewModalProps = {}) {
-  const { items, isReviewOpen, isSubmitting, lastResults, fundsNotice, updateItem, removeItem, close } =
-    useActionQueueStore()
+  const {
+    items,
+    isReviewOpen,
+    isSubmitting,
+    lastResults,
+    fundsNotice,
+    updateItem,
+    removeItem,
+    replaceItems,
+    close,
+  } = useActionQueueStore()
   const setSubmitting = useActionQueueStore((s) => s.setSubmitting)
   const setResults = useActionQueueStore((s) => s.setResults)
   const [showResults, setShowResults] = useState(false)
+  // Strategy leg results carry meaningful text on success ("remainder confirmed
+  // cancelled"); ordinary basket results always say "Order placed successfully",
+  // so those keep showing the order ID.
+  const [resultsFromStrategy, setResultsFromStrategy] = useState(false)
   const [cloneName, setCloneName] = useState('')
   // Gate B (pre-execution acknowledgment) — required before any LIVE order.
   const [acknowledged, setAcknowledged] = useState(false)
   // Execution mode read from the SAME authority the order routes on
   // (get_analyze_mode). null = not yet read → treated as LIVE (fail safe).
   const [liveMode, setLiveMode] = useState<boolean | null>(null)
+  // Settled, spendable balance shown next to the basket cost so the user always
+  // knows what they can actually spend. null = couldn't read (line is hidden).
+  const [availableCash, setAvailableCash] = useState<number | null>(null)
+  // Live quotes (by upper-cased symbol) for MARKET liquidating sells, read once on
+  // open so the Gate B line can state the expected sell proceeds.
+  const [sellQuotes, setSellQuotes] = useState<Record<string, number>>({})
+  // Scenario mode: live quotes (by upper-cased symbol) for trades with no price of
+  // their own, so a sandbox trade is never recorded at $0. null = still loading.
+  const [scenarioQuotes, setScenarioQuotes] = useState<Record<string, number> | null>(null)
+
+  const isLivePath = !onApply
+  // Rotation legs (cancel / fund / buy) only make sense while the market is open.
+  const needsMarketGate =
+    isLivePath && items.some((i) => i.role === 'cancel' || i.role === 'fund' || i.role === 'buy')
+  // Any grouped leg routes the whole batch through the sequenced strategy basket.
+  const useStrategyPath = isLivePath && items.some((i) => !!i.group)
+  const { marketClock, recheck: recheckMarketClock } = useMarketGate(
+    isReviewOpen && needsMarketGate && !showResults
+  )
 
   // Read the authoritative mode when the modal opens on the live path. We do NOT
   // trust any cached/themeStore value — only get_analyze_mode, the same flag the
@@ -219,14 +455,127 @@ export function ActionReviewModal({
     setAcknowledged(false)
   }, [liveMode])
 
+  // Read the spendable balance when the order-placing modal opens (routes to
+  // sandbox funds in analyze mode — same source the orders execute against).
+  useEffect(() => {
+    if (!isReviewOpen || onApply) return
+    let cancelled = false
+    fundsCommands
+      .getFunds()
+      .then((f) => {
+        if (!cancelled) setAvailableCash(f.available_cash)
+      })
+      .catch(() => {
+        if (!cancelled) setAvailableCash(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isReviewOpen, onApply])
+
+  // Quote the MARKET liquidating sells once when the order-placing modal opens.
+  // On failure those sells contribute nothing to the stated proceeds.
+  useEffect(() => {
+    if (!isReviewOpen || onApply) return
+    setSellQuotes({}) // never carry quotes over from a previous review
+    const marketSells = useActionQueueStore
+      .getState()
+      .items.filter((i) => isLiquidatingSell(i) && i.orderType === 'MARKET')
+    if (marketSells.length === 0) return
+    let cancelled = false
+    quoteCommands
+      .getQuote(marketSells.map((i) => ({ exchange: i.exchange, symbol: i.symbol })))
+      .then((quotes) => {
+        if (!cancelled) {
+          setSellQuotes(Object.fromEntries(quotes.map((q) => [q.symbol.toUpperCase(), q.ltp])))
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSellQuotes({})
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isReviewOpen, onApply])
+
+  // Scenario mode: quote every $0 trade once when the modal opens, from the same
+  // source the Scenario page prices positions with. On failure those trades stay
+  // unpriced and are blocked at apply.
+  useEffect(() => {
+    if (!isReviewOpen || !onApply) return
+    setScenarioQuotes(null)
+    const symbols = [
+      ...new Set(
+        useActionQueueStore
+          .getState()
+          .items.filter(needsLivePrice)
+          .map((i) => i.symbol.toUpperCase())
+      ),
+    ]
+    if (symbols.length === 0) {
+      setScenarioQuotes({})
+      return
+    }
+    let cancelled = false
+    providerCommands
+      .getGenericQuote(symbols)
+      .then((quotes) => {
+        if (!cancelled) {
+          setScenarioQuotes(Object.fromEntries(quotes.map((q) => [q.symbol.toUpperCase(), q.price])))
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setScenarioQuotes({})
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isReviewOpen, onApply])
+
+  const showPlacementResults = (results: BasketOrderResult[], fromStrategy: boolean) => {
+    const successCount = results.filter((r) => r.success).length
+    const failCount = results.length - successCount
+
+    setResultsFromStrategy(fromStrategy)
+    setResults(results)
+    setShowResults(true)
+
+    // Emit basket event for auto-refresh (distinct from order_event to avoid single-order toast)
+    emit('basket_order_event', { count: successCount })
+
+    // A strategy result is one leg (a cancel places nothing), so it counts legs.
+    if (fromStrategy) {
+      if (failCount === 0) {
+        toast.success(`All ${successCount} legs completed`)
+      } else {
+        toast.warning(`${successCount} completed, ${failCount} failed`)
+      }
+    } else if (failCount === 0) {
+      toast.success(`All ${successCount} orders placed successfully`)
+    } else {
+      toast.warning(`${successCount} placed, ${failCount} failed`)
+    }
+  }
+
   const handlePlaceAll = async () => {
     if (items.length === 0) return
 
     // Scenario-mode path: caller-provided onApply handler.
     if (onApply) {
+      const { priced, blocked } = priceScenarioItems(items, scenarioQuotes ?? {})
+      if (priced.length === 0) {
+        toast.error('No trade has a live price, so nothing was applied.')
+        return
+      }
+      if (blocked.length > 0) {
+        toast.warning(
+          `Not applied (no live price): ${blocked.map((i) => i.symbol).join(', ')}`,
+          { duration: 8000 }
+        )
+      }
       setSubmitting(true)
       try {
-        await onApply(items, cloneNameRequired ? cloneName.trim() : undefined)
+        await onApply(priced, cloneNameRequired ? cloneName.trim() : undefined)
         // onApply owns post-apply UX (toasts + navigation). Close the modal.
         setCloneName('')
         close()
@@ -266,22 +615,50 @@ export function ActionReviewModal({
       return
     }
 
+    // Market-hours gate: rotation legs are refused while the market is closed.
+    // The footer line explains why; no toast.
+    if (needsMarketGate && !(await recheckMarketClock())) {
+      setSubmitting(false)
+      return
+    }
+
+    // Funds re-check at SUBMIT time — the deterministic backstop. Quantities can
+    // be edited upward in this modal, and cash/prices move while it sits open, so
+    // re-reconcile against the broker NOW. If anything no longer fits, adjust the
+    // list and force a re-review instead of letting the broker reject mid-basket
+    // (which would fill the early orders and bounce the rest).
     try {
+      const { items: revalidated, notice } = await reconcileRecommendationsWithAccount(items)
+      const changed =
+        revalidated.length !== items.length ||
+        revalidated.some((r, i) => r.id !== items[i].id || r.quantity !== items[i].quantity)
+      if (changed) {
+        replaceItems(revalidated, notice)
+        setSubmitting(false)
+        toast.warning(
+          'Your spendable funds changed — quantities were adjusted to what the account can afford. Review and place again.'
+        )
+        return
+      }
+    } catch {
+      // Best-effort: if the re-check itself fails, proceed — the broker is the
+      // final authority and will reject anything unaffordable.
+    }
+
+    try {
+      if (useStrategyPath) {
+        // Sequenced on the backend: cancel → fund (waits for fills) → buy → protect.
+        // Same acknowledged-mode contract as the basket path below.
+        const legResults = await orderCommands.placeStrategyBasket(
+          buildStrategyLegs(items),
+          !freshLive
+        )
+        showPlacementResults(legResultsToBasketResults(legResults, items), true)
+        return
+      }
+
       const response = await tradingApi.placeBasketOrder(
-        items.map((item) => ({
-          symbol: item.symbol,
-          exchange: item.exchange,
-          action: item.side,
-          product: item.product,
-          pricetype: item.orderType,
-          price: item.orderType === 'MARKET' || item.orderType === 'TRAILING_STOP' ? 0 : item.price,
-          quantity: item.quantity,
-          trigger_price: item.triggerPrice,
-          validity: 'DAY',
-          amo: false,
-          trail_price: item.orderType === 'TRAILING_STOP' ? item.trailPrice : undefined,
-          trail_percent: item.orderType === 'TRAILING_STOP' ? item.trailPercent : undefined,
-        })),
+        items.map(toBasketRequest),
         // Pass the acknowledged analyze-mode to the backend. It re-reads the same
         // authority at routing time and rejects if it no longer matches — so no
         // background mode flip between this confirmation and execution can route a
@@ -291,32 +668,27 @@ export function ActionReviewModal({
       )
 
       if (response.status === 'success' && response.data) {
-        const successCount = response.data.filter((r) => r.success).length
-        const failCount = response.data.length - successCount
-
-        setResults(response.data)
-        setShowResults(true)
-
-        // Emit basket event for auto-refresh (distinct from order_event to avoid single-order toast)
-        emit('basket_order_event', { count: successCount })
-
-        if (failCount === 0) {
-          toast.success(`All ${successCount} orders placed successfully`)
-        } else {
-          toast.warning(`${successCount} placed, ${failCount} failed`)
-        }
+        showPlacementResults(response.data, false)
       } else {
         toast.error(response.message || 'Failed to place basket order')
         setSubmitting(false)
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to place orders')
+      // Rejected invokes usually carry the backend's wording as a plain string.
+      toast.error(
+        typeof err === 'string'
+          ? err
+          : err instanceof Error
+            ? err.message
+            : 'Failed to place orders'
+      )
       setSubmitting(false)
     }
   }
 
   const handleClose = () => {
     setShowResults(false)
+    setResultsFromStrategy(false)
     setCloneName('')
     setAcknowledged(false)
     close()
@@ -341,21 +713,70 @@ export function ActionReviewModal({
 
   // Gate B figures (live path only). Real-money downside restated in the
   // user's own dollars per the trading-advice spec (C5).
-  const isLivePath = !onApply
   const buyCost = items
     .filter((i) => i.side === 'BUY' && i.price > 0)
     .reduce((sum, i) => sum + i.quantity * i.price, 0)
-  const marketLegs = items.filter((i) => i.price === 0).length
+  // A cancel leg places nothing, so it is not a market-priced order.
+  const marketLegs = items.filter((i) => i.role !== 'cancel' && i.price === 0).length
+  // Expected cash from liquidating sells: limit price, else the live quote.
+  const sellProceeds = items.filter(isLiquidatingSell).reduce((sum, i) => {
+    const unitPrice =
+      i.orderType === 'LIMIT' && i.price > 0 ? i.price : (sellQuotes[i.symbol.toUpperCase()] ?? 0)
+    return sum + i.quantity * unitPrice
+  }, 0)
   const realisticDownside = buyCost * 0.25
   const usd = (n: number) =>
     n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
   const showGateB = isLivePath && !showResults && items.length > 0
+  const showMarketClosed =
+    needsMarketGate && !showResults && marketClock !== null && !marketClock.isOpen
+
+  const scenarioPriceFor = (item: OrderRecommendation): ScenarioPrice | undefined => {
+    if (!onApply || !needsLivePrice(item)) return undefined
+    if (scenarioQuotes === null) return 'loading'
+    const quote = scenarioQuotes[item.symbol.toUpperCase()]
+    return quote !== undefined && quote > 0 ? quote : null
+  }
+
+  // Strategy groups in first-appearance order; ungrouped items render after them.
+  const groupOrder = [...new Set(items.flatMap((item) => (item.group ? [item.group] : [])))]
+  const renderCard = (item: OrderRecommendation) =>
+    item.role === 'cancel' ? (
+      <CancelCard key={item.id} item={item} onRemove={removeItem} />
+    ) : (
+      <RecommendationCard
+        key={item.id}
+        item={item}
+        onUpdate={updateItem}
+        onRemove={removeItem}
+        scenarioPrice={scenarioPriceFor(item)}
+      />
+    )
   // null (unread) or true => treat as LIVE; only an authoritative `false` is paper.
   const isLive = liveMode !== false
+  // While a live placement runs (a strategy basket can take minutes), no close path
+  // works: closing would drop the results and let the same orders be placed again.
+  const closeLocked = isLivePath && isSubmitting
+  const preventWhileLocked = (event: Event) => {
+    if (closeLocked) event.preventDefault()
+  }
 
   return (
-    <Dialog open={isReviewOpen} onOpenChange={(open) => !open && handleClose()}>
-      <DialogContent className="sm:max-w-2xl h-[75vh] flex flex-col">
+    <Dialog
+      open={isReviewOpen}
+      onOpenChange={(open) => {
+        if (!open && !closeLocked) handleClose()
+      }}
+    >
+      <DialogContent
+        className={cn(
+          'sm:max-w-2xl h-[75vh] flex flex-col',
+          closeLocked && '[&>[data-slot=dialog-close]]:pointer-events-none'
+        )}
+        onEscapeKeyDown={preventWhileLocked}
+        onPointerDownOutside={preventWhileLocked}
+        onInteractOutside={preventWhileLocked}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <ShoppingCart className="h-5 w-5" />
@@ -425,9 +846,11 @@ export function ActionReviewModal({
                   <span className="text-sm font-semibold">{result.symbol}</span>
                 </div>
                 <span className="text-xs text-muted-foreground">
-                  {result.success
-                    ? `Order ID: ${result.orderId || 'N/A'}`
-                    : result.message || 'Failed'}
+                  {resultsFromStrategy && result.message
+                    ? result.message
+                    : result.success
+                      ? `Order ID: ${result.orderId || 'N/A'}`
+                      : result.message || 'Failed'}
                 </span>
               </div>
             ))
@@ -437,14 +860,22 @@ export function ActionReviewModal({
               <p className="text-sm">No recommendations to review</p>
             </div>
           ) : (
-            items.map((item) => (
-              <RecommendationCard
-                key={item.id}
-                item={item}
-                onUpdate={updateItem}
-                onRemove={removeItem}
-              />
-            ))
+            <>
+              {groupOrder.map((group) => {
+                const header = groupHeader(items, group)
+                return (
+                  <Fragment key={group}>
+                    {header && (
+                      <p className="text-xs font-semibold uppercase tracking-wider leading-[1.4] text-muted-foreground">
+                        {header}
+                      </p>
+                    )}
+                    {items.filter((item) => item.group === group).map(renderCard)}
+                  </Fragment>
+                )
+              })}
+              {items.filter((item) => !item.group).map(renderCard)}
+            </>
           )}
         </div>
 
@@ -475,6 +906,11 @@ export function ActionReviewModal({
                 </>
               )}
               .{' '}
+              {sellProceeds > 0 && (
+                <>
+                  Sell proceeds about <strong>{usd(sellProceeds)}</strong>.{' '}
+                </>
+              )}
               {buyCost > 0 && (
                 <>
                   A realistic drawdown of ~25% would be about <strong>{usd(realisticDownside)}</strong> of
@@ -483,6 +919,16 @@ export function ActionReviewModal({
               )}
               AI recommendations can be confidently wrong and don't know your full finances.
             </p>
+            {availableCash !== null && (
+              <p className="text-xs text-muted-foreground">
+                Available to spend (settled): <strong className="text-foreground">{usd(availableCash)}</strong>
+                {buyCost > availableCash + sellProceeds && (
+                  <span className="text-red-600 dark:text-red-400">
+                    {' '}— this basket's buys exceed it and will be reduced at placement.
+                  </span>
+                )}
+              </p>
+            )}
             <label className="flex items-start gap-2 text-xs cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -499,16 +945,27 @@ export function ActionReviewModal({
             <p className="text-xs text-muted-foreground leading-relaxed">
               <strong className="text-foreground">Paper (sandbox) mode.</strong> These are simulated orders
               with virtual money — no real funds are used. Switch to Live mode to trade for real.
+              {availableCash !== null && (
+                <>
+                  {' '}Sandbox cash available: <strong className="text-foreground">{usd(availableCash)}</strong>.
+                </>
+              )}
             </p>
           </div>
         )}
 
+        {showMarketClosed && (
+          <p className="text-xs font-semibold leading-[1.4] text-muted-foreground">
+            Market opens at 9:30 AM ET. Place this then.
+            {marketClock?.readFailed && ' (could not read the market clock)'}
+          </p>
+        )}
         <DialogFooter className="gap-2">
           {showResults ? (
             <Button onClick={handleClose}>Done</Button>
           ) : (
             <>
-              <Button variant="outline" onClick={handleClose}>
+              <Button variant="outline" onClick={handleClose} disabled={closeLocked}>
                 Cancel
               </Button>
               <Button
@@ -517,7 +974,9 @@ export function ActionReviewModal({
                   isSubmitting ||
                   items.length === 0 ||
                   (cloneNameRequired && cloneName.trim().length === 0) ||
-                  (showGateB && isLive && !acknowledged)
+                  (!!onApply && scenarioQuotes === null) ||
+                  (showGateB && isLive && !acknowledged) ||
+                  (needsMarketGate && (marketClock === null || !marketClock.isOpen))
                 }
                 className="bg-primary"
               >

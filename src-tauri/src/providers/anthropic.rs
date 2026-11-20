@@ -8,7 +8,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
+const ANTHROPIC_MODEL: &str = "claude-opus-4-8";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const MAX_TOKENS: u32 = 32768;
 
@@ -66,6 +66,9 @@ struct MessagesRequest {
     messages: Vec<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ToolDefinition>>,
+    /// Structured outputs: `{"format": {"type": "json_schema", "schema": ...}}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<serde_json::Value>,
 }
 
 /// Response from the Anthropic Messages API
@@ -146,8 +149,34 @@ impl AnthropicClient {
             system: system_prompt.map(String::from),
             messages,
             tools,
+            output_config: None,
         };
+        self.send(api_key, request).await
+    }
 
+    /// Send a message whose answer must be JSON matching `schema`. The API
+    /// constrains the output to the schema, so the text block always parses.
+    pub async fn send_structured(
+        &self,
+        api_key: &str,
+        messages: Vec<Message>,
+        system_prompt: Option<&str>,
+        schema: serde_json::Value,
+    ) -> Result<MessagesResponse, ProviderError> {
+        let request = MessagesRequest {
+            model: ANTHROPIC_MODEL.to_string(),
+            max_tokens: MAX_TOKENS,
+            system: system_prompt.map(String::from),
+            messages,
+            tools: None,
+            output_config: Some(serde_json::json!({
+                "format": { "type": "json_schema", "schema": schema }
+            })),
+        };
+        self.send(api_key, request).await
+    }
+
+    async fn send(&self, api_key: &str, request: MessagesRequest) -> Result<MessagesResponse, ProviderError> {
         let resp = self
             .client
             .post(ANTHROPIC_API_URL)
@@ -494,7 +523,7 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_my_portfolio".to_string(),
-            description: "Get the user's OWN live portfolio on their connected broker account (e.g. Alpaca) — their actual current holdings and available cash. Returns each open position (symbol, quantity, average price, last price, unrealized P&L), any longer-term holdings, the available cash for new buys, and the mode (live/paper/analyze). This is the SOURCE OF TRUTH for what the user personally owns. Use this WHENEVER the user asks about \"my account\", \"my portfolio\", \"my positions\", what they hold, how their account is doing, or wants recommendations about their own holdings. Do NOT confuse this with get_client_portfolio (that is for other people's client accounts).".to_string(),
+            description: "Get the user's OWN live portfolio on their connected broker account (e.g. Alpaca) — their actual current holdings, open orders, and available cash. Returns each open position (symbol, quantity, average price, last price, unrealized P&L), any longer-term holdings, all OPEN ORDERS working at the broker (side, pending quantity, limit/trigger price, reserved cost for pending buys), the available cash for new buys (settled funds — open-order reservations already excluded), and the mode (live/paper/analyze). This is the SOURCE OF TRUTH for what the user personally owns, has committed, and can spend. Use this WHENEVER the user asks about \"my account\", \"my portfolio\", \"my positions\", what they hold, what they can spend, how their account is doing, or wants recommendations about their own holdings. Do NOT confuse this with get_client_portfolio (that is for other people's client accounts).".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {},
@@ -526,7 +555,7 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_client_scenario".to_string(),
-            description: "Retrieve a client's sandbox scenario with its positions and current market prices. Returns scenario info, each position (symbol, quantity, avg price, side), and live pricing from Yahoo Finance (current price, day change). Use when the user asks to analyze or review a specific scenario.".to_string(),
+            description: "Retrieve a client's sandbox scenario with its positions and current market prices. Returns scenario info, each position (symbol, quantity, avg price, side), live pricing from Yahoo Finance (current price, day change), and a `ride` block per long position (status such as Dormant, 30-day net move, analyst upside). Use when the user asks to analyze or review a specific scenario.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -540,7 +569,7 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "apply_scenario_trades".to_string(),
-            description: "Apply a batch of simulated trades to a client's sandbox scenario. Each trade updates or creates a position using weighted-average cost basis. Use this when you have concrete trade recommendations and the user wants to apply them to a scenario. Returns updated positions after all trades are applied.".to_string(),
+            description: "Apply a batch of simulated trades to a client's sandbox scenario. Each trade updates or creates a position using weighted-average cost basis. Use this when you have concrete trade recommendations and the user wants to apply them to a scenario. A trade that can't be applied (for example a sell past the shares held in a long-only account such as a 401(k) or IRA) is skipped and listed under skipped_trades with the reason; the other trades still apply. Tell the user about any skipped trades. Returns updated positions after the batch.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -581,6 +610,39 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
                     }
                 },
                 "required": ["scenario_id", "trades"]
+            }),
+        },
+        ToolDefinition {
+            name: "get_price_history".to_string(),
+            description: "Get daily closing prices for a stock over the last 1 month to 1 year, with derived 30-day numbers: net_move_30d_pct (net change over the last 30 trading days), daily_swing_pct (average absolute day-over-day move over the last 30 days), and high_30d / low_30d (highest and lowest close over the last 30 closes). Data comes from Financial Modeling Prep, with Yahoo Finance as the fallback; the result's \"source\" says which one answered. \"bars\" holds at most the 60 most recent days (date, close, volume) and \"bars_total\" is the full count the derived numbers were computed from. The derived numbers are null when fewer than 30 (high/low) or 31 (net move, swing) closes are available, which happens with the 1mo range. Use for price trend, momentum, volatility, and how far a stock has moved recently.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Ticker symbol (e.g., \"AAPL\")"
+                    },
+                    "range": {
+                        "type": "string",
+                        "enum": ["1mo", "3mo", "6mo", "1y"],
+                        "description": "How far back to fetch daily closes. Defaults to 3mo."
+                    }
+                },
+                "required": ["symbol"]
+            }),
+        },
+        ToolDefinition {
+            name: "get_analyst_targets".to_string(),
+            description: "Get Wall Street analyst price targets for a stock: the consensus target, median, high and low, how many targets were published in the last 90 days, and the 5 most recent individual analyst notes (date, analyst, firm, target, headline). Data comes from Financial Modeling Prep, with Yahoo Finance as the fallback; \"source\" says which one produced the consensus (fmp_consensus, fmp_median, or yahoo), and is null when no source has a target. upside_pct is the percent difference between the consensus target and the current price. It is what analysts expect, not a forecast guarantee: always present it as an analyst expectation and cite the source and date.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Ticker symbol (e.g., \"AAPL\")"
+                    }
+                },
+                "required": ["symbol"]
             }),
         },
     ]

@@ -1,5 +1,6 @@
 import { listen } from '@tauri-apps/api/event'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { useAlertStore, type AlertTriggeredPayload } from '@/stores/alertStore'
 
@@ -8,6 +9,13 @@ import { useAlertStore, type AlertTriggeredPayload } from '@/stores/alertStore'
  * and delivers visual/audio notifications.
  */
 export function useAlertListener() {
+  // Keep a live ref to the router navigate fn so the long-lived Tauri event
+  // listener (registered once) always calls the current navigator without
+  // needing to re-subscribe.
+  const navigate = useNavigate()
+  const navigateRef = useRef(navigate)
+  navigateRef.current = navigate
+
   useEffect(() => {
     let unlisten: (() => void) | undefined
 
@@ -26,7 +34,7 @@ export function useAlertListener() {
           action: {
             label: 'View',
             onClick: () => {
-              window.location.hash = `/fundamentals/${payload.symbol}`
+              navigateRef.current(`/fundamentals/${payload.symbol}`)
             },
           },
         })

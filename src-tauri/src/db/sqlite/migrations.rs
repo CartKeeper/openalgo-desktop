@@ -72,6 +72,19 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     run_migration(conn, "054_holdings_market_value", ADD_HOLDINGS_MARKET_VALUE)?;
     run_migration(conn, "055_symtoken_fractionable", ADD_SYMTOKEN_FRACTIONABLE)?;
     run_migration(conn, "056_backtest_runs", CREATE_BACKTEST_RUNS_TABLE)?;
+    run_migration(conn, "057_ride_entries", CREATE_RIDE_ENTRIES_TABLE)?;
+    run_migration(conn, "058_dismissed_protection", CREATE_DISMISSED_PROTECTION_TABLE)?;
+    run_migration(conn, "059_report_scenario_link", ADD_REPORT_SCENARIO_LINK)?;
+    run_migration(conn, "060_scenario_cash", ADD_SCENARIO_CASH)?;
+    // [wp-anchor] WP1 migrations
+    run_migration(conn, "061_chart_drawings", ADD_CHART_DRAWINGS)?;
+    //
+    // [wp-anchor] WP2 migrations
+    run_migration(conn, "062_client_allocation_targets", CREATE_CLIENT_ALLOCATION_TARGETS)?;
+    //
+    // [wp-anchor] WP8 migrations
+    run_migration_fn(conn, "100_flow_core", crate::flow::store::migrate)?;
+    //
 
     tracing::info!("Database migrations completed");
     Ok(())
@@ -645,6 +658,19 @@ CREATE INDEX IF NOT EXISTS idx_portfolio_exchange ON portfolio_positions(exchang
 ALTER TABLE settings ADD COLUMN generic_mode INTEGER NOT NULL DEFAULT 0;
 "#;
 
+/// A report saved from Analyze with Claude remembers its client scenario, so its
+/// recommended trades can be applied to that sandbox later (never as live orders).
+const ADD_REPORT_SCENARIO_LINK: &str = r#"
+ALTER TABLE research_reports ADD COLUMN scenario_id INTEGER;
+"#;
+
+/// A scenario's cash. NULL means not recorded (a scenario made before cash was
+/// tracked, or a baseline whose latest import had no Positions file); SQL
+/// arithmetic keeps NULL as NULL, so an unknown balance never turns into a number.
+const ADD_SCENARIO_CASH: &str = r#"
+ALTER TABLE client_scenarios ADD COLUMN cash REAL;
+"#;
+
 const CREATE_RESEARCH_REPORTS_TABLES: &str = r#"
 CREATE TABLE research_reports (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -934,3 +960,68 @@ CREATE TABLE client_compliance_violations (
 CREATE INDEX IF NOT EXISTS idx_compliance_client ON client_compliance_violations(client_id);
 CREATE INDEX IF NOT EXISTS idx_compliance_resolved ON client_compliance_violations(resolved);
 "#;
+
+const CREATE_RIDE_ENTRIES_TABLE: &str = r#"
+CREATE TABLE ride_entries (
+    symbol TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    entered_at TEXT NOT NULL,
+    computed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (symbol, quantity)
+);
+"#;
+
+const CREATE_DISMISSED_PROTECTION_TABLE: &str = r#"
+CREATE TABLE dismissed_protection (
+    symbol TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    dismissed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (symbol, quantity)
+);
+"#;
+
+// [wp-anchor] WP1 sql
+/// WP1: drawings saved per symbol beside the indicators (`chart_preferences.drawings`)
+const ADD_CHART_DRAWINGS: &str = r#"
+ALTER TABLE chart_preferences ADD COLUMN drawings TEXT;
+"#;
+//
+// [wp-anchor] WP2 sql
+/// WP2: per-client allocation targets (a symbol or a sector, with a tolerance band)
+const CREATE_CLIENT_ALLOCATION_TARGETS: &str = r#"
+CREATE TABLE IF NOT EXISTS client_allocation_targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    scope TEXT NOT NULL CHECK (scope IN ('symbol','sector')),
+    key TEXT NOT NULL,
+    target_pct REAL NOT NULL,
+    band_pct REAL NOT NULL DEFAULT 2.0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (client_id, scope, key)
+);
+CREATE INDEX IF NOT EXISTS idx_allocation_targets_client ON client_allocation_targets(client_id);
+"#;
+//
+// [wp-anchor] WP8 sql
+/// A migration written in Rust (Flow's store builds its own tables,
+/// `flow::store::migrate`): run once and recorded under `name` like the SQL
+/// ones above.
+fn run_migration_fn(
+    conn: &Connection,
+    name: &str,
+    migrate: fn(&Connection) -> Result<()>,
+) -> Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM migrations WHERE name = ?)",
+        [name],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        tracing::info!("Running migration: {}", name);
+        migrate(conn)?;
+        conn.execute("INSERT INTO migrations (name) VALUES (?)", [name])?;
+    }
+    Ok(())
+}
+//

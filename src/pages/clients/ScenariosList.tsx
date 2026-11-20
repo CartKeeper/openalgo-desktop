@@ -36,6 +36,8 @@ import { useClientScenarioStore } from '@/stores/clientScenarioStore'
 import type { Client } from '@/types/clients'
 import { ACCOUNT_TYPES } from '@/types/clients'
 import type { ClientScenario } from '@/types/client-scenarios'
+import { ScenarioCardMetrics } from './ScenarioCardMetrics'
+import { baselineFor, useScenarioCardMetrics } from './useScenarioCardMetrics'
 
 function errMsg(err: unknown): string {
   if (err instanceof Error) return err.message
@@ -69,6 +71,10 @@ export default function ScenariosList() {
   const [createForm, setCreateForm] = useState({ name: '', description: '' })
   const [cloneForm, setCloneForm] = useState({ name: '', description: '' })
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const cardMetrics = useScenarioCardMetrics(scenarios)
+  // Any clone with a baseline shows delta lines; every card keeps their height
+  // so the metrics line up across the row.
+  const anyDeltas = scenarios.some((s) => baselineFor(s, scenarios) != null)
 
   const toggleSelection = (scenarioId: number, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -230,6 +236,9 @@ export default function ScenariosList() {
                     <span className="font-medium text-foreground">Clone</span> — Duplicates an existing scenario (including all positions) so you can model changes without affecting the original.
                   </p>
                   <p>
+                    <span className="font-medium text-foreground">Card metrics</span> — Each card shows live Market Value, Cash, Unrealized P&amp;L and Return. A clone also shows how each one differs from its account's baseline; hover a number to see both values.
+                  </p>
+                  <p>
                     <span className="font-medium text-foreground">Compare</span> — Select 2–3 scenarios via the checkboxes, then click Compare to view them side by side.
                   </p>
                 </div>
@@ -340,7 +349,21 @@ export default function ScenariosList() {
                   </div>
                 </div>
               </CardHeader>
-              <CardContent className="pt-0">
+              <CardContent className="pt-0 space-y-4">
+                {(() => {
+                  const base = baselineFor(scenario, scenarios)
+                  return (
+                    <ScenarioCardMetrics
+                      cash={scenario.cash}
+                      metrics={scenario.id != null ? cardMetrics.metrics.get(scenario.id) : undefined}
+                      baseline={base?.id != null ? cardMetrics.metrics.get(base.id) : undefined}
+                      baselineName={base?.name}
+                      status={cardMetrics.status}
+                      onRetry={cardMetrics.retry}
+                      reserveDeltas={anyDeltas}
+                    />
+                  )
+                })()}
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-muted-foreground">
                     {scenario.updated_at

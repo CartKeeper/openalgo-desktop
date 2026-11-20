@@ -139,6 +139,35 @@ pub struct PriceTarget {
     pub news_title: Option<String>,
 }
 
+/// Analyst price-target consensus
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PriceTargetConsensus {
+    pub symbol: String,
+    pub target_high: Option<f64>,
+    pub target_low: Option<f64>,
+    pub target_consensus: Option<f64>,
+    pub target_median: Option<f64>,
+}
+
+/// Analyst price-target summary by period
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PriceTargetSummary {
+    pub symbol: String,
+    pub last_month_count: Option<i32>,
+    pub last_quarter_count: Option<i32>,
+    pub last_quarter_avg_price_target: Option<f64>,
+    pub last_year_count: Option<i32>,
+    pub all_time_count: Option<i32>,
+}
+
+/// One daily closing price
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyClose {
+    pub date: String,
+    pub close: f64,
+    pub volume: Option<i64>,
+}
+
 /// Economic calendar event
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EconomicEvent {
@@ -706,7 +735,66 @@ pub struct GoldmanBrief {
     pub subtitle: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidential_label: Option<String>,
+    /// Figures the app computes itself (never Claude) for the cover's fact panel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facts: Option<BriefFacts>,
+    /// A comparison report's cover panel: the original and recommended
+    /// portfolios side by side, computed by the app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<BriefComparison>,
+    /// Replaces the cover's default "Portfolio Analysis & Strategic Recommendations".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover_title: Option<CoverTitle>,
     pub movements: Vec<GoldmanMovement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CoverTitle {
+    pub main: String,
+    pub accent: String,
+}
+
+/// Two portfolios priced at the same live quotes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BriefComparison {
+    pub account_type: String,
+    /// "November 11, 2026, 12:06 PM ET"
+    pub prices_as_of: String,
+    pub original: ComparisonSide,
+    pub recommended: ComparisonSide,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ComparisonSide {
+    /// The scenario's name.
+    pub name: String,
+    pub positions: usize,
+    /// Market value of the positions with a live price.
+    pub holdings_value: f64,
+    /// `None` = cash not recorded for this scenario.
+    pub cash: Option<f64>,
+    /// Holdings plus cash; `None` when cash is not recorded.
+    pub total_value: Option<f64>,
+    /// Positions with no live price (left out of `holdings_value`).
+    pub unpriced: Vec<String>,
+}
+
+/// Account figures behind a brief, computed from live quotes at generation time.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BriefFacts {
+    /// "401(k)", "Traditional IRA", …
+    pub account_type: String,
+    pub positions: usize,
+    /// Market value of the positions that have a live price.
+    pub market_value: f64,
+    /// Cost basis of those same positions, so the P/L compares like with like.
+    pub cost_basis: f64,
+    pub unrealized_pnl: f64,
+    pub unrealized_pct: Option<f64>,
+    /// "November 11, 2026, 12:06 PM ET"
+    pub prices_as_of: String,
+    /// Positions with no live price (left out of the figures above).
+    pub unpriced: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -717,6 +805,176 @@ pub enum GoldmanMovement {
     Tactical(TacticalMovement),
     Coda(CodaMovement),
     Narrative(NarrativeMovement),
+    Changes(ChangesMovement),
+    Measures(MeasuresMovement),
+    Metrics(MetricsMovement),
+    Health(HealthMovement),
+}
+
+/// Every difference between two portfolios. The app builds the rows; only
+/// `reason` is written by Claude.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangesMovement {
+    pub numeral: String,
+    pub tempo: String,
+    pub title_main: String,
+    pub title_accent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intro: Option<String>,
+    pub rows: Vec<ChangeRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChangeRow {
+    pub ticker: String,
+    /// "sold", "trimmed", "added" or "bought".
+    pub kind: String,
+    /// "Sold all 3", "Bought 9", …
+    pub change: String,
+    /// Shares held before and after (negative = short).
+    pub before: f64,
+    pub after: f64,
+    /// Today's live price; `None` = no live price.
+    pub price: Option<f64>,
+    /// Shares changed × today's price.
+    pub value_today: Option<f64>,
+    pub reason: String,
+}
+
+/// Measures of both portfolios side by side, computed by the app.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeasuresMovement {
+    pub numeral: String,
+    pub tempo: String,
+    pub title_main: String,
+    pub title_accent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intro: Option<String>,
+    pub original_label: String,
+    pub recommended_label: String,
+    pub rows: Vec<MeasureRow>,
+    /// What the shares are measured against, and what was left out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MeasureRow {
+    pub label: String,
+    pub original: String,
+    pub recommended: String,
+}
+
+/// Trailing-window metrics of both portfolios, computed by the app: a table
+/// of figures, a monthly-returns grid, drawdown episodes and Monte Carlo odds
+/// per side. Claude writes only `tempo` and `intro`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsMovement {
+    pub numeral: String,
+    pub tempo: String,
+    pub title_main: String,
+    pub title_accent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intro: Option<String>,
+    pub original_label: String,
+    pub recommended_label: String,
+    /// The window the figures cover, e.g. "Trailing 365 days of daily closes, November 12, 2025 to November 11, 2026".
+    pub window: String,
+    /// Metric | original | recommended, as text ("12.3%", "1.23", "n/a").
+    pub rows: Vec<MeasureRow>,
+    /// One grid per side with enough history.
+    pub monthly: Vec<MonthlyTable>,
+    /// One table per side with enough history.
+    pub drawdowns: Vec<DrawdownTable>,
+    /// One line per side with a Monte Carlo result.
+    pub monte_carlo: Vec<MonteCarloLine>,
+    /// Each side's window and what was left out, or why there are no figures.
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MonthlyTable {
+    /// The portfolio's name.
+    pub label: String,
+    pub years: Vec<MonthlyYear>,
+}
+
+/// One calendar year of monthly returns as fractions; `months[0]` is January
+/// and `None` is a month outside the window.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MonthlyYear {
+    pub year: i32,
+    pub months: [Option<f64>; 12],
+    pub ytd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DrawdownTable {
+    pub label: String,
+    pub rows: Vec<DrawdownRow>,
+}
+
+/// A peak-to-recovery episode. Dates are "YYYY-MM-DD"; `end` is `None` while
+/// the portfolio has not climbed back to the peak.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DrawdownRow {
+    pub start: String,
+    pub trough: String,
+    pub end: Option<String>,
+    /// Trough over peak minus one: -0.20 for a 20% fall.
+    pub depth_pct: f64,
+    pub days: i64,
+}
+
+/// Bootstrapped one-year outcomes for one portfolio; returns, thresholds and
+/// odds are fractions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MonteCarloLine {
+    pub label: String,
+    pub paths: usize,
+    pub horizon_days: usize,
+    pub p5: f64,
+    pub p50: f64,
+    pub p95: f64,
+    pub bust_threshold: f64,
+    pub bust_probability: f64,
+    pub goal_threshold: f64,
+    pub goal_probability: f64,
+}
+
+/// The health checklist for both portfolios, computed by the app. Claude
+/// writes only `tempo` and `intro`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthMovement {
+    pub numeral: String,
+    pub tempo: String,
+    pub title_main: String,
+    pub title_accent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intro: Option<String>,
+    pub original_label: String,
+    pub recommended_label: String,
+    pub rows: Vec<HealthCompareRow>,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HealthCompareRow {
+    pub key: String,
+    pub title: String,
+    pub original: HealthCell,
+    pub recommended: HealthCell,
+    /// The rule's threshold in words.
+    pub threshold: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HealthCell {
+    /// "pass", "warn", "fail" or "na".
+    pub status: String,
+    pub value_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -764,9 +1022,16 @@ pub struct RestructuringMovement {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AllocationCard {
+    /// Set by the app from `symbols`: the sleeve's share of account value today.
     pub percentage: String,
     pub label: String,
     pub body: String,
+    /// The held tickers in this sleeve (Claude names them; the app weighs them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub symbols: Vec<String>,
+    /// What `percentage` measures, e.g. "of account value today".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -875,6 +1140,9 @@ pub struct ClientScenario {
     pub is_baseline: bool,
     pub cloned_from_id: Option<i64>,
     pub account_type: Option<String>,
+    /// Uninvested cash. `None` = not recorded (see migration 060).
+    #[serde(default)]
+    pub cash: Option<f64>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }

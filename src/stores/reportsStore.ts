@@ -15,6 +15,8 @@ export interface ResearchReportSummary {
 
 export interface ResearchReport extends ResearchReportSummary {
   messages_json: string
+  /** The client scenario an Analyze with Claude report was written about. */
+  scenario_id: number | null
   updated_at: string
 }
 
@@ -41,7 +43,11 @@ interface ReportsStore {
     summary: string,
     tags: string[],
     messages: CopilotMessage[],
+    /** Set when the report analyzes a client's sandbox scenario. */
+    scenarioId?: number,
   ) => Promise<ResearchReport>
+  /** Record which client scenario a report analyzes (reports saved before the link existed). */
+  linkReportScenario: (id: number, scenarioId: number) => Promise<ResearchReport>
   deleteReport: (id: number) => Promise<void>
   updateReportTitle: (id: number, title: string) => Promise<void>
   fetchNotes: (reportId: number) => Promise<void>
@@ -100,7 +106,7 @@ export const useReportsStore = create<ReportsStore>((set, get) => ({
     }
   },
 
-  saveReport: async (title, summary, tags, messages) => {
+  saveReport: async (title, summary, tags, messages, scenarioId) => {
     const messagesJson = JSON.stringify(messages)
     const toolCalls = extractToolCalls(messages)
     const toolCallsJson = toolCalls.length > 0 ? JSON.stringify(toolCalls) : null
@@ -112,6 +118,7 @@ export const useReportsStore = create<ReportsStore>((set, get) => ({
       tags: tagsJson,
       messagesJson,
       toolCallsJson,
+      scenarioId: scenarioId ?? null,
     })
 
     // Refresh the list
@@ -133,6 +140,12 @@ export const useReportsStore = create<ReportsStore>((set, get) => ({
       reports: s.reports.map((r) => (r.id === id ? { ...r, title: updated.title } : r)),
       currentReport: s.currentReport?.id === id ? updated : s.currentReport,
     }))
+  },
+
+  linkReportScenario: async (id: number, scenarioId: number) => {
+    const updated = await invoke<ResearchReport>('link_research_report_scenario', { id, scenarioId })
+    set((s) => ({ currentReport: s.currentReport?.id === id ? updated : s.currentReport }))
+    return updated
   },
 
   fetchNotes: async (reportId: number) => {

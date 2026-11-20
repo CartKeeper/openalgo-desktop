@@ -6,6 +6,8 @@ export interface ClientScenario {
   is_baseline: boolean
   cloned_from_id: number | null
   account_type: string | null
+  /** Uninvested cash; null = not recorded. Sells add to it, buys spend it. */
+  cash: number | null
   created_at: string | null
   updated_at: string | null
 }

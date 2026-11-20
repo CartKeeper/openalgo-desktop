@@ -20,6 +20,11 @@ pub struct OptionGreeksResult {
     pub theta: f64,
     pub vega: f64,
     pub rho: f64,
+    /// Pricing model that produced the numbers: "black_scholes" or "binomial".
+    pub model: String,
+    /// Binomial only: price minus the European price of the same lattice.
+    /// `None` for Black-Scholes.
+    pub early_exercise_premium: Option<f64>,
 }
 
 /// A single point on the implied volatility surface

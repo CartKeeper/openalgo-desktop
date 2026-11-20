@@ -69,6 +69,42 @@ impl OrderbookService {
         })
     }
 
+    /// Get only working (open) orders.
+    ///
+    /// In analyze mode, returns the sandbox orders filtered to open statuses.
+    /// Otherwise, asks the live broker for its open orders directly.
+    pub async fn get_open_orders(
+        state: &AppState,
+        api_key: Option<&str>,
+    ) -> Result<OrderbookResult> {
+        info!("OrderbookService::get_open_orders");
+
+        let analyze_mode = state.sqlite.get_analyze_mode().unwrap_or(false);
+
+        if analyze_mode {
+            let mut result = Self::get_sandbox_orderbook(state)?;
+            result.orders.retain(|o| {
+                matches!(o.status.as_str(), "OPEN" | "PARTIALLY_FILLED" | "PENDING")
+            });
+            return Ok(result);
+        }
+
+        let (auth_token, broker_id) = Self::get_auth(state, api_key)?;
+
+        let broker = state
+            .brokers
+            .get(&broker_id)
+            .ok_or_else(|| AppError::Broker(format!("Broker '{}' not found", broker_id)))?;
+
+        let orders = broker.get_open_orders(&auth_token).await?;
+
+        Ok(OrderbookResult {
+            success: true,
+            orders,
+            mode: "live".to_string(),
+        })
+    }
+
     /// Get trade book
     ///
     /// In analyze mode, returns sandbox trades.
@@ -167,6 +203,8 @@ impl OrderbookService {
                 order_timestamp: so.created_at,
                 exchange_timestamp: None,
                 rejection_reason: None,
+                trail_percent: None,
+                hwm: None,
             })
             .collect();
 
@@ -203,6 +241,8 @@ impl OrderbookService {
                 order_timestamp: so.created_at.clone(),
                 exchange_timestamp: Some(so.created_at),
                 rejection_reason: None,
+                trail_percent: None,
+                hwm: None,
             })
             .collect();
 

@@ -40,7 +40,17 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: (id) => {
+          // Rollup's CommonJS interop helpers (a virtual module, outside node_modules):
+          // with React's chunk, which every page loads, so a lazy vendor chunk never holds them.
+          if (id.includes('commonjsHelpers')) {
+            return 'vendor-react'
+          }
           if (id.includes('node_modules')) {
+            // Flow editor (React Flow) - only /flow/editor. Before the React rule:
+            // '@xyflow/react/' contains '/react/'.
+            if (id.includes('/@xyflow/')) {
+              return 'vendor-flow'
+            }
             // Core React - most stable, cached long-term
             if (id.includes('/react-dom/') || id.includes('/react/') || id.includes('/scheduler/')) {
               return 'vendor-react'
@@ -60,6 +70,14 @@ export default defineConfig({
             // Syntax highlighting - only needed on code pages
             if (id.includes('react-syntax-highlighter') || id.includes('prismjs') || id.includes('refractor')) {
               return 'vendor-syntax'
+            }
+            // Chart tools (drawing library + 1,800 indicators) - only the Historify chart page
+            if (
+              id.includes('lightweight-charts-indicators') ||
+              id.includes('lightweight-charts-drawing') ||
+              id.includes('oakscriptjs')
+            ) {
+              return 'vendor-chart-tools'
             }
             // Charts - only needed on chart pages
             if (id.includes('recharts') || id.includes('d3-') || id.includes('lightweight-charts')) {

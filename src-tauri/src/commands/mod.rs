@@ -22,6 +22,7 @@ pub mod providers;
 pub mod portfolio;
 pub mod quant;
 pub mod copilot;
+pub mod ride;
 pub mod greeks;
 pub mod indicators;
 pub mod reports;
@@ -34,3 +35,23 @@ pub mod activities;
 pub mod market_status;
 pub mod broker_watchlist;
 pub mod backtest;
+// [wp-anchor] WP1 chart-tools
+pub mod chart_preferences;
+//
+// [wp-anchor] WP2 analytics
+pub mod analytics;
+//
+// [wp-anchor] WP3 staged-analysis
+pub mod staged_analysis;
+//
+// [wp-anchor] WP5 american-options
+//
+// [wp-anchor] WP6 talib-indicators
+//
+// [wp-anchor] WP7 symbol-metadata
+pub mod symbol_metadata;
+//
+// [wp-anchor] WP8 flow
+pub mod flow;
+pub mod telegram;
+//

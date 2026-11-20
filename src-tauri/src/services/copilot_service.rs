@@ -12,7 +12,8 @@ use crate::providers::anthropic::{
 use crate::providers::fmp::FmpClient;
 use crate::providers::fred::FredClient;
 use crate::providers::yahoo::YahooClient;
-use crate::providers::types::ScreenerFilters;
+use crate::providers::types::{ScenarioPosition, ScreenerFilters};
+use crate::services::ride_report::{client_ride, load_client_market_data};
 use crate::state::AppState;
 use chrono::{Datelike, Timelike, Utc, Weekday};
 use chrono_tz::America::New_York;
@@ -37,6 +38,26 @@ pub struct CopilotResponse {
 }
 
 /// Copilot service for orchestrating AI research interactions
+/// Whose money a Copilot conversation is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopilotContext {
+    /// The user's own connected broker account (Copilot page, briefing, fundamentals).
+    OwnAccount,
+    /// A client's sandbox scenario (Clients → Analyze with Claude).
+    ClientScenario,
+}
+
+impl CopilotContext {
+    /// `None` is the user's own account; `"client_scenario"` is a client scenario.
+    pub fn from_param(param: Option<&str>) -> Result<Self> {
+        match param {
+            None => Ok(Self::OwnAccount),
+            Some("client_scenario") => Ok(Self::ClientScenario),
+            Some(other) => Err(AppError::Validation(format!("Unknown copilot context: {other}"))),
+        }
+    }
+}
+
 pub struct CopilotService;
 
 impl CopilotService {
@@ -48,7 +69,7 @@ impl CopilotService {
 
 Your job is to help the user make informed decisions — NOT to maximize their willingness to trade. You are not a financial advisor and you know nothing about the user's finances, goals, or risk tolerance beyond what they tell you this session.
 
-CORE RULE: Never sound more certain than the data justifies. Present the distribution of outcomes, not a target. Treating variance as opportunity is a failure, not a feature.
+CORE RULE: Never sound more certain than the data justifies. Present the distribution of outcomes. Treating variance as opportunity is a failure, not a feature.
 
 LEAD WITH THE ANSWER. Do not preface responses with a risk lecture or with qualifying questions. A recommendation response is:
 1. The pick(s) — each with inline source + timestamp, a momentum flag, and a realistic dollar downside.
@@ -57,7 +78,7 @@ LEAD WITH THE ANSWER. Do not preface responses with a risk lecture or with quali
 
 CONTENT RULES:
 - Do not invent rules that sound systematic (e.g. "exit if volume drops below 10M") unless grounded and sourced. Do not dress guesses as analysis.
-- Replace price-target language ("room to run to $X") with range + base rate ("traded $A–$B over 52 weeks; a same-day +X% move reverses roughly as often as it continues"). No single price target stated as an expectation.
+- When you cite an analyst target or expected upside, name the source (consensus of N analysts, or the firm) and the as-of date. State targets as what analysts expect, not as a guarantee.
 - If an instrument is already up 10% or more intraday, you MUST state plainly, ADJACENT to that pick, that buying after the move is structurally different from buying before it.
 - Express realistic (not worst-case) downside in the user's ACTUAL dollars (e.g. "a 25% drop is normal here = $500 of your $2,000").
 - NEVER endorse increasing risk as a way to grow capital faster. If the user proposes it, correct the premise: variance is not expected return, and a 50% loss requires a 100% gain to recover.
@@ -127,10 +148,10 @@ You have access to these data retrieval tools:
 12. **get_market_overview** - Sector performance, today's gainers, losers, and most active stocks. Use when users ask about market conditions, what's up/down today, or sector trends.
 13. **get_index_constituents** - Companies in the S&P 500, Nasdaq 100, or Dow Jones 30. Use when users ask about what's in an index or want a list of companies in a specific index.
 14. **get_broker_account** - Get the currently connected broker account info (broker name, account ID, user ID, live/paper mode). Use ONLY when the user asks about their broker account, connection status, or account details.
-15. **get_my_portfolio** - Get the USER'S OWN live portfolio on their connected broker (their actual current positions, holdings, and available cash). This is the source of truth for what the user personally owns. Call this WHENEVER the user asks about "my account", "my portfolio", "my positions", what they hold, how their account is doing, or wants recommendations about their own holdings. Do NOT use get_client_portfolio for the user's own account — that tool is for other people's client accounts.
+15. **get_my_portfolio** - Get the USER'S OWN live portfolio on their connected broker: actual current positions, holdings, OPEN ORDERS (working buys/sells/stops), and available cash. available_cash is the settled, spendable number — funds reserved by open orders are already excluded. This is the source of truth for what the user personally owns and has committed. Call this WHENEVER the user asks about "my account", "my portfolio", "my positions", what they hold, what they can spend, how their account is doing, or wants recommendations about their own holdings. Do NOT use get_client_portfolio for the user's own account — that tool is for other people's client accounts.
 16. **list_clients** - List all clients in the client management system with their names, IDs, and account info. Use ONLY when the user asks about clients or needs to find a specific client.
 17. **get_client_portfolio** - Look up a client's portfolio from the local client management system. Returns positions (symbols, quantities, avg price, P&L) and recent trades. Use when the user asks about a specific client's portfolio, holdings, or trades. Search by name (partial match works).
-18. **get_client_scenario** - Retrieve a sandbox what-if scenario with positions and live market prices. Use when the user asks you to analyze a scenario portfolio.
+18. **get_client_scenario** - Retrieve a sandbox what-if scenario with positions, live market prices, and each long position's `ride` block (see Client Scenario Rides). Use when the user asks you to analyze a scenario portfolio.
 19. **apply_scenario_trades** - Apply a batch of simulated trades to a sandbox scenario. Use when you have specific trade recommendations and the user wants them applied. Each trade adjusts position quantity and recalculates weighted-average cost basis.
 
 ## CRITICAL RULES
@@ -144,6 +165,19 @@ You have access to these data retrieval tools:
 - When analyzing a client scenario, check the `account_type` and `short_selling_restricted` fields in the response from get_client_scenario.
 - If `short_selling_restricted` is true (e.g., 401(k), IRA, 529, custodial accounts), NEVER recommend short selling or SELL trades that would create a short position. Only recommend selling to reduce or close existing long positions.
 - Always mention the account type restriction in your analysis if it limits available strategies.
+- In a tax-advantaged account (401(k), Roth 401(k), any IRA, 529), selling at a loss has no tax effect. Never mention tax-loss harvesting, harvesting tax lots, or realizing losses for taxes; give the non-tax reason for the sale instead.
+
+## Client Scenario Rides
+- Every long position from get_client_scenario has a `ride` block: `status`, `net_move_30d_pct`, `consensus_target`, `upside_pct`, `targets_last_90d`. Short positions have `ride: null`. Use these values as given; never recompute them.
+- `Dormant` means the 30-day net move is within ±3%, the position is at or above cost, and analyst upside is 5% or less or unknown. `Unknown` means there is not enough data to judge (missing market data or no cost basis): say so and never treat it as Dormant.
+- These statuses do not know when the client bought a position, so never state how long it has been held.
+- Every scenario analysis includes a **Dormant Positions** section. No Dormant position: one line saying so. Each Dormant position: one line of evidence, e.g. "PFE: net move +1.2% over 30 days, analysts see +2% upside, up 18% from cost."
+- For Dormant positions, propose a swap into a stronger stock. Find candidates with screen_stocks, then check at most 3 with get_analyst_targets and get_stock_quote; this search may exceed the 5-call guideline below.
+- A replacement must have consensus upside at least 10 percentage points higher than the Dormant position being sold (treat unknown upside as 5%), a `targets_last_90d` of 3 or more, must not be up more than 10% today, and must be allowed by the account type. If no candidate qualifies, say so and propose nothing.
+- Show the money for each swap: sell the whole Dormant position at its current price, the proceeds, the whole-share quantity of the buy those proceeds cover, and the leftover cash.
+- Put every scenario trade you propose (swap sells and buys, cleanup sells) in the ACTIONS_JSON block. In a scenario analysis that block becomes a Review Recommendations button that applies the trades to the sandbox scenario only, never to a live account, so always include it when you propose trades. Never mention the block by name.
+- Call apply_scenario_trades only after the user asks to apply trades. These are sandbox trades; never present them as live orders.
+- Never call apply_scenario_trades on a baseline scenario (`is_baseline` true in get_client_scenario). The baseline is the client's portfolio as imported and stays untouched, so reports can compare against it. On a baseline, never offer to apply the trades yourself; say they are ready under the Review Recommendations button, which applies them to a new clone.
 
 ## Response Strategy
 - Plan your tool calls efficiently. Batch related lookups (e.g., screen first, then profile the top 3-5 results). Avoid making more than 5 tool calls per question.
@@ -261,6 +295,8 @@ The current date and time is {date}, {time} ET. Right now {session}.\n\
             "get_client_portfolio" => Self::tool_get_client_portfolio(tool_input, state).await,
             "get_client_scenario" => Self::tool_get_client_scenario(tool_input, state).await,
             "apply_scenario_trades" => Self::tool_apply_scenario_trades(tool_input, state).await,
+            "get_price_history" => Self::tool_get_price_history(tool_input, state).await,
+            "get_analyst_targets" => Self::tool_get_analyst_targets(tool_input, state).await,
             _ => Err(AppError::Provider(format!("Unknown tool: {}", tool_name))),
         };
 
@@ -273,34 +309,57 @@ The current date and time is {date}, {time} ET. Right now {session}.\n\
         }
     }
 
+    /// The budget section appended to the system prompt, if any.
+    fn budget_section(context: CopilotContext, available_cash: Option<f64>) -> Option<String> {
+        match context {
+            CopilotContext::ClientScenario => Some(
+                "## Client scenario budget\n\
+This conversation is about a client's sandbox scenario, not the user's own account. \
+The user's own broker cash does not apply and must never be mentioned. \
+Fund scenario buys from the scenario's `cash` (in get_client_scenario) plus the proceeds of the sells you propose in the same scenario. \
+If `cash` is null, the client's cash is not recorded: fund buys from the proceeds of the sells you propose only."
+                    .to_string(),
+            ),
+            CopilotContext::OwnAccount => available_cash.filter(|c| *c > 0.0).map(|cash| format!(
+                "## CRITICAL — Cash budget for BUY recommendations\n\
+The account currently has ${cash:.2} in available cash. Before recommending ANY buy you MUST confirm it fits this budget:\n\
+- The TOTAL cost of ALL BUY orders in your ACTIONS_JSON block (for each buy: quantity × the price it will fill at — the limit price for LIMIT orders, the current market price for MARKET orders) MUST NOT exceed ${cash:.2}.\n\
+- Treat available cash as one shared budget across all buys. Size each buy's whole-share quantity so the cumulative cost of every buy stays within ${cash:.2}.\n\
+- If a pick does not fit the remaining cash, reduce its quantity to what remains; if not even one whole share fits, omit that buy entirely.\n\
+- This cash budget constrains BUY orders only. SELL and stop orders are unaffected."
+            )),
+        }
+    }
+
     /// Process a user message through the full copilot loop
     pub async fn process_message(
         api_key: &str,
         conversation_history: Vec<Message>,
         user_message: &str,
+        context: CopilotContext,
         state: &AppState,
     ) -> Result<CopilotResponse> {
         let client = AnthropicClient::new((*state.http_client).clone());
         let tools = build_tool_definitions();
         let system_prompt = Self::build_system_prompt();
 
-        // Append the account's available cash so BUY recommendations are sized to
-        // funds the account actually holds. Best-effort: if funds can't be read we
-        // leave the prompt unchanged — the frontend applies a hard affordability
-        // cap on the parsed recommendations regardless. Routes to sandbox cash in
-        // analyze (paper) mode, matching where the orders would actually execute.
-        let system_prompt = match crate::services::FundsService::get_funds(state, None).await {
-            Ok(result) if result.funds.available_cash > 0.0 => format!(
-                "{prompt}\n\n## CRITICAL — Cash budget for BUY recommendations\n\
-The account currently has ${cash:.2} in available cash. Before recommending ANY buy you MUST confirm it fits this budget:\n\
-- The TOTAL cost of ALL BUY orders in your ACTIONS_JSON block (for each buy: quantity × the price it will fill at — the limit price for LIMIT orders, the current market price for MARKET orders) MUST NOT exceed ${cash:.2}.\n\
-- Treat available cash as one shared budget across all buys. Size each buy's whole-share quantity so the cumulative cost of every buy stays within ${cash:.2}.\n\
-- If a pick does not fit the remaining cash, reduce its quantity to what remains; if not even one whole share fits, omit that buy entirely.\n\
-- This cash budget constrains BUY orders only. SELL and stop orders are unaffected.",
-                prompt = system_prompt,
-                cash = result.funds.available_cash,
-            ),
-            _ => system_prompt,
+        // Own account: append the broker's available cash so BUY recommendations
+        // are sized to funds the account actually holds. Best-effort: if funds
+        // can't be read we leave the prompt unchanged — the frontend applies a
+        // hard affordability cap on the parsed recommendations regardless. Routes
+        // to sandbox cash in analyze (paper) mode, matching where orders execute.
+        // Client scenario: the user's broker cash has nothing to do with the
+        // client's account, so it is never read or shown to Claude.
+        let available_cash = match context {
+            CopilotContext::OwnAccount => crate::services::FundsService::get_funds(state, None)
+                .await
+                .ok()
+                .map(|r| r.funds.available_cash),
+            CopilotContext::ClientScenario => None,
+        };
+        let system_prompt = match Self::budget_section(context, available_cash) {
+            Some(section) => format!("{system_prompt}\n\n{section}"),
+            None => system_prompt,
         };
 
         // Build conversation with the new user message
@@ -401,7 +460,7 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
 
                         // Serialize the result, truncating large payloads to preserve token budget.
                         // For arrays: keep first N items. For strings: byte-level truncation.
-                        let result_str = Self::truncate_tool_result(&result);
+                        let result_str = Self::truncate_tool_result(name, &result);
 
                         tool_result_blocks.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
@@ -909,11 +968,52 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
             Err(_) => Vec::new(),
         };
 
-        // Available cash sizes any BUY recommendations.
+        // Available cash sizes any BUY recommendations. This is the broker's
+        // settled, spendable buying power — open-order reservations and unsettled
+        // funds are already excluded.
         let available_cash = FundsService::get_funds(state, None)
             .await
             .ok()
             .map(|r| r.funds.available_cash);
+
+        // Open (working) orders — money already committed. Without these the
+        // advisor double-spends: it can't see that cash is reserved by resting
+        // limit orders, or that a stop already protects a position.
+        let open_orders: Vec<serde_json::Value> =
+            match crate::services::OrderbookService::get_orderbook(state, None).await {
+                Ok(result) => result
+                    .orders
+                    .iter()
+                    .filter(|o| {
+                        matches!(o.status.as_str(), "OPEN" | "PARTIALLY_FILLED" | "PENDING")
+                    })
+                    .map(|o| {
+                        let pending_qty = if o.pending_quantity > 0.0 {
+                            o.pending_quantity
+                        } else {
+                            o.quantity - o.filled_quantity
+                        };
+                        let reserve_price = if o.price > 0.0 { o.price } else { o.trigger_price };
+                        serde_json::json!({
+                            "symbol": o.symbol,
+                            "side": o.side,
+                            "order_type": o.order_type,
+                            "pending_quantity": pending_qty,
+                            "limit_price": o.price,
+                            "trigger_price": o.trigger_price,
+                            "status": o.status,
+                            "placed_at": o.order_timestamp,
+                            // Cash a pending BUY keeps reserved until it fills or is cancelled.
+                            "reserved_cost": if o.side.eq_ignore_ascii_case("buy") && reserve_price > 0.0 {
+                                pending_qty * reserve_price
+                            } else {
+                                0.0
+                            },
+                        })
+                    })
+                    .collect(),
+                Err(_) => Vec::new(),
+            };
 
         let is_empty = positions.is_empty() && holdings.is_empty();
 
@@ -924,11 +1024,13 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
             "holdings": holdings,
             "holding_count": holdings.len(),
             "available_cash": available_cash,
+            "open_orders": open_orders,
+            "open_order_count": open_orders.len(),
             "is_empty": is_empty,
             "note": if is_empty {
                 "The user's connected account currently holds no positions or holdings. Do NOT invent holdings — say the account is empty and base any buy ideas on the available cash only."
             } else {
-                "These are the user's ACTUAL holdings — the source of truth. Only recommend SELL/stop orders on symbols listed here, and size BUYs to available_cash."
+                "These are the user's ACTUAL holdings — the source of truth. Only recommend SELL/stop orders on symbols listed here, and size BUYs to available_cash. available_cash is the settled, spendable number — funds reserved by the open_orders listed are ALREADY excluded from it, so do not subtract them again. If an open BUY order looks stale (placed days ago, far from the market), you may suggest cancelling it to free its reserved_cost for better uses; never recommend a duplicate stop for a position that already has one in open_orders."
             },
         }))
     }
@@ -1076,9 +1178,22 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
             }
         }
 
+        let yahoo = YahooClient::new((*state.http_client).clone());
+        let fmp = Self::get_fmp_client(state).ok();
+        let today = Utc::now().with_timezone(&New_York).date_naive();
+        let long_symbols: Vec<String> = positions
+            .iter()
+            .filter(|p| Self::is_long(p))
+            .map(|p| p.symbol.to_uppercase())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let market = load_client_market_data(fmp.as_ref(), &yahoo, long_symbols, today).await;
+
         // Build enriched position data
         let mut total_value = 0.0f64;
         let mut total_cost = 0.0f64;
+        let (mut dormant, mut unknown) = (0, 0);
         let position_data: Vec<serde_json::Value> = positions
             .iter()
             .map(|p| {
@@ -1094,6 +1209,17 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
                 let pnl = market_value.map(|mv| mv - cost);
                 let pnl_pct = if cost > 0.0 { pnl.map(|pl| pl / cost * 100.0) } else { None };
 
+                let ride = Self::is_long(p).then(|| {
+                    let data = market.get(&p.symbol.to_uppercase());
+                    let closes = data.map_or(&[][..], |d| d.closes.as_slice());
+                    client_ride(current_price, p.avg_price, closes, data.and_then(|d| d.target.as_ref()))
+                });
+                match ride.as_ref().map(|r| r.status) {
+                    Some("Dormant") => dormant += 1,
+                    Some("Unknown") => unknown += 1,
+                    _ => {}
+                }
+
                 serde_json::json!({
                     "symbol": p.symbol,
                     "exchange": p.exchange,
@@ -1108,6 +1234,7 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
                     "day_change_pct": pricing.and_then(|pv| pv["change_percent"].as_f64()),
                     "company_name": pricing.and_then(|pv| pv["name"].as_str()),
                     "notes": p.notes,
+                    "ride": ride,
                 })
             })
             .collect();
@@ -1134,8 +1261,11 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
                 "account_type": account_type,
                 "short_selling_restricted": short_selling_restricted,
             },
+            // Uninvested cash in the scenario; null = not recorded.
+            "cash": scenario.cash,
             "positions": position_data,
             "position_count": positions.len(),
+            "ride_summary": { "dormant": dormant, "unknown": unknown },
             "summary": {
                 "total_market_value": total_value,
                 "total_cost_basis": total_cost,
@@ -1143,6 +1273,24 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
                 "return_pct": if total_cost > 0.0 { (total_value - total_cost) / total_cost * 100.0 } else { 0.0 },
             }
         }))
+    }
+
+    fn is_long(position: &ScenarioPosition) -> bool {
+        position.quantity > 0.0 && !position.side.eq_ignore_ascii_case("short")
+    }
+
+    /// A baseline is the client's portfolio as imported; chat never edits it.
+    /// The Review Recommendations button applies trades to a new clone instead.
+    fn refuse_baseline_apply(is_baseline: bool) -> Result<()> {
+        if is_baseline {
+            return Err(AppError::Validation(
+                "Not applied: this scenario is the client's baseline (the portfolio as imported), and trades are never \
+                 applied to it. Tell the user to click Review Recommendations below your analysis; it applies the trades \
+                 to a new clone and leaves the baseline untouched."
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 
     async fn tool_apply_scenario_trades(
@@ -1161,43 +1309,25 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
             return Err(AppError::Validation("No trades provided".to_string()));
         }
 
+        let scenario = state.sqlite.get_client_scenario_by_id(scenario_id)?;
+        Self::refuse_baseline_apply(scenario.is_baseline)?;
+
         let mut applied: Vec<serde_json::Value> = Vec::new();
+        // A trade that can't be applied (a sell past the shares held in a
+        // long-only account, a missing price) is skipped and reported; the
+        // rest of the batch still applies.
+        let mut failed: Vec<serde_json::Value> = Vec::new();
 
         for trade in trades {
-            let symbol = trade["symbol"]
-                .as_str()
-                .ok_or_else(|| AppError::Validation("Each trade requires a symbol".to_string()))?;
-            let exchange = trade["exchange"].as_str().unwrap_or("GENERIC");
-            let side = trade["side"]
-                .as_str()
-                .ok_or_else(|| AppError::Validation("Each trade requires a side (buy/sell)".to_string()))?;
-            let quantity = trade["quantity"]
-                .as_f64()
-                .ok_or_else(|| AppError::Validation("Each trade requires a quantity".to_string()))?;
-            let price = trade["price"]
-                .as_f64()
-                .ok_or_else(|| AppError::Validation("Each trade requires a price".to_string()))?;
-
-            let result = state.sqlite.apply_scenario_trade(
-                scenario_id,
-                symbol,
-                exchange,
-                side,
-                quantity,
-                price,
-            )?;
-
-            applied.push(serde_json::json!({
-                "symbol": symbol,
-                "side": side,
-                "quantity": quantity,
-                "price": price,
-                "resulting_position": {
-                    "quantity": result.quantity,
-                    "avg_price": result.avg_price,
-                    "side": result.side,
-                }
-            }));
+            match Self::apply_one_scenario_trade(trade, scenario_id, state) {
+                Ok(done) => applied.push(done),
+                Err(e) => failed.push(serde_json::json!({
+                    "symbol": trade["symbol"].as_str().unwrap_or("?"),
+                    "side": trade["side"],
+                    "quantity": trade["quantity"],
+                    "reason": e.to_string(),
+                })),
+            }
         }
 
         // Return the full updated positions list
@@ -1217,16 +1347,194 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
 
         Ok(serde_json::json!({
             "trades_applied": applied.len(),
+            "trades_skipped": failed.len(),
+            "skipped_trades": failed,
             "trade_details": applied,
             "updated_positions": pos_data,
             "updated_position_count": updated_positions.len(),
+            "cash_after": state.sqlite.get_client_scenario_by_id(scenario_id)?.cash,
+        }))
+    }
+
+    /// Apply one trade from an `apply_scenario_trades` batch.
+    fn apply_one_scenario_trade(
+        trade: &serde_json::Value,
+        scenario_id: i64,
+        state: &AppState,
+    ) -> Result<serde_json::Value> {
+        let symbol = trade["symbol"]
+            .as_str()
+            .ok_or_else(|| AppError::Validation("Each trade requires a symbol".to_string()))?;
+        let exchange = trade["exchange"].as_str().unwrap_or("GENERIC");
+        let side = trade["side"]
+            .as_str()
+            .ok_or_else(|| AppError::Validation("Each trade requires a side (buy/sell)".to_string()))?;
+        let quantity = trade["quantity"]
+            .as_f64()
+            .ok_or_else(|| AppError::Validation("Each trade requires a quantity".to_string()))?;
+        let price = trade["price"]
+            .as_f64()
+            .ok_or_else(|| AppError::Validation("Each trade requires a price".to_string()))?;
+
+        let result = state
+            .sqlite
+            .apply_scenario_trade(scenario_id, symbol, exchange, side, quantity, price)?;
+
+        Ok(serde_json::json!({
+            "symbol": symbol,
+            "side": side,
+            "quantity": quantity,
+            "price": price,
+            "resulting_position": {
+                "quantity": result.quantity,
+                "avg_price": result.avg_price,
+                "side": result.side,
+            }
+        }))
+    }
+
+    /// Daily price history with derived 30-day numbers. Source chain lives in `ride_report`.
+    async fn tool_get_price_history(
+        input: &serde_json::Value,
+        state: &AppState,
+    ) -> Result<serde_json::Value> {
+        use crate::services::ride_report::{daily_swing_pct, load_daily_bars, net_move_pct};
+
+        const MAX_BARS: usize = 60;
+        let symbol = input["symbol"]
+            .as_str()
+            .ok_or_else(|| AppError::Validation("symbol is required".to_string()))?;
+        let range = input["range"].as_str().unwrap_or("3mo");
+        let lookback_days: i64 = match range {
+            "1mo" => 45,
+            "3mo" => 100,
+            "6mo" => 190,
+            "1y" => 370,
+            other => {
+                return Err(AppError::Validation(format!(
+                    "range must be one of 1mo, 3mo, 6mo, 1y (got \"{}\")",
+                    other
+                )))
+            }
+        };
+
+        let today = Utc::now().with_timezone(&New_York).date_naive();
+        let from = (today - chrono::Duration::days(lookback_days)).format("%Y-%m-%d").to_string();
+        let to = today.format("%Y-%m-%d").to_string();
+        let fmp = Self::get_fmp_client(state).ok();
+        let yahoo = YahooClient::new((*state.http_client).clone());
+        let (source, bars) =
+            load_daily_bars(fmp.as_ref(), &yahoo, symbol, &from, &to, range).await;
+
+        let closes: Vec<f64> = bars.iter().map(|b| b.close).collect();
+        let (high_30d, low_30d) = if closes.len() >= 30 {
+            let last30 = &closes[closes.len() - 30..];
+            (
+                Some(last30.iter().cloned().fold(f64::MIN, f64::max)),
+                Some(last30.iter().cloned().fold(f64::MAX, f64::min)),
+            )
+        } else {
+            (None, None)
+        };
+        let shown: Vec<serde_json::Value> = bars[bars.len().saturating_sub(MAX_BARS)..]
+            .iter()
+            .map(|b| serde_json::json!({ "date": b.date, "close": b.close, "volume": b.volume }))
+            .collect();
+
+        Ok(serde_json::json!({
+            "symbol": symbol,
+            "source": source,
+            "bars": shown,
+            "bars_total": bars.len(),
+            "net_move_30d_pct": net_move_pct(&closes),
+            "daily_swing_pct": daily_swing_pct(&closes),
+            "high_30d": high_30d,
+            "low_30d": low_30d,
+        }))
+    }
+
+    /// Analyst targets with the newest notes and upside versus the current price.
+    async fn tool_get_analyst_targets(
+        input: &serde_json::Value,
+        state: &AppState,
+    ) -> Result<serde_json::Value> {
+        use crate::services::ride_report::load_target;
+
+        let symbol = input["symbol"]
+            .as_str()
+            .ok_or_else(|| AppError::Validation("symbol is required".to_string()))?;
+        let today = Utc::now().with_timezone(&New_York).date_naive();
+        let fmp = Self::get_fmp_client(state).ok();
+        let yahoo = YahooClient::new((*state.http_client).clone());
+
+        let pick = load_target(fmp.as_ref(), &yahoo, symbol, today).await;
+
+        let (mut high, mut low, mut median) = (None, None, None);
+        let mut recent = Vec::new();
+        if let Some(fmp) = &fmp {
+            match fmp.get_price_target_consensus(symbol).await {
+                Ok(Some(c)) => {
+                    high = c.target_high;
+                    low = c.target_low;
+                    median = c.target_median;
+                }
+                Ok(None) => {}
+                Err(e) => warn!("analyst targets: FMP consensus failed for {}: {}", symbol, e),
+            }
+            match fmp.get_price_targets(symbol).await {
+                Ok(mut notes) => {
+                    notes.sort_by(|a, b| b.published_date.cmp(&a.published_date));
+                    recent = notes
+                        .iter()
+                        .take(5)
+                        .map(|n| {
+                            serde_json::json!({
+                                "date": n.published_date.as_deref().and_then(|d| d.get(..10)),
+                                "analyst": n.analyst_name,
+                                "company": n.analyst_company,
+                                "target": n.price_target,
+                                "headline": n.news_title,
+                            })
+                        })
+                        .collect();
+                }
+                Err(e) => warn!("analyst targets: FMP price targets failed for {}: {}", symbol, e),
+            }
+        }
+
+        let upside = match &pick {
+            Some(p) => match yahoo.get_quotes(&[symbol]).await {
+                Ok(quotes) => quotes
+                    .first()
+                    .map(|q| q.price)
+                    .filter(|price| *price > 0.0)
+                    .map(|price| crate::services::ride_report::upside_pct(p.consensus, price)),
+                Err(e) => {
+                    warn!("analyst targets: Yahoo quote failed for {}: {}", symbol, e);
+                    None
+                }
+            },
+            None => None,
+        };
+
+        Ok(serde_json::json!({
+            "symbol": symbol,
+            "source": pick.as_ref().map(|p| p.source),
+            "consensus": pick.as_ref().map(|p| p.consensus),
+            "median": median,
+            "high": high,
+            "low": low,
+            // Same count the Ride Report uses (the target pick's summary chain).
+            "targets_last_90d": pick.as_ref().and_then(|p| p.count),
+            "upside_pct": upside,
+            "recent": recent,
         }))
     }
 
     // ========== Helpers ==========
 
     /// Get FMP client with API key from the database
-    fn get_fmp_client(state: &AppState) -> Result<FmpClient> {
+    pub(crate) fn get_fmp_client(state: &AppState) -> Result<FmpClient> {
         let api_key = state
             .sqlite
             .get_provider_key("fmp", &state.security)?
@@ -1256,10 +1564,19 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
     /// Truncate a tool result to keep the conversation context small.
     /// For JSON arrays: keep only the first N items.
     /// For everything else: byte-level truncation at 4000 bytes.
+    /// Tools in `WHOLE_RESULT_TOOLS` are sent complete: a portfolio analysis
+    /// built on a cut-off holdings list is wrong, not just shorter.
     const MAX_RESULT_BYTES: usize = 4000;
     const MAX_ARRAY_ITEMS: usize = 10;
+    /// `apply_scenario_trades` too: a cut-off result can hide which trades were skipped.
+    const WHOLE_RESULT_TOOLS: &'static [&'static str] = &["get_client_scenario", "apply_scenario_trades"];
 
-    fn truncate_tool_result(result: &serde_json::Value) -> String {
+    fn truncate_tool_result(tool_name: &str, result: &serde_json::Value) -> String {
+        if Self::WHOLE_RESULT_TOOLS.contains(&tool_name) {
+            return serde_json::to_string(result).unwrap_or_else(|_| {
+                r#"{"error": true, "message": "Failed to serialize tool result"}"#.to_string()
+            });
+        }
         // If it's an array, limit items first
         let truncated = if let Some(arr) = result.as_array() {
             if arr.len() > Self::MAX_ARRAY_ITEMS {
@@ -1453,16 +1770,217 @@ The account currently has ${cash:.2} in available cash. Before recommending ANY 
             "get_client_scenario" => {
                 if let Some(name) = result.get("scenario").and_then(|s| s["name"].as_str()) {
                     let count = result.get("position_count").and_then(|v| v.as_i64()).unwrap_or(0);
-                    format!("Retrieved scenario \"{}\" ({} positions)", name, count)
+                    let dormant = result.get("ride_summary").and_then(|r| r["dormant"].as_i64()).unwrap_or(0);
+                    format!("Retrieved scenario \"{}\" ({} positions, {} Dormant)", name, count, dormant)
                 } else {
                     "Retrieved scenario".to_string()
                 }
             }
             "apply_scenario_trades" => {
                 let count = result.get("trades_applied").and_then(|v| v.as_i64()).unwrap_or(0);
-                format!("Applied {} trade(s) to scenario", count)
+                let skipped: Vec<&str> = result
+                    .get("skipped_trades")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|t| t["symbol"].as_str()).collect())
+                    .unwrap_or_default();
+                if skipped.is_empty() {
+                    format!("Applied {} trade(s) to scenario", count)
+                } else {
+                    format!(
+                        "Applied {} trade(s) to scenario; skipped {} ({})",
+                        count,
+                        skipped.len(),
+                        skipped.join(", ")
+                    )
+                }
+            }
+            "get_price_history" => {
+                let sym = result.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
+                let n = result.get("bars_total").and_then(|v| v.as_u64()).unwrap_or(0);
+                format!("Fetched {} daily bars for {}", n, sym)
+            }
+            "get_analyst_targets" => {
+                let sym = result.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
+                match result.get("consensus").and_then(|v| v.as_f64()) {
+                    Some(c) => format!("Fetched analyst targets for {}: consensus {:.2}", sym, c),
+                    None => format!("Fetched analyst targets for {}: consensus unavailable", sym),
+                }
             }
             _ => "Tool executed".to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    #[test]
+    fn system_prompt_carries_the_client_swap_rules() {
+        let prompt = CopilotService::build_system_prompt();
+        assert!(prompt.contains("## Client Scenario Rides"));
+        assert!(prompt.contains("at least 10 percentage points higher"));
+        assert!(prompt.contains("`targets_last_90d` of 3 or more"));
+        assert!(prompt.contains("Call apply_scenario_trades only after the user asks"));
+        assert!(prompt.contains("Never call apply_scenario_trades on a baseline scenario"));
+    }
+
+    #[test]
+    fn chat_never_applies_trades_to_a_baseline() {
+        let err = CopilotService::refuse_baseline_apply(true).unwrap_err().to_string();
+        assert!(err.contains("baseline"));
+        assert!(err.contains("Review Recommendations"));
+        assert!(CopilotService::refuse_baseline_apply(false).is_ok());
+    }
+
+    #[test]
+    fn scenario_summary_reports_the_dormant_count() {
+        let result = serde_json::json!({
+            "scenario": { "name": "Baseline" },
+            "position_count": 20,
+            "ride_summary": { "dormant": 3, "unknown": 1 },
+        });
+        assert_eq!(
+            CopilotService::summarize_tool_result("get_client_scenario", &result),
+            "Retrieved scenario \"Baseline\" (20 positions, 3 Dormant)"
+        );
+    }
+
+    use super::*;
+
+    /// A 46-position scenario with ride blocks, shaped like the real tool output.
+    fn large_scenario() -> serde_json::Value {
+        let positions: Vec<serde_json::Value> = (0..46)
+            .map(|i| serde_json::json!({
+                "symbol": format!("SYM{i:02}"), "exchange": "NASDAQ", "quantity": 25.0,
+                "avg_price": 276.334, "side": "long", "current_price": 348.51,
+                "market_value": 8712.75, "cost_basis": 6908.35, "unrealized_pnl": 1804.4,
+                "pnl_pct": 26.12, "day_change_pct": 0.42, "company_name": "Example Holdings Inc.",
+                "notes": null,
+                "ride": { "status": "Dormant", "net_move_30d_pct": 0.7, "consensus_target": 341.94,
+                          "upside_pct": -1.9, "targets_last_90d": 17, "target_source": "fmp" },
+            }))
+            .collect();
+        serde_json::json!({
+            "scenario": { "id": 27, "name": "Current Portfolio — 401(k)", "account_type": "401k" },
+            "positions": positions,
+            "position_count": 46,
+            "ride_summary": { "dormant": 3, "unknown": 0 },
+            "summary": { "total_market_value": 170000.0, "total_cost_basis": 163757.64 },
+        })
+    }
+
+    #[test]
+    fn tax_advantaged_accounts_get_no_tax_loss_talk() {
+        let prompt = CopilotService::build_system_prompt();
+        assert!(prompt.contains("In a tax-advantaged account"));
+        assert!(prompt.contains("Never mention tax-loss harvesting, harvesting tax lots"));
+    }
+
+    #[test]
+    fn scenario_trades_go_in_the_actions_block() {
+        let prompt = CopilotService::build_system_prompt();
+        assert!(prompt.contains("Put every scenario trade you propose"));
+        assert!(prompt.contains("Review Recommendations button that applies the trades to the sandbox scenario only"));
+        assert!(!prompt.contains("only after the user asks to apply a swap"));
+    }
+
+    #[test]
+    fn client_scenario_never_sees_own_cash() {
+        let section = CopilotService::budget_section(CopilotContext::ClientScenario, Some(183.03))
+            .expect("client scenarios get a budget note");
+        assert!(!section.contains("183.03"));
+        assert!(section.contains("The user's own broker cash does not apply"));
+        assert!(section.contains("proceeds of the sells you propose"));
+        assert!(section.contains("scenario's `cash`"));
+    }
+
+    #[test]
+    fn own_account_keeps_the_cash_budget() {
+        let section = CopilotService::budget_section(CopilotContext::OwnAccount, Some(183.03)).unwrap();
+        assert!(section.contains("$183.03 in available cash"));
+        assert_eq!(CopilotService::budget_section(CopilotContext::OwnAccount, None), None);
+        assert_eq!(CopilotService::budget_section(CopilotContext::OwnAccount, Some(0.0)), None);
+    }
+
+    #[test]
+    fn context_param_is_strict() {
+        assert_eq!(CopilotContext::from_param(None).unwrap(), CopilotContext::OwnAccount);
+        assert_eq!(
+            CopilotContext::from_param(Some("client_scenario")).unwrap(),
+            CopilotContext::ClientScenario
+        );
+        assert!(CopilotContext::from_param(Some("client")).is_err());
+    }
+
+    #[test]
+    fn client_scenario_reaches_claude_whole() {
+        let result = large_scenario();
+        let sent = CopilotService::truncate_tool_result("get_client_scenario", &result);
+        assert!(!sent.contains("[truncated"), "scenario was cut");
+        let parsed: serde_json::Value = serde_json::from_str(&sent).expect("valid JSON");
+        assert_eq!(parsed, result);
+    }
+
+    #[test]
+    fn other_tools_keep_the_size_cap() {
+        let sent = CopilotService::truncate_tool_result("get_quote", &large_scenario());
+        assert!(sent.contains("[truncated from"));
+    }
+
+    #[test]
+    fn system_prompt_allows_analyst_targets() {
+        let p = CopilotService::build_system_prompt();
+        assert!(!p.contains("Replace price-target language"));
+        assert!(!p.contains("No single price target stated as an expectation"));
+        assert!(p.contains("name the source (consensus of N analysts, or the firm)"));
+        assert!(p.contains("Present the distribution of outcomes. Treating variance"));
+        assert!(!p.contains("not a target"));
+    }
+}
+
+#[cfg(test)]
+mod apply_scenario_trades_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_refused_trade_is_skipped_and_the_rest_still_apply() {
+        let state = crate::state::testing::object();
+        let client = state
+            .sqlite
+            .add_client("Test", None, None, None, None, Some("401k"), None)
+            .unwrap();
+        let scenario = state
+            .sqlite
+            .create_client_scenario(client.id.unwrap(), "Copy", None, false)
+            .unwrap();
+        let sid = scenario.id.unwrap();
+        state.sqlite.add_scenario_position(sid, "AABB", "GENERIC", 723.0, 0.01, "long", None).unwrap();
+
+        let input = serde_json::json!({
+            "scenario_id": sid,
+            "trades": [
+                { "symbol": "AABB", "side": "sell", "quantity": 723, "price": 0.0094 },
+                { "symbol": "AABB", "side": "sell", "quantity": 723, "price": 0.0094 },
+                { "symbol": "VOO", "side": "buy", "quantity": 2, "price": 673.01 }
+            ]
+        });
+        let result = CopilotService::tool_apply_scenario_trades(&input, &state).await.unwrap();
+
+        assert_eq!(result["trades_applied"], 2);
+        assert_eq!(result["trades_skipped"], 1);
+        let reason = result["skipped_trades"][0]["reason"].as_str().unwrap();
+        assert!(reason.contains("can't hold short positions"), "{reason}");
+        let positions = state.sqlite.get_scenario_positions(sid).unwrap();
+        assert!(positions.iter().all(|p| p.side == "long"), "no shorts in a 401(k)");
+        assert!(positions.iter().any(|p| p.symbol == "VOO" && p.quantity == 2.0), "the buy after the refusal applied");
+
+        let summary = CopilotService::summarize_tool_result("apply_scenario_trades", &result);
+        assert_eq!(summary, "Applied 2 trade(s) to scenario; skipped 1 (AABB)");
+    }
+
+    #[test]
+    fn its_result_reaches_claude_whole() {
+        let big = serde_json::json!({ "skipped_trades": [], "pad": "x".repeat(10_000) });
+        let sent = CopilotService::truncate_tool_result("apply_scenario_trades", &big);
+        assert!(!sent.contains("[truncated"));
     }
 }

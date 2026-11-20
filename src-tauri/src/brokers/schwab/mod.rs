@@ -587,6 +587,8 @@ impl Broker for SchwabBroker {
                     order_timestamp: o.entered_time,
                     exchange_timestamp: o.close_time,
                     rejection_reason: o.status_description,
+                    trail_percent: None,
+                    hwm: None,
                 }
             })
             .collect())
@@ -732,19 +734,20 @@ impl Broker for SchwabBroker {
             span: balances.maintenance_requirement,
             exposure: balances.long_market_value + balances.short_market_value,
             collateral: 0.0,
+            equity: None,
         })
     }
 
     async fn get_quote(
         &self,
         auth_token: &str,
-        symbols: Vec<(String, String)>,
+        symbols: Vec<QuoteSymbol>,
     ) -> Result<Vec<Quote>> {
         let (access_token, _) = parse_schwab_auth(auth_token)?;
 
         let symbol_list: String = symbols
             .iter()
-            .map(|(s, _)| s.as_str())
+            .map(|q| q.symbol.as_str())
             .collect::<Vec<_>>()
             .join(",");
 
@@ -802,7 +805,7 @@ impl Broker for SchwabBroker {
         symbol: &str,
     ) -> Result<MarketDepth> {
         let quotes = self
-            .get_quote(auth_token, vec![(symbol.to_string(), "US".to_string())])
+            .get_quote(auth_token, vec![QuoteSymbol { exchange: "US".to_string(), symbol: symbol.to_string() }])
             .await?;
 
         let quote = quotes.first();
