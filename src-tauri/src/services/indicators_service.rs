@@ -1,13 +1,13 @@
 //! Technical Indicator Computation Service
 //!
 //! Computes technical indicators (SMA, EMA, RSI, MACD, Bollinger Bands, VWAP)
-//! from OHLCV data using the `ta` crate.
+//! from OHLCV data using fin-primitives (Wilder RSI, TA-Lib-seeded EMA/MACD).
 
-use ta::indicators::{
+use fin_primitives::ta_compat::indicators::{
     BollingerBands, ExponentialMovingAverage, MovingAverageConvergenceDivergence,
     RelativeStrengthIndex, SimpleMovingAverage,
 };
-use ta::Next;
+use fin_primitives::ta_compat::Next;
 use serde::{Deserialize, Serialize};
 
 /// Result of computing a single indicator across a series of data points.
@@ -336,9 +336,39 @@ mod tests {
         let result = compute_rsi(&data, 3);
         assert_eq!(result.name, "RSI_3");
         assert_eq!(result.values.len(), 5);
-        // RSI values should be between 0 and 100
-        for point in &result.values {
+        // RSI values should be between 0 and 100 (NaN during warm-up)
+        for point in result.values.iter().filter(|p| !p.value.is_nan()) {
             assert!(point.value >= 0.0 && point.value <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_compute_rsi_matches_wilder() {
+        // Wilder's RSI(14) reference series (StockCharts / TA-Lib).
+        let closes = [
+            44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42, 45.84, 46.08, 45.89, 46.03,
+            45.61, 46.28, 46.28, 46.00, 46.03, 46.41, 46.22, 45.64,
+        ];
+        let data: Vec<OhlcvData> = closes
+            .iter()
+            .map(|&c| OhlcvData {
+                timestamp: String::new(),
+                open: c,
+                high: c,
+                low: c,
+                close: c,
+                volume: 0.0,
+            })
+            .collect();
+        let result = compute_rsi(&data, 14);
+        let expected = [70.4641, 66.2496, 66.4809, 69.3469, 66.2947, 57.9150];
+        for (point, want) in result.values[14..].iter().zip(expected) {
+            assert!(
+                (point.value - want).abs() < 1e-3,
+                "got {}, want {}",
+                point.value,
+                want
+            );
         }
     }
 
@@ -360,7 +390,7 @@ mod tests {
         let result = compute_bollinger(&data, 3, 2.0);
         assert_eq!(result.name, "BOLLINGER_3");
         assert_eq!(result.values.len(), 5);
-        for point in &result.values {
+        for point in result.values.iter().filter(|p| !p.value.is_nan()) {
             // Upper band should be above middle, lower below middle
             assert!(point.secondary_value.unwrap() >= point.value);
             assert!(point.tertiary_value.unwrap() <= point.value);
